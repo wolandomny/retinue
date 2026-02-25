@@ -24,6 +24,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	args := []string{
 		"--print",
 		"--output-format", "json",
+		"--dangerously-skip-permissions",
 	}
 
 	if opts.Model != "" {
