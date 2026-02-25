@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/workspace"
@@ -11,12 +12,34 @@ import (
 
 func newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "add <project-name> <git-url>",
+		Use:   "add",
+		Short: "Add resources to the apartment",
+	}
+
+	cmd.AddCommand(newAddRepoCmd())
+
+	return cmd
+}
+
+func newAddRepoCmd() *cobra.Command {
+	var nameFlag string
+
+	cmd := &cobra.Command{
+		Use:   "repo <host/owner/repo>",
 		Short: "Clone a repo into the apartment and register it",
-		Args:  cobra.ExactArgs(2),
+		Example: "  retinue add repo github.com/org/api",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			gitURL := args[1]
+			repoPath := strings.TrimSuffix(args[0], ".git")
+			gitURL := "https://" + repoPath + ".git"
+
+			name := nameFlag
+			if name == "" {
+				name = repoNameFromURL(repoPath)
+			}
+			if name == "" {
+				return fmt.Errorf("could not derive repo name from URL; use --name to specify one")
+			}
 
 			ws, err := loadWorkspace()
 			if err != nil {
@@ -46,5 +69,16 @@ func newAddCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&nameFlag, "name", "", "override the derived repo name")
+
 	return cmd
+}
+
+// repoNameFromURL extracts a repo name from a repo path.
+// e.g. "github.com/org/api" -> "api"
+func repoNameFromURL(repoPath string) string {
+	if i := strings.LastIndex(repoPath, "/"); i >= 0 {
+		return repoPath[i+1:]
+	}
+	return repoPath
 }

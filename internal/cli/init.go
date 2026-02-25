@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -10,17 +11,32 @@ import (
 
 func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "init <path>",
+		Use:   "init [path]",
 		Short: "Create a new retinue apartment",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Create a new retinue apartment. If no path is given, initializes in the current directory.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := args[0]
-
-			cfg := workspace.Config{
-				Name: filepath.Base(path),
+			var path string
+			if len(args) == 1 {
+				path = args[0]
+			} else {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("getting working directory: %w", err)
+				}
+				path = cwd
 			}
 
-			ws, err := workspace.Create(path, cfg)
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return fmt.Errorf("resolving path: %w", err)
+			}
+
+			cfg := workspace.Config{
+				Name: filepath.Base(absPath),
+			}
+
+			ws, err := workspace.Create(absPath, cfg)
 			if err != nil {
 				return err
 			}
