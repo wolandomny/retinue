@@ -121,8 +121,8 @@ func newDispatchCmd() *cobra.Command {
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {
-	if workspaceFlag == "" {
-		return nil, fmt.Errorf("--workspace flag is required")
+	if workspaceFlag != "" {
+		return workspace.Load(workspaceFlag)
 	}
-	return workspace.Load(workspaceFlag)
+	return workspace.Detect()
 }

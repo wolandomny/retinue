@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	ConfigFile = "retinue.yaml"
-	TasksFile  = "tasks.yaml"
+	ConfigFile  = "retinue.yaml"
+	TasksFile   = "tasks.yaml"
 	WorktreeDir = "worktrees"
 	LogsDir     = "logs"
+	ReposDir    = "repos"
 )
 
 type Workspace struct {
@@ -26,7 +27,7 @@ func Create(path string, cfg Config) (*Workspace, error) {
 		return nil, fmt.Errorf("creating workspace directory: %w", err)
 	}
 
-	for _, dir := range []string{WorktreeDir, LogsDir} {
+	for _, dir := range []string{WorktreeDir, LogsDir, ReposDir} {
 		if err := os.MkdirAll(filepath.Join(path, dir), 0o755); err != nil {
 			return nil, fmt.Errorf("creating %s directory: %w", dir, err)
 		}
@@ -41,7 +42,7 @@ func Create(path string, cfg Config) (*Workspace, error) {
 
 	ws := &Workspace{Path: path, Config: cfg}
 
-	if err := ws.saveConfig(); err != nil {
+	if err := ws.SaveConfig(); err != nil {
 		return nil, err
 	}
 
@@ -52,6 +53,21 @@ func Create(path string, cfg Config) (*Workspace, error) {
 	}
 
 	return ws, nil
+}
+
+// Detect finds a workspace by looking for retinue.yaml in the current directory.
+func Detect() (*Workspace, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getting working directory: %w", err)
+	}
+
+	cfgPath := filepath.Join(cwd, ConfigFile)
+	if _, err := os.Stat(cfgPath); err != nil {
+		return nil, fmt.Errorf("no %s found in current directory; use --workspace or cd into an apartment", ConfigFile)
+	}
+
+	return Load(cwd)
 }
 
 // Load reads an existing workspace from the given path.
@@ -70,7 +86,8 @@ func Load(path string) (*Workspace, error) {
 	return &Workspace{Path: path, Config: cfg}, nil
 }
 
-func (ws *Workspace) saveConfig() error {
+// SaveConfig writes the workspace config to retinue.yaml.
+func (ws *Workspace) SaveConfig() error {
 	data, err := yaml.Marshal(&ws.Config)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
