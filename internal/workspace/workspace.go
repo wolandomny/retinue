@@ -34,7 +34,7 @@ func Create(path string, cfg Config) (*Workspace, error) {
 	}
 
 	if cfg.Model == "" {
-		cfg.Model = "claude-sonnet-4-6"
+		cfg.Model = "claude-opus-4-6"
 	}
 	if cfg.MaxWorkers == 0 {
 		cfg.MaxWorkers = 4

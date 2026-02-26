@@ -8,7 +8,7 @@ import (
 func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 	prompt := buildWolandPrompt(
 		"/tmp/test-apartment",
-		"name: test\nrepos:\n  api: /tmp/api\nmodel: claude-sonnet-4-6\nmax_workers: 4\n",
+		"name: test\nrepos:\n  api: /tmp/api\nmodel: claude-opus-4-6\nmax_workers: 4\n",
 		"tasks:\n  - id: task-1\n    status: pending\n",
 	)
 
