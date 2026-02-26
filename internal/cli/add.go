@@ -48,10 +48,16 @@ func newAddRepoCmd() *cobra.Command {
 
 			dest := filepath.Join(ws.Path, workspace.ReposDir, name)
 
-			gitCmd := exec.Command("git", "clone", gitURL, dest)
-			gitCmd.Stdout = cmd.OutOrStdout()
-			gitCmd.Stderr = cmd.ErrOrStderr()
-			if err := gitCmd.Run(); err != nil {
+			var cloneCmd *exec.Cmd
+			if strings.HasPrefix(repoPath, "github.com/") && ws.Config.GithubAccount != "" {
+				ownerRepo := strings.TrimPrefix(repoPath, "github.com/")
+				cloneCmd = exec.Command("gh", "repo", "clone", ownerRepo, dest)
+			} else {
+				cloneCmd = exec.Command("git", "clone", gitURL, dest)
+			}
+			cloneCmd.Stdout = cmd.OutOrStdout()
+			cloneCmd.Stderr = cmd.ErrOrStderr()
+			if err := cloneCmd.Run(); err != nil {
 				return fmt.Errorf("cloning repo: %w", err)
 			}
 
