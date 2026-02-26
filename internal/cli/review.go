@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
+
+const baseBranch = "main"
 
 func newReviewCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -68,7 +71,7 @@ func newReviewCmd() *cobra.Command {
 				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
 				// Step 3: Get the diff.
-				diff, err := runGit(ctx, repoPath, "diff", "main..."+t.Branch)
+				diff, err := runGit(ctx, repoPath, "diff", baseBranch+"..."+t.Branch)
 				if err != nil {
 					return fmt.Errorf("getting diff for task %q: %w", t.ID, err)
 				}
@@ -99,65 +102,15 @@ func newReviewCmd() *cobra.Command {
 
 				// Step 5: Parse the review result.
 				if isApproved(result.Output) {
-					// Step 6a: APPROVED — rebase and fast-forward merge.
-
-					// Rebase in the worktree.
-					if _, err := runGit(ctx, worktreePath, "rebase", "main"); err != nil {
-						_, _ = runGit(ctx, worktreePath, "rebase", "--abort")
-						_ = store.Update(t.ID, func(t *task.Task) {
-							now := time.Now()
-							t.Status = task.StatusFailed
-							t.Error = "rebase conflict"
-							t.FinishedAt = &now
-						})
-						fmt.Printf("Task %q failed: rebase conflict\n", t.ID)
-						continue
-					}
-
-					// Checkout main in the repo.
-					if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
-						_ = store.Update(t.ID, func(t *task.Task) {
-							now := time.Now()
-							t.Status = task.StatusFailed
-							t.Error = err.Error()
-							t.FinishedAt = &now
-						})
+					if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch); err != nil {
+						markTaskFailed(store, t.ID, err.Error())
 						fmt.Printf("Task %q failed: %s\n", t.ID, err)
 						continue
 					}
-
-					// Fast-forward merge.
-					if _, err := runGit(ctx, repoPath, "merge", "--ff-only", t.Branch); err != nil {
-						_ = store.Update(t.ID, func(t *task.Task) {
-							now := time.Now()
-							t.Status = task.StatusFailed
-							t.Error = err.Error()
-							t.FinishedAt = &now
-						})
-						fmt.Printf("Task %q failed: %s\n", t.ID, err)
-						continue
-					}
-
-					// Clean up: remove worktree and branch.
-					_, _ = runGit(ctx, repoPath, "worktree", "remove", worktreePath)
-					_, _ = runGit(ctx, repoPath, "branch", "-d", t.Branch)
-
-					// Update task to merged.
-					_ = store.Update(t.ID, func(t *task.Task) {
-						now := time.Now()
-						t.Status = task.StatusMerged
-						t.FinishedAt = &now
-					})
-
+					markTaskMerged(store, t.ID)
 					fmt.Printf("Task %q merged successfully.\n", t.ID)
 				} else {
-					// Step 6b: REJECTED — mark failed.
-					_ = store.Update(t.ID, func(t *task.Task) {
-						now := time.Now()
-						t.Status = task.StatusFailed
-						t.Error = result.Output
-						t.FinishedAt = &now
-					})
+					markTaskFailed(store, t.ID, result.Output)
 					fmt.Printf("Task %q failed review: %s\n", t.ID, result.Output)
 				}
 			}
@@ -165,6 +118,58 @@ func newReviewCmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+// rebaseAndMerge rebases the task branch onto baseBranch in the
+// worktree, then fast-forward merges into the main repo checkout.
+// On success it removes the worktree and deletes the branch.
+func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch string) error {
+	// Rebase in the worktree.
+	if _, err := runGit(ctx, worktreePath, "rebase", baseBranch); err != nil {
+		_, _ = runGit(ctx, worktreePath, "rebase", "--abort")
+		return fmt.Errorf("rebase conflict: %w", err)
+	}
+
+	// Checkout base branch in the repo.
+	if _, err := runGit(ctx, repoPath, "checkout", baseBranch); err != nil {
+		return fmt.Errorf("checkout %s: %w", baseBranch, err)
+	}
+
+	// Fast-forward merge.
+	if _, err := runGit(ctx, repoPath, "merge", "--ff-only", branch); err != nil {
+		return fmt.Errorf("ff-merge: %w", err)
+	}
+
+	// Clean up worktree and branch (best-effort).
+	_, _ = runGit(ctx, repoPath, "worktree", "remove", worktreePath)
+	_, _ = runGit(ctx, repoPath, "branch", "-d", branch)
+
+	return nil
+}
+
+// markTaskFailed transitions the task to failed status with the given
+// error message, logging any store update errors to stderr.
+func markTaskFailed(store *task.FileStore, id, errMsg string) {
+	if err := store.Update(id, func(t *task.Task) {
+		now := time.Now()
+		t.Status = task.StatusFailed
+		t.Error = errMsg
+		t.FinishedAt = &now
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
+	}
+}
+
+// markTaskMerged transitions the task to merged status, logging any
+// store update errors to stderr.
+func markTaskMerged(store *task.FileStore, id string) {
+	if err := store.Update(id, func(t *task.Task) {
+		now := time.Now()
+		t.Status = task.StatusMerged
+		t.FinishedAt = &now
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
+	}
 }
 
 // findReviewable returns the first task with status "done" and a non-empty Branch field.
