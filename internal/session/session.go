@@ -26,11 +26,22 @@ type Manager interface {
 }
 
 // TmuxManager is a Manager that delegates to the tmux(1) binary.
-type TmuxManager struct{}
+type TmuxManager struct {
+	Socket string // if non-empty, passed as `-L <Socket>` to all tmux commands
+}
 
 // NewTmuxManager returns a TmuxManager ready for use.
-func NewTmuxManager() *TmuxManager {
-	return &TmuxManager{}
+func NewTmuxManager(socket string) *TmuxManager {
+	return &TmuxManager{Socket: socket}
+}
+
+// TmuxArgs builds the base tmux argument list, prepending `-L <Socket>`
+// when a custom socket name is configured.
+func (m *TmuxManager) TmuxArgs(args ...string) []string {
+	if m.Socket != "" {
+		return append([]string{"-L", m.Socket}, args...)
+	}
+	return args
 }
 
 // Create starts a new detached tmux session named name, with its working
@@ -43,7 +54,7 @@ func (m *TmuxManager) Create(ctx context.Context, name, workDir, command string)
 		return fmt.Errorf("writing tmux script: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", name, "-c", workDir, scriptPath)
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs("new-session", "-d", "-s", name, "-c", workDir, scriptPath)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(scriptPath)
 		return fmt.Errorf("tmux new-session %q: %w: %s", name, err, out)
@@ -54,7 +65,7 @@ func (m *TmuxManager) Create(ctx context.Context, name, workDir, command string)
 // Kill terminates the named tmux session. If the session does not exist (tmux
 // exits with code 1) Kill returns nil.
 func (m *TmuxManager) Kill(ctx context.Context, name string) error {
-	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", name)
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs("kill-session", "-t", name)...)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			// Session not found — not an error.
@@ -68,7 +79,7 @@ func (m *TmuxManager) Kill(ctx context.Context, name string) error {
 // Exists reports whether a tmux session with the given name is currently
 // running.
 func (m *TmuxManager) Exists(ctx context.Context, name string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", name)
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs("has-session", "-t", name)...)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, nil
@@ -82,7 +93,7 @@ func (m *TmuxManager) Exists(ctx context.Context, name string) (bool, error) {
 // `tmux wait-for -S <name>`. The command running inside the session must call
 // that signal itself; without it Wait will block until ctx is cancelled.
 func (m *TmuxManager) Wait(ctx context.Context, name string) error {
-	cmd := exec.CommandContext(ctx, "tmux", "wait-for", name)
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs("wait-for", name)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux wait-for %q: %w: %s", name, err, out)
 	}

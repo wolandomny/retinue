@@ -32,7 +32,7 @@ func newTalkCmd() *cobra.Command {
 		Use:   "talk",
 		Short: "Start an interactive planning session with Woland",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := session.NewTmuxManager()
+			mgr := session.NewTmuxManager("")
 			ctx := context.Background()
 
 			// Check if the session already exists — if so, attach immediately.

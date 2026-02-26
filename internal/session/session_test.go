@@ -89,5 +89,33 @@ func TestFakeManager_Wait(t *testing.T) {
 	}
 }
 
+func TestTmuxArgs_EmptySocket(t *testing.T) {
+	mgr := session.NewTmuxManager("")
+	got := mgr.TmuxArgs("new-session", "-d", "-s", "test")
+	expected := []string{"new-session", "-d", "-s", "test"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, got)
+	}
+	for i := range expected {
+		if got[i] != expected[i] {
+			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+		}
+	}
+}
+
+func TestTmuxArgs_WithSocket(t *testing.T) {
+	mgr := session.NewTmuxManager("my-socket")
+	got := mgr.TmuxArgs("new-session", "-d", "-s", "test")
+	expected := []string{"-L", "my-socket", "new-session", "-d", "-s", "test"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, got)
+	}
+	for i := range expected {
+		if got[i] != expected[i] {
+			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+		}
+	}
+}
+
 // Ensure FakeManager satisfies the Manager interface at compile time.
 var _ session.Manager = (*session.FakeManager)(nil)
