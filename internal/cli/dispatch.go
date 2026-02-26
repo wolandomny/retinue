@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/agent"
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -82,8 +83,17 @@ func newDispatchCmd() *cobra.Command {
 				target.ID,
 			)
 
-			runner := agent.NewClaudeRunner()
+			runner := agent.NewTmuxRunner(session.NewTmuxManager())
 			logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
+			sessionName := "retinue-" + target.ID
+
+			// Persist session name to task metadata so attach/status can find it.
+			_ = store.Update(target.ID, func(t *task.Task) {
+				if t.Meta == nil {
+					t.Meta = make(map[string]string)
+				}
+				t.Meta["session"] = sessionName
+			})
 
 			result, err := runner.Run(cmd.Context(), agent.RunOpts{
 				Prompt:       target.Prompt,
@@ -91,6 +101,7 @@ func newDispatchCmd() *cobra.Command {
 				WorkDir:      workDir,
 				Model:        ws.Config.Model,
 				LogFile:      logFile,
+				SessionName:  sessionName,
 			})
 
 			finishedAt := time.Now()
@@ -101,6 +112,7 @@ func newDispatchCmd() *cobra.Command {
 					t.Error = err.Error()
 					t.Result = result.Output
 					t.FinishedAt = &finishedAt
+					t.Meta["session"] = ""
 				})
 				return fmt.Errorf("task %q failed: %w", target.ID, err)
 			}
@@ -109,6 +121,7 @@ func newDispatchCmd() *cobra.Command {
 				t.Status = task.StatusDone
 				t.Result = result.Output
 				t.FinishedAt = &finishedAt
+				t.Meta["session"] = ""
 			}); err != nil {
 				return fmt.Errorf("updating task result: %w", err)
 			}

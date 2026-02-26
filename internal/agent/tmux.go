@@ -18,6 +18,11 @@ type TmuxRunner struct {
 	Sessions session.Manager
 }
 
+// NewTmuxRunner returns a TmuxRunner backed by the given session Manager.
+func NewTmuxRunner(mgr session.Manager) *TmuxRunner {
+	return &TmuxRunner{Sessions: mgr}
+}
+
 // Run implements Runner by spawning claude inside a detached tmux session.
 func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	// 1. Determine session name.
