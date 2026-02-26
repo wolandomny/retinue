@@ -42,6 +42,17 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		cmd.Dir = opts.WorkDir
 	}
 
+	// Unset CLAUDECODE so the worker can spawn its own claude process.
+	// Without this, claude refuses to run nested inside another Claude Code session.
+	env := os.Environ()
+	filtered := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = filtered
+
 	var output strings.Builder
 	cmd.Stdout = &output
 	cmd.Stderr = &output
