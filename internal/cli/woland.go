@@ -32,7 +32,14 @@ func newTalkCmd() *cobra.Command {
 		Use:   "talk",
 		Short: "Start an interactive planning session with Woland",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := session.NewTmuxManager("")
+			// Always load workspace first — we need the name for the socket.
+			ws, err := loadWorkspace()
+			if err != nil {
+				return err
+			}
+
+			socket := "retinue-" + ws.Config.Name
+			mgr := session.NewTmuxManager(socket)
 			ctx := context.Background()
 
 			// Check if the session already exists — if so, attach immediately.
@@ -49,15 +56,11 @@ func newTalkCmd() *cobra.Command {
 			if exists {
 				// Session is already live — just attach.
 				return syscall.Exec(tmuxPath,
-					[]string{"tmux", "attach-session", "-t", wolandSessionName},
+					[]string{"tmux", "-L", socket, "attach-session", "-t", wolandSessionName},
 					os.Environ())
 			}
 
 			// Session doesn't exist — build the prompt and create it.
-			ws, err := loadWorkspace()
-			if err != nil {
-				return err
-			}
 
 			// Read current tasks if they exist.
 			var tasksYAML string
@@ -104,7 +107,7 @@ func newTalkCmd() *cobra.Command {
 
 			// Attach to the newly created session.
 			return syscall.Exec(tmuxPath,
-				[]string{"tmux", "attach-session", "-t", wolandSessionName},
+				[]string{"tmux", "-L", socket, "attach-session", "-t", wolandSessionName},
 				os.Environ())
 		},
 	}

@@ -41,12 +41,14 @@ func newAttachCmd() *cobra.Command {
 				return fmt.Errorf("task %q has no active session", taskID)
 			}
 
+			socket := "retinue-" + ws.Config.Name
+
 			tmuxBin, err := exec.LookPath("tmux")
 			if err != nil {
 				return fmt.Errorf("tmux not found in PATH: %w", err)
 			}
 
-			return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", sessionName}, os.Environ())
+			return syscall.Exec(tmuxBin, []string{"tmux", "-L", socket, "attach-session", "-t", sessionName}, os.Environ())
 		},
 	}
 

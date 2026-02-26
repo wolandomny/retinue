@@ -50,12 +50,18 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	claudeCmd := "env -u CLAUDECODE claude " + shellJoin(args)
 
 	// 3. Wrap command to tee output and signal tmux on exit.
+	waitCmd := "tmux"
+	if opts.Socket != "" {
+		waitCmd += " -L " + shellQuote(opts.Socket)
+	}
+	waitCmd += " wait-for -S " + sessionName
+
 	var command string
 	if opts.LogFile != "" {
-		command = fmt.Sprintf("%s 2>&1 | tee %s; tmux wait-for -S %s",
-			claudeCmd, shellQuote(opts.LogFile), sessionName)
+		command = fmt.Sprintf("%s 2>&1 | tee %s; %s",
+			claudeCmd, shellQuote(opts.LogFile), waitCmd)
 	} else {
-		command = fmt.Sprintf("%s; tmux wait-for -S %s", claudeCmd, sessionName)
+		command = fmt.Sprintf("%s; %s", claudeCmd, waitCmd)
 	}
 
 	// 4. Create the tmux session.

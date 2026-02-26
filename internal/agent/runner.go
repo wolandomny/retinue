@@ -10,6 +10,7 @@ type RunOpts struct {
 	Model        string
 	LogFile      string
 	SessionName  string // tmux session name; if empty, TmuxRunner generates one
+	Socket       string // tmux socket name (-L flag); if empty, uses default socket
 }
 
 // Result holds the output of an agent run.

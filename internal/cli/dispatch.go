@@ -84,7 +84,8 @@ func newDispatchCmd() *cobra.Command {
 				target.ID,
 			)
 
-			runner := agent.NewTmuxRunner(session.NewTmuxManager(""))
+			socket := "retinue-" + ws.Config.Name
+			runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
 			logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
 			sessionName := "retinue-" + target.ID
 
@@ -103,6 +104,7 @@ func newDispatchCmd() *cobra.Command {
 				Model:        ws.Config.Model,
 				LogFile:      logFile,
 				SessionName:  sessionName,
+				Socket:       socket,
 			})
 
 			finishedAt := time.Now()

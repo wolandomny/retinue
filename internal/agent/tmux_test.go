@@ -155,6 +155,52 @@ func TestTmuxRunnerNoLogFileReturnsEmptyOutput(t *testing.T) {
 	}
 }
 
+func TestTmuxRunnerWaitForIncludesSocketFlag(t *testing.T) {
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:      "test",
+		SessionName: "sock-test",
+		WorkDir:     "/tmp",
+		Socket:      "mysocket",
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := fake.Command("sock-test")
+	if !strings.Contains(cmd, "tmux -L 'mysocket' wait-for -S sock-test") {
+		t.Errorf("expected command to contain 'tmux -L 'mysocket' wait-for -S sock-test', got: %s", cmd)
+	}
+}
+
+func TestTmuxRunnerWaitForOmitsSocketFlagWhenEmpty(t *testing.T) {
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:      "test",
+		SessionName: "nosock-test",
+		WorkDir:     "/tmp",
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := fake.Command("nosock-test")
+	if !strings.Contains(cmd, "tmux wait-for -S nosock-test") {
+		t.Errorf("expected command to contain 'tmux wait-for -S nosock-test', got: %s", cmd)
+	}
+	if strings.Contains(cmd, "-L") {
+		t.Errorf("expected command to NOT contain '-L' when socket is empty, got: %s", cmd)
+	}
+}
+
 func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}
