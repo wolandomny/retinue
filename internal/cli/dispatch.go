@@ -75,7 +75,10 @@ func newDispatchCmd() *cobra.Command {
 			systemPrompt := fmt.Sprintf(
 				"You are a worker agent in the Retinue system. Your task ID is %q. "+
 					"Complete the following task thoroughly and report your results. "+
-					"Focus only on this task.",
+					"Focus only on this task.\n\n"+
+					"IMPORTANT: After completing your work, you MUST commit all changes to git. "+
+					"Stage your files with `git add` and create a commit with a clear, descriptive message. "+
+					"Do not leave work uncommitted.",
 				target.ID,
 			)
 
