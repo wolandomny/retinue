@@ -3,7 +3,9 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // Manager manages lifecycle of named terminal sessions.
@@ -34,8 +36,16 @@ func NewTmuxManager() *TmuxManager {
 // Create starts a new detached tmux session named name, with its working
 // directory set to workDir, running command.
 func (m *TmuxManager) Create(ctx context.Context, name, workDir, command string) error {
-	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", name, "-c", workDir, command)
+	// Write the command to a temp script to avoid tmux's command length limit.
+	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("retinue-%s.sh", name))
+	script := fmt.Sprintf("#!/bin/sh\nrm -f '%s'\n%s\n", scriptPath, command)
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		return fmt.Errorf("writing tmux script: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", name, "-c", workDir, scriptPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(scriptPath)
 		return fmt.Errorf("tmux new-session %q: %w: %s", name, err, out)
 	}
 	return nil
