@@ -15,6 +15,8 @@ import (
 	"github.com/wolandomny/retinue/internal/worktree"
 )
 
+// newDispatchCmd returns a command that dispatches the next ready task
+// (or a specific task by ID) to a Claude Code agent.
 func newDispatchCmd() *cobra.Command {
 	var taskID string
 
@@ -74,13 +76,15 @@ func newDispatchCmd() *cobra.Command {
 			}
 
 			// Record the branch name so the review process can find it.
-		if target.Repo != "" {
-			_ = store.Update(target.ID, func(t *task.Task) {
-				t.Branch = "retinue/" + target.ID
-			})
-		}
+			if target.Repo != "" {
+				if err := store.Update(target.ID, func(t *task.Task) {
+					t.Branch = "retinue/" + target.ID
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to record branch: %v\n", err)
+				}
+			}
 
-		// Build system prompt.
+			// Build system prompt.
 			systemPrompt := fmt.Sprintf(
 				"You are a worker agent in the Retinue system. Your task ID is %q. "+
 					"Complete the following task thoroughly and report your results. "+
@@ -97,12 +101,14 @@ func newDispatchCmd() *cobra.Command {
 			sessionName := "retinue-" + target.ID
 
 			// Persist session name to task metadata so attach/status can find it.
-			_ = store.Update(target.ID, func(t *task.Task) {
+			if err := store.Update(target.ID, func(t *task.Task) {
 				if t.Meta == nil {
 					t.Meta = make(map[string]string)
 				}
 				t.Meta["session"] = sessionName
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
+			}
 
 			result, err := runner.Run(cmd.Context(), agent.RunOpts{
 				Prompt:       target.Prompt,
@@ -117,13 +123,15 @@ func newDispatchCmd() *cobra.Command {
 			finishedAt := time.Now()
 
 			if err != nil {
-				_ = store.Update(target.ID, func(t *task.Task) {
+				if updateErr := store.Update(target.ID, func(t *task.Task) {
 					t.Status = task.StatusFailed
 					t.Error = err.Error()
 					t.Result = result.Output
 					t.FinishedAt = &finishedAt
 					t.Meta["session"] = ""
-				})
+				}); updateErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
+				}
 				return fmt.Errorf("task %q failed: %w", target.ID, err)
 			}
 

@@ -11,6 +11,8 @@ import (
 	"github.com/wolandomny/retinue/internal/task"
 )
 
+// newAttachCmd returns a command that attaches the user's terminal to
+// a running task's tmux session.
 func newAttachCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attach <task-id>",

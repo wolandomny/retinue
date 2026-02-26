@@ -10,6 +10,9 @@ import (
 	"github.com/wolandomny/retinue/internal/workspace"
 )
 
+const githubHost = "github.com/"
+
+// newAddCmd returns the parent command for adding resources to an apartment.
 func newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
@@ -21,6 +24,8 @@ func newAddCmd() *cobra.Command {
 	return cmd
 }
 
+// newAddRepoCmd returns a command that clones a repository and registers
+// it in the workspace configuration.
 func newAddRepoCmd() *cobra.Command {
 	var nameFlag string
 
@@ -49,8 +54,8 @@ func newAddRepoCmd() *cobra.Command {
 			dest := filepath.Join(ws.Path, workspace.ReposDir, name)
 
 			var cloneCmd *exec.Cmd
-			if strings.HasPrefix(repoPath, "github.com/") && ws.Config.GithubAccount != "" {
-				ownerRepo := strings.TrimPrefix(repoPath, "github.com/")
+			if strings.HasPrefix(repoPath, githubHost) && ws.Config.GithubAccount != "" {
+				ownerRepo := strings.TrimPrefix(repoPath, githubHost)
 				cloneCmd = exec.Command("gh", "repo", "clone", ownerRepo, dest)
 			} else {
 				cloneCmd = exec.Command("git", "clone", gitURL, dest)

@@ -16,6 +16,8 @@ import (
 
 const wolandSessionName = "retinue-woland"
 
+// newWolandCmd returns the parent command for interacting with
+// the Woland planning agent.
 func newWolandCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "woland",
@@ -27,6 +29,8 @@ func newWolandCmd() *cobra.Command {
 	return cmd
 }
 
+// newTalkCmd returns a command that starts (or attaches to) an
+// interactive planning session with Woland inside tmux.
 func newTalkCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "talk",

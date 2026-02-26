@@ -17,6 +17,8 @@ import (
 
 const baseBranch = "main"
 
+// newReviewCmd returns a command that runs a persistent polling loop
+// to review, merge, or reject completed task work.
 func newReviewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "review",
