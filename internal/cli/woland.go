@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/session"
+	"github.com/wolandomny/retinue/internal/shell"
 	"github.com/wolandomny/retinue/internal/task"
 	"gopkg.in/yaml.v3"
 )
@@ -94,11 +94,7 @@ func newTalkCmd() *cobra.Command {
 				claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
 			}
 
-			parts := make([]string, len(claudeArgs))
-			for i, a := range claudeArgs {
-				parts[i] = wolandShellQuote(a)
-			}
-			claudeCmd := "claude " + strings.Join(parts, " ")
+			claudeCmd := "claude " + shell.Join(claudeArgs)
 
 			// Create a new detached tmux session running claude.
 			if err := mgr.Create(ctx, wolandSessionName, ws.Path, claudeCmd); err != nil {
@@ -113,12 +109,6 @@ func newTalkCmd() *cobra.Command {
 	}
 
 	return cmd
-}
-
-// wolandShellQuote wraps s in single quotes, escaping any single quotes within.
-// Duplicated from internal/agent to avoid needing to export it there.
-func wolandShellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func buildWolandPrompt(apartmentPath, configYAML, tasksYAML string) string {

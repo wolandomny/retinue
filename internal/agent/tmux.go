@@ -10,7 +10,16 @@ import (
 	"strings"
 
 	"github.com/wolandomny/retinue/internal/session"
+	"github.com/wolandomny/retinue/internal/shell"
 )
+
+// claudeCodeEnvVar is the environment variable name unset via env -u
+// to allow nested Claude Code invocations.
+const claudeCodeEnvVar = "CLAUDECODE"
+
+// defaultSuffixLen is the length of the random suffix appended to
+// auto-generated session names.
+const defaultSuffixLen = 6
 
 // TmuxRunner runs the claude CLI inside a named tmux session.
 // Users can attach to the session with: tmux attach-session -t <name>
@@ -28,7 +37,7 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	// 1. Determine session name.
 	sessionName := opts.SessionName
 	if sessionName == "" {
-		sessionName = "retinue-" + randomSuffix(6)
+		sessionName = "retinue-" + randomSuffix(defaultSuffixLen)
 	}
 
 	// 2. Build the claude command arguments (same as ClaudeRunner).
@@ -47,19 +56,19 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	args = append(args, opts.Prompt)
 
 	// Unset CLAUDECODE so claude doesn't refuse to run inside a retinue session.
-	claudeCmd := "env -u CLAUDECODE claude " + shellJoin(args)
+	claudeCmd := "env -u " + claudeCodeEnvVar + " claude " + shell.Join(args)
 
 	// 3. Wrap command to tee output and signal tmux on exit.
 	waitCmd := "tmux"
 	if opts.Socket != "" {
-		waitCmd += " -L " + shellQuote(opts.Socket)
+		waitCmd += " -L " + shell.Quote(opts.Socket)
 	}
 	waitCmd += " wait-for -S " + sessionName
 
 	var command string
 	if opts.LogFile != "" {
 		command = fmt.Sprintf("%s 2>&1 | tee %s; %s",
-			claudeCmd, shellQuote(opts.LogFile), waitCmd)
+			claudeCmd, shell.Quote(opts.LogFile), waitCmd)
 	} else {
 		command = fmt.Sprintf("%s; %s", claudeCmd, waitCmd)
 	}
@@ -106,18 +115,4 @@ func randomSuffix(n int) string {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(b)
-}
-
-// shellJoin joins arguments into a shell-safe command string.
-func shellJoin(args []string) string {
-	parts := make([]string, len(args))
-	for i, a := range args {
-		parts[i] = shellQuote(a)
-	}
-	return strings.Join(parts, " ")
-}
-
-// shellQuote wraps s in single quotes, escaping any single quotes within.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

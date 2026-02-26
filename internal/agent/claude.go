@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// claudeCodeEnvPrefix is the environment variable prefix that must be
+// unset to allow nested Claude Code invocations.
+const claudeCodeEnvPrefix = "CLAUDECODE="
+
 // ClaudeRunner spawns claude CLI processes.
 type ClaudeRunner struct{}
 
@@ -17,6 +21,9 @@ func NewClaudeRunner() *ClaudeRunner {
 	return &ClaudeRunner{}
 }
 
+// claudeStreamEvent represents a single event in the Claude CLI's
+// stream-json output format. The "result" event type carries the
+// agent's final output in the Result field.
 type claudeStreamEvent struct {
 	Type   string `json:"type"`
 	Result string `json:"result"`
@@ -50,7 +57,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	env := os.Environ()
 	filtered := env[:0]
 	for _, e := range env {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
+		if !strings.HasPrefix(e, claudeCodeEnvPrefix) {
 			filtered = append(filtered, e)
 		}
 	}
@@ -81,6 +88,8 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	}
 
 	// Scan newline-delimited JSON events to find the result event.
+	// If multiple "result" events are present (unlikely but possible),
+	// the last one wins.
 	raw := output.String()
 	var finalResult string
 	scanner := bufio.NewScanner(strings.NewReader(raw))
@@ -98,10 +107,13 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	return Result{Output: raw, ExitCode: 0}, nil
 }
 
+// stringWriter is a minimal write interface used by logWriter to
+// fan out writes to multiple destinations.
 type stringWriter interface {
 	Write(p []byte) (n int, err error)
 }
 
+// logWriter multiplexes Write calls across multiple writers.
 type logWriter struct {
 	writers []stringWriter
 }
