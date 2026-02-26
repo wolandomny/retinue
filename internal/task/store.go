@@ -7,6 +7,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// FileStore persists tasks to a YAML file on disk. All operations
+// (Load, Save, Get, Update) are atomic at the file level — each call
+// reads or rewrites the entire file.
 type FileStore struct {
 	Path string
 }

@@ -160,7 +160,7 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 
 	repoAbsPath := filepath.Join(ws.Path, repoPath)
 
-	worktreeDir := filepath.Join(ws.Path, ".worktrees")
+	worktreeDir := filepath.Join(ws.Path, workspace.WorktreeDir)
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		return "", fmt.Errorf("creating worktrees directory: %w", err)
 	}

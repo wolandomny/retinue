@@ -11,9 +11,12 @@ import (
 const (
 	ConfigFile  = "retinue.yaml"
 	TasksFile   = "tasks.yaml"
-	WorktreeDir = "worktrees"
+	WorktreeDir = ".worktrees"
 	LogsDir     = "logs"
 	ReposDir    = "repos"
+
+	DefaultModel      = "claude-opus-4-6"
+	DefaultMaxWorkers = 20
 )
 
 type Workspace struct {
@@ -27,17 +30,17 @@ func Create(path string, cfg Config) (*Workspace, error) {
 		return nil, fmt.Errorf("creating workspace directory: %w", err)
 	}
 
-	for _, dir := range []string{WorktreeDir, LogsDir, ReposDir} {
+	for _, dir := range []string{LogsDir, ReposDir} {
 		if err := os.MkdirAll(filepath.Join(path, dir), 0o755); err != nil {
 			return nil, fmt.Errorf("creating %s directory: %w", dir, err)
 		}
 	}
 
 	if cfg.Model == "" {
-		cfg.Model = "claude-opus-4-6"
+		cfg.Model = DefaultModel
 	}
 	if cfg.MaxWorkers == 0 {
-		cfg.MaxWorkers = 4
+		cfg.MaxWorkers = DefaultMaxWorkers
 	}
 
 	ws := &Workspace{Path: path, Config: cfg}

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/agent"
 	"github.com/wolandomny/retinue/internal/task"
+	"github.com/wolandomny/retinue/internal/workspace"
 )
 
 func newReviewCmd() *cobra.Command {
@@ -64,7 +65,7 @@ func newReviewCmd() *cobra.Command {
 
 				// Step 2: Resolve paths.
 				repoPath := filepath.Join(ws.Path, ws.Config.Repos[t.Repo])
-				worktreePath := filepath.Join(ws.Path, ".worktrees", t.ID)
+				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
 				// Step 3: Get the diff.
 				diff, err := runGit(ctx, repoPath, "diff", "main..."+t.Branch)

@@ -1,3 +1,5 @@
+// Package task defines the task model and persistence layer for
+// retinue's task DAG.
 package task
 
 import "time"
@@ -11,6 +13,9 @@ const (
 	StatusFailed     = "failed"
 )
 
+// Task represents a unit of work in the retinue task DAG. Each task
+// has a unique ID, a status lifecycle, and optional dependencies on
+// other tasks.
 type Task struct {
 	ID          string            `yaml:"id"`
 	Description string            `yaml:"description"`
@@ -27,6 +32,7 @@ type Task struct {
 	Meta        map[string]string `yaml:"meta,omitempty"`
 }
 
+// TaskFile is the top-level structure of tasks.yaml.
 type TaskFile struct {
 	Tasks []Task `yaml:"tasks"`
 }
