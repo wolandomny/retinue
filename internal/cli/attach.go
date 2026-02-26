@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 
@@ -45,7 +46,7 @@ func newAttachCmd() *cobra.Command {
 				return fmt.Errorf("tmux not found in PATH: %w", err)
 			}
 
-			return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", sessionName}, nil)
+			return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", sessionName}, os.Environ())
 		},
 	}
 
