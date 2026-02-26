@@ -63,3 +63,12 @@ func (f *FakeManager) Exists(_ context.Context, name string) (bool, error) {
 func (f *FakeManager) Wait(_ context.Context, _ string) error {
 	return nil
 }
+
+// Command returns the command string recorded for the named session, or an
+// empty string if the session does not exist. Intended for use in tests.
+func (f *FakeManager) Command(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.sessions[name].command
+}

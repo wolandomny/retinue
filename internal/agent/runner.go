@@ -9,6 +9,7 @@ type RunOpts struct {
 	WorkDir      string
 	Model        string
 	LogFile      string
+	SessionName  string // tmux session name; if empty, TmuxRunner generates one
 }
 
 // Result holds the output of an agent run.
