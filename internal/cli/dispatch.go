@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
+	"github.com/wolandomny/retinue/internal/worktree"
 )
 
 func newDispatchCmd() *cobra.Command {
@@ -65,11 +68,9 @@ func newDispatchCmd() *cobra.Command {
 			}
 
 			// Determine working directory.
-			workDir := ws.Path
-			if target.Repo != "" {
-				if repoPath, ok := ws.Config.Repos[target.Repo]; ok {
-					workDir = repoPath
-				}
+			workDir, err := resolveWorkDir(cmd.Context(), ws, target)
+			if err != nil {
+				return fmt.Errorf("resolving work directory: %w", err)
 			}
 
 			// Build system prompt.
@@ -134,6 +135,34 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to dispatch")
 
 	return cmd
+}
+
+// resolveWorkDir determines the working directory for a task. If the task has
+// a Repo field, a git worktree is created so the task runs in isolation.
+func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) (string, error) {
+	if t.Repo == "" {
+		return ws.Path, nil
+	}
+
+	repoPath, ok := ws.Config.Repos[t.Repo]
+	if !ok {
+		return ws.Path, nil
+	}
+
+	repoAbsPath := filepath.Join(ws.Path, repoPath)
+
+	worktreeDir := filepath.Join(ws.Path, ".worktrees")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating worktrees directory: %w", err)
+	}
+
+	wtMgr := worktree.NewManager(&worktree.RealGit{}, worktreeDir)
+	wtPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "")
+	if err != nil {
+		return "", err
+	}
+
+	return wtPath, nil
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {
