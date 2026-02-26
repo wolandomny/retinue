@@ -34,6 +34,7 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	// 2. Build the claude command arguments (same as ClaudeRunner).
 	args := []string{
 		"--print",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 	}
@@ -45,7 +46,8 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	}
 	args = append(args, opts.Prompt)
 
-	claudeCmd := "claude " + shellJoin(args)
+	// Unset CLAUDECODE so claude doesn't refuse to run inside a retinue session.
+	claudeCmd := "env -u CLAUDECODE claude " + shellJoin(args)
 
 	// 3. Wrap command to tee output and signal tmux on exit.
 	var command string
