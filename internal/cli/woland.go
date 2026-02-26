@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/task"
 	"gopkg.in/yaml.v3"
 )
+
+const wolandSessionName = "retinue-woland"
 
 func newWolandCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -27,6 +32,28 @@ func newTalkCmd() *cobra.Command {
 		Use:   "talk",
 		Short: "Start an interactive planning session with Woland",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := session.NewTmuxManager()
+			ctx := context.Background()
+
+			// Check if the session already exists — if so, attach immediately.
+			exists, err := mgr.Exists(ctx, wolandSessionName)
+			if err != nil {
+				return fmt.Errorf("checking tmux session: %w", err)
+			}
+
+			tmuxPath, err := exec.LookPath("tmux")
+			if err != nil {
+				return fmt.Errorf("tmux not found in PATH: %w", err)
+			}
+
+			if exists {
+				// Session is already live — just attach.
+				return syscall.Exec(tmuxPath,
+					[]string{"tmux", "attach-session", "-t", wolandSessionName},
+					os.Environ())
+			}
+
+			// Session doesn't exist — build the prompt and create it.
 			ws, err := loadWorkspace()
 			if err != nil {
 				return err
@@ -55,37 +82,40 @@ func newTalkCmd() *cobra.Command {
 
 			systemPrompt := buildWolandPrompt(ws.Path, string(cfgData), tasksYAML)
 
-			// Find the claude binary.
-			claudePath, err := findClaude()
-			if err != nil {
-				return err
-			}
-
-			argv := []string{
-				"claude",
+			// Build the claude command string for tmux.
+			claudeArgs := []string{
 				"--dangerously-skip-permissions",
 				"--system-prompt", systemPrompt,
 			}
 			if ws.Config.Model != "" {
-				argv = append(argv, "--model", ws.Config.Model)
+				claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
 			}
 
-			// Replace this process with claude.
-			return syscall.Exec(claudePath, argv, os.Environ())
+			parts := make([]string, len(claudeArgs))
+			for i, a := range claudeArgs {
+				parts[i] = wolandShellQuote(a)
+			}
+			claudeCmd := "claude " + strings.Join(parts, " ")
+
+			// Create a new detached tmux session running claude.
+			if err := mgr.Create(ctx, wolandSessionName, ws.Path, claudeCmd); err != nil {
+				return fmt.Errorf("creating tmux session: %w", err)
+			}
+
+			// Attach to the newly created session.
+			return syscall.Exec(tmuxPath,
+				[]string{"tmux", "attach-session", "-t", wolandSessionName},
+				os.Environ())
 		},
 	}
 
 	return cmd
 }
 
-func findClaude() (string, error) {
-	for _, dir := range strings.Split(os.Getenv("PATH"), ":") {
-		path := dir + "/claude"
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf("claude not found in PATH; install Claude Code first")
+// wolandShellQuote wraps s in single quotes, escaping any single quotes within.
+// Duplicated from internal/agent to avoid needing to export it there.
+func wolandShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func buildWolandPrompt(apartmentPath, configYAML, tasksYAML string) string {
