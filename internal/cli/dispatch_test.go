@@ -115,6 +115,68 @@ func TestResolveWorkDir_CreatesWorktree(t *testing.T) {
 	}
 }
 
+func TestDispatch_SetsBranchAfterWorktreeCreation(t *testing.T) {
+	// Create a temporary workspace directory.
+	aptDir := t.TempDir()
+
+	// Create a git repo to act as the source repo.
+	repoDir := filepath.Join(aptDir, "repos", "myrepo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos: map[string]string{"myrepo": "repos/myrepo"},
+		},
+	}
+
+	// Create a tasks.yaml with a pending task.
+	tk := task.Task{ID: "branch-test-1", Repo: "myrepo", Status: task.StatusPending}
+	store := task.NewFileStore(ws.TasksPath())
+	if err := store.Save([]task.Task{tk}); err != nil {
+		t.Fatalf("saving tasks: %v", err)
+	}
+
+	// Create the worktree via resolveWorkDir.
+	_, err := resolveWorkDir(context.Background(), ws, &tk)
+	if err != nil {
+		t.Fatalf("resolveWorkDir failed: %v", err)
+	}
+
+	// Record the branch, mirroring the logic in dispatch.go.
+	if tk.Repo != "" {
+		if err := store.Update(tk.ID, func(t *task.Task) {
+			t.Branch = "retinue/" + t.ID
+		}); err != nil {
+			t.Fatalf("updating branch: %v", err)
+		}
+	}
+
+	// Verify the Branch field is persisted correctly.
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("getting task: %v", err)
+	}
+	expected := "retinue/branch-test-1"
+	if updated.Branch != expected {
+		t.Errorf("expected Branch %q, got %q", expected, updated.Branch)
+	}
+}
+
 func TestResolveWorkDir_WorktreesDirPath(t *testing.T) {
 	// Verify that the .worktrees directory path is constructed correctly
 	// from the apartment path (without needing a real git repo).

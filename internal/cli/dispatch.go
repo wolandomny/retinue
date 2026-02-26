@@ -73,7 +73,14 @@ func newDispatchCmd() *cobra.Command {
 				return fmt.Errorf("resolving work directory: %w", err)
 			}
 
-			// Build system prompt.
+			// Record the branch name so the review process can find it.
+		if target.Repo != "" {
+			_ = store.Update(target.ID, func(t *task.Task) {
+				t.Branch = "retinue/" + target.ID
+			})
+		}
+
+		// Build system prompt.
 			systemPrompt := fmt.Sprintf(
 				"You are a worker agent in the Retinue system. Your task ID is %q. "+
 					"Complete the following task thoroughly and report your results. "+
