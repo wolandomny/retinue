@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,14 +17,15 @@ func NewClaudeRunner() *ClaudeRunner {
 	return &ClaudeRunner{}
 }
 
-type claudeJSONOutput struct {
+type claudeStreamEvent struct {
+	Type   string `json:"type"`
 	Result string `json:"result"`
 }
 
 func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	args := []string{
 		"--print",
-		"--output-format", "json",
+		"--output-format", "streaming-json",
 		"--dangerously-skip-permissions",
 	}
 
@@ -77,11 +79,19 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		return Result{Output: output.String(), ExitCode: exitCode}, fmt.Errorf("claude process failed: %w", err)
 	}
 
-	// Try to extract result from JSON output.
+	// Scan newline-delimited JSON events to find the result event.
 	raw := output.String()
-	var parsed claudeJSONOutput
-	if err := json.Unmarshal([]byte(raw), &parsed); err == nil && parsed.Result != "" {
-		return Result{Output: parsed.Result, ExitCode: 0}, nil
+	var finalResult string
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		line := scanner.Text()
+		var event claudeStreamEvent
+		if err := json.Unmarshal([]byte(line), &event); err == nil && event.Type == "result" {
+			finalResult = event.Result
+		}
+	}
+	if finalResult != "" {
+		return Result{Output: finalResult, ExitCode: 0}, nil
 	}
 
 	return Result{Output: raw, ExitCode: 0}, nil
