@@ -25,6 +25,7 @@ type claudeStreamEvent struct {
 func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	args := []string{
 		"--print",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 	}
