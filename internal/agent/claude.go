@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -69,6 +70,9 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 
 	// Also tee to log file if specified.
 	if opts.LogFile != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.LogFile), 0o755); err != nil {
+			return Result{}, fmt.Errorf("creating log directory: %w", err)
+		}
 		logFile, err := os.Create(opts.LogFile)
 		if err != nil {
 			return Result{}, fmt.Errorf("creating log file: %w", err)

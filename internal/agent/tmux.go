@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wolandomny/retinue/internal/session"
@@ -64,6 +65,12 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		waitCmd += " -L " + shell.Quote(opts.Socket)
 	}
 	waitCmd += " wait-for -S " + sessionName
+
+	if opts.LogFile != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.LogFile), 0o755); err != nil {
+			return Result{}, fmt.Errorf("creating log directory: %w", err)
+		}
+	}
 
 	var command string
 	if opts.LogFile != "" {
