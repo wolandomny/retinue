@@ -136,6 +136,21 @@ func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, model, 
 		return fmt.Errorf("ff-merge: %w", err)
 	}
 
+	// Verify the merge was truly a fast-forward (HEAD should have exactly one parent).
+	parents, err := runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if err != nil {
+		return fmt.Errorf("verifying merge: %w", err)
+	}
+	// Output format: "<commit> <parent1> [<parent2> ...]"
+	// A fast-forward results in exactly one parent. Two or more means a merge commit.
+	if parts := strings.Fields(parents); len(parts) > 2 {
+		// This should never happen with --ff-only, but roll back if it does.
+		if _, resetErr := runGit(ctx, repoPath, "reset", "--hard", "HEAD~1"); resetErr != nil {
+			return fmt.Errorf("merge created merge commit and rollback failed: %w", resetErr)
+		}
+		return fmt.Errorf("merge of %s created a merge commit (expected fast-forward); rolled back", branch)
+	}
+
 	// Clean up worktree and branch (best-effort).
 	_, _ = runGit(ctx, repoPath, "worktree", "remove", worktreePath)
 	_, _ = runGit(ctx, repoPath, "branch", "-d", branch)

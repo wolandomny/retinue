@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,6 +84,52 @@ func TestMarkTaskFailed_SetsStatusAndError(t *testing.T) {
 	}
 	if tasks[0].FinishedAt == nil {
 		t.Fatal("expected FinishedAt to be set")
+	}
+}
+
+func TestRebaseAndMerge_FastForwardOnly(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initTestRepo(t)
+
+	// Create a branch with a commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Go back to main in the repo before creating worktree (branch is
+	// already checked out in the main repo, so we must detach first).
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a worktree for the branch.
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge via rebaseAndMerge.
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "", ""); err != nil {
+		t.Fatalf("rebaseAndMerge failed: %v", err)
+	}
+
+	// Verify HEAD has exactly one parent (fast-forward, not merge commit).
+	parents, err := runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Fields(parents)
+	if len(parts) > 2 {
+		t.Fatalf("expected fast-forward (1 parent), got %d parents", len(parts)-1)
 	}
 }
 
