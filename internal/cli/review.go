@@ -69,7 +69,13 @@ func newReviewCmd() *cobra.Command {
 				}
 
 				// Step 2: Resolve paths.
-				repoPath := filepath.Join(ws.Path, ws.Config.Repos[t.Repo])
+				repoDirRel, ok := ws.Config.Repos[t.Repo]
+				if !ok {
+					markTaskFailed(store, t.ID, fmt.Sprintf("repo %q not found in config", t.Repo))
+					fmt.Printf("Task %q failed: repo %q not found in config\n", t.ID, t.Repo)
+					continue
+				}
+				repoPath := filepath.Join(ws.Path, repoDirRel)
 				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
 				// Step 3: Get the diff.
