@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,7 +20,10 @@ import (
 // newDispatchCmd returns a command that dispatches the next ready task
 // (or a specific task by ID) to a Claude Code agent.
 func newDispatchCmd() *cobra.Command {
-	var taskID string
+	var (
+		taskID string
+		all    bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "dispatch",
@@ -31,6 +35,11 @@ func newDispatchCmd() *cobra.Command {
 			}
 
 			store := task.NewFileStore(ws.TasksPath())
+
+			if all {
+				return dispatchAll(cmd.Context(), ws, store, cmd.OutOrStdout())
+			}
+
 			tasks, err := store.Load()
 			if err != nil {
 				return err
@@ -64,13 +73,14 @@ func newDispatchCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to dispatch")
+	cmd.Flags().BoolVar(&all, "all", false, "dispatch all ready tasks and continue until done")
 
 	return cmd
 }
 
-// dispatchOne dispatches a single task to a Claude Code agent
-// running in a tmux session. It blocks until the agent completes,
-// then updates the task's status and result in the store.
+// dispatchOne dispatches a single task to a Claude Code agent. It updates the
+// task status, creates a worktree if needed, runs the agent, and records the
+// result.
 func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, target *task.Task, out io.Writer) error {
 	fmt.Fprintf(out, "Dispatching task %q...\n", target.ID)
 
@@ -159,6 +169,131 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	}
 
 	fmt.Fprintf(out, "Task %q completed successfully.\n", target.ID)
+	return nil
+}
+
+// dispatchAll runs a concurrent scheduler that dispatches all ready tasks,
+// waits for completions, and dispatches newly-unblocked tasks until no
+// pending work remains. Respects the workspace's MaxWorkers concurrency limit.
+func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, out io.Writer) error {
+	maxWorkers := ws.Config.MaxWorkers
+	if maxWorkers <= 0 {
+		maxWorkers = workspace.DefaultMaxWorkers
+	}
+
+	sem := make(chan struct{}, maxWorkers)
+	done := make(chan string, maxWorkers)
+	inFlight := make(map[string]bool)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for {
+		// Reload tasks from disk (authoritative state).
+		tasks, err := store.Load()
+		if err != nil {
+			return fmt.Errorf("loading tasks: %w", err)
+		}
+
+		ready := task.Ready(tasks)
+
+		// Filter out tasks already in-flight.
+		var toDispatch []task.Task
+		mu.Lock()
+		for _, t := range ready {
+			if !inFlight[t.ID] {
+				toDispatch = append(toDispatch, t)
+			}
+		}
+		mu.Unlock()
+
+		// If nothing to dispatch and nothing in-flight, we're done.
+		mu.Lock()
+		nInFlight := len(inFlight)
+		mu.Unlock()
+
+		if len(toDispatch) == 0 && nInFlight == 0 {
+			break
+		}
+
+		// Launch new tasks.
+		for i := range toDispatch {
+			t := toDispatch[i]
+
+			mu.Lock()
+			inFlight[t.ID] = true
+			mu.Unlock()
+
+			sem <- struct{}{} // acquire worker slot
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				mu.Lock()
+				fmt.Fprintf(out, "[dispatch] Starting task %q\n", t.ID)
+				mu.Unlock()
+
+				if err := dispatchOne(ctx, ws, store, &t, io.Discard); err != nil {
+					mu.Lock()
+					fmt.Fprintf(out, "[dispatch] Task %q failed: %v\n", t.ID, err)
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					fmt.Fprintf(out, "[dispatch] Task %q done\n", t.ID)
+					mu.Unlock()
+				}
+
+				mu.Lock()
+				delete(inFlight, t.ID)
+				mu.Unlock()
+
+				done <- t.ID
+			}()
+		}
+
+		// Wait for at least one task to complete before rechecking.
+		mu.Lock()
+		hasInFlight := len(inFlight) > 0
+		mu.Unlock()
+
+		if hasInFlight {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				wg.Wait()
+				return ctx.Err()
+			}
+		}
+	}
+
+	wg.Wait()
+
+	// Drain done channel.
+drainDone:
+	for {
+		select {
+		case <-done:
+		default:
+			break drainDone
+		}
+	}
+
+	// Print summary.
+	tasks, _ := store.Load()
+	var succeeded, failed, pending int
+	for _, t := range tasks {
+		switch t.Status {
+		case task.StatusDone, task.StatusMerged:
+			succeeded++
+		case task.StatusFailed:
+			failed++
+		case task.StatusPending:
+			pending++
+		}
+	}
+
+	fmt.Fprintf(out, "\n[dispatch] Complete. %d succeeded, %d failed, %d still pending.\n", succeeded, failed, pending)
 	return nil
 }
 
