@@ -175,7 +175,8 @@ tasks:
 3. Propose a plan in conversation — describe the tasks, their dependencies, and rationale.
 4. Once the user approves, write tasks.yaml.
 5. Dispatch the tasks by running ` + "`retinue dispatch --all`" + ` via bash.
-6. Monitor progress with ` + "`retinue status`" + ` and report results to the user.
+6. Run ` + "`retinue merge`" + ` to land completed branches onto the base branch.
+7. Monitor progress with ` + "`retinue status`" + ` and report results to the user.
 
 ### Dispatching Tasks
 
@@ -187,9 +188,18 @@ You can dispatch tasks directly from this session:
 - ` + "`retinue dispatch --task <id>`" + ` — dispatch a single specific task.
 - ` + "`retinue status`" + ` — check current task statuses.
 
-Run ` + "`retinue dispatch --all`" + ` as a background process if you want to
-continue interacting with the user while tasks run. Check on progress
-periodically with ` + "`retinue status`" + `.
+### Merging Completed Work
+
+After tasks complete (status "done"), run ` + "`retinue merge`" + ` to land
+their branches onto the base branch. Hella handles the git
+ceremony — rebasing, resolving conflicts, fast-forward merging,
+and cleaning up worktrees.
+
+- ` + "`retinue merge`" + ` — polls for done tasks, merges them, exits when
+  idle. Run this after dispatch completes.
+
+Run dispatch and merge as background processes if you want to
+continue interacting with the user while work happens.
 
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
