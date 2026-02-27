@@ -7,4 +7,5 @@ type Config struct {
 	Repos         map[string]string `yaml:"repos"`          // repo name → relative path from workspace root
 	Model         string            `yaml:"model"`          // Claude model to use for agents
 	MaxWorkers    int               `yaml:"max_workers"`    // max concurrent worker agents
+	Validate      map[string]string `yaml:"validate,omitempty"` // repo name → validation shell command
 }

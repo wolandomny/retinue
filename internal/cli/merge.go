@@ -82,6 +82,16 @@ func newMergeCmd() *cobra.Command {
 					continue
 				}
 
+				// Run validation before merging.
+				if cmdStr, ok := ws.Config.Validate[t.Repo]; ok && cmdStr != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q: running validation...\n", t.ID)
+				}
+				if err := runValidation(ctx, worktreePath, t.Repo, ws.Config.Validate); err != nil {
+					markTaskFailed(store, t.ID, err.Error())
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed validation: %s\n", t.ID, err)
+					continue
+				}
+
 				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, ws.Config.Model, ws.LogsPath()); err != nil {
 					markTaskFailed(store, t.ID, err.Error())
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
@@ -233,6 +243,24 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 		}
 	}
 
+	return nil
+}
+
+// runValidation runs the configured validation command for the
+// given repo in the specified directory. Returns nil if no
+// validation is configured or if the command succeeds.
+func runValidation(ctx context.Context, dir, repo string, validate map[string]string) error {
+	cmdStr, ok := validate[repo]
+	if !ok || cmdStr == "" {
+		return nil // no validation configured for this repo
+	}
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("validation failed: %s\n%s", err, string(out))
+	}
 	return nil
 }
 
