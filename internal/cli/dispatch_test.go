@@ -177,6 +177,68 @@ func TestDispatch_SetsBranchAfterWorktreeCreation(t *testing.T) {
 	}
 }
 
+func TestResolveWorkDir_ExistingWorktree(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initTestRepo(t)
+
+	// Create a temporary "apartment" directory with the repo inside it.
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoDir := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initialize a git repo at the expected location.
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Symlink the repo into the apartment structure.
+	if err := os.Symlink(repoPath, repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos: map[string]string{"myrepo": repoRelPath},
+		},
+	}
+	tk := &task.Task{ID: "existing-wt", Repo: "myrepo"}
+
+	// First call: creates the worktree.
+	dir1, err := resolveWorkDir(ctx, ws, tk)
+	if err != nil {
+		t.Fatalf("first resolveWorkDir failed: %v", err)
+	}
+
+	// Verify the worktree was created.
+	expectedDir := filepath.Join(aptDir, ".worktrees", "existing-wt")
+	if dir1 != expectedDir {
+		t.Fatalf("expected workDir %q, got %q", expectedDir, dir1)
+	}
+
+	// Second call: should reuse the existing worktree directory.
+	dir2, err := resolveWorkDir(ctx, ws, tk)
+	if err != nil {
+		t.Fatalf("second resolveWorkDir failed (should reuse existing): %v", err)
+	}
+
+	if dir2 != dir1 {
+		t.Errorf("expected reused path %q, got %q", dir1, dir2)
+	}
+}
+
 func TestResolveWorkDir_WorktreesDirPath(t *testing.T) {
 	// Verify that the .worktrees directory path is constructed correctly
 	// from the apartment path (without needing a real git repo).

@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -17,8 +18,15 @@ func NewManager(git GitExecutor, worktreeDir string) *Manager {
 }
 
 // Create creates a new worktree for the given task in the given repo.
+// If the worktree directory already exists, it is reused without
+// trying to create a new one (which would fail).
 func (m *Manager) Create(ctx context.Context, repoPath, taskID, branch string) (string, error) {
 	wtPath := filepath.Join(m.WorktreeDir, taskID)
+
+	// If the worktree directory already exists, reuse it.
+	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
+		return wtPath, nil
+	}
 
 	if branch == "" {
 		branch = "retinue/" + taskID

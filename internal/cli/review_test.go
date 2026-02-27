@@ -311,6 +311,79 @@ func TestMarkTaskMerged(t *testing.T) {
 	}
 }
 
+func TestHandleRejection_Retriable(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "task-1", Status: task.StatusReview, Meta: map[string]string{}},
+	})
+
+	retriable := handleRejection(store, "task-1", "build fails: missing import")
+
+	if !retriable {
+		t.Fatal("expected retriable=true for first rejection")
+	}
+
+	got, err := store.Get("task-1")
+	if err != nil {
+		t.Fatalf("loading task: %v", err)
+	}
+	if got.Status != task.StatusPending {
+		t.Errorf("expected status %q, got %q", task.StatusPending, got.Status)
+	}
+	if got.Meta["feedback"] != "build fails: missing import" {
+		t.Errorf("expected feedback stored, got %q", got.Meta["feedback"])
+	}
+	if got.Meta["review_attempts"] != "1" {
+		t.Errorf("expected review_attempts=1, got %q", got.Meta["review_attempts"])
+	}
+}
+
+func TestHandleRejection_MaxAttempts(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "task-1", Status: task.StatusReview, Meta: map[string]string{
+			"review_attempts": "2", // Already had 2 attempts
+		}},
+	})
+
+	retriable := handleRejection(store, "task-1", "still broken")
+
+	if retriable {
+		t.Fatal("expected retriable=false after max attempts")
+	}
+
+	got, err := store.Get("task-1")
+	if err != nil {
+		t.Fatalf("loading task: %v", err)
+	}
+	if got.Status != task.StatusFailed {
+		t.Errorf("expected status %q, got %q", task.StatusFailed, got.Status)
+	}
+	if !strings.Contains(got.Error, "3 review attempts") {
+		t.Errorf("expected error mentioning attempt count, got %q", got.Error)
+	}
+}
+
+func TestHandleRejection_IncrementAttempts(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "task-1", Status: task.StatusReview, Meta: map[string]string{
+			"review_attempts": "1",
+		}},
+	})
+
+	retriable := handleRejection(store, "task-1", "tests fail")
+
+	if !retriable {
+		t.Fatal("expected retriable=true for second attempt")
+	}
+
+	got, err := store.Get("task-1")
+	if err != nil {
+		t.Fatalf("loading task: %v", err)
+	}
+	if got.Meta["review_attempts"] != "2" {
+		t.Errorf("expected review_attempts=2, got %q", got.Meta["review_attempts"])
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
