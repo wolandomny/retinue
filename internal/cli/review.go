@@ -106,7 +106,14 @@ func newReviewCmd() *cobra.Command {
 					t.ID, t.Prompt, t.Result, diff,
 				)
 
-				runner := agent.NewClaudeRunner()
+				// Use the review model if configured, otherwise fall back to
+			// the primary model.
+			reviewModel := ws.Config.ReviewModel
+			if reviewModel == "" {
+				reviewModel = ws.Config.Model
+			}
+
+			runner := agent.NewClaudeRunner()
 				result, err := runner.Run(ctx, agent.RunOpts{
 					Prompt: prompt,
 					SystemPrompt: "You are Azazello, the code reviewer and verification gate for the " +
@@ -138,7 +145,7 @@ func newReviewCmd() *cobra.Command {
 						"Be specific in rejections. \"Code looks wrong\" is useless.\n" +
 						"\"Function X doesn't handle the nil case on line Y\" is useful.",
 					WorkDir: worktreePath,
-					Model:   ws.Config.Model,
+					Model:   reviewModel,
 					LogFile: filepath.Join(ws.LogsPath(), t.ID+"-review.log"),
 				})
 				if err != nil {
