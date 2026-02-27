@@ -78,6 +78,13 @@ func newReviewCmd() *cobra.Command {
 				repoPath := filepath.Join(ws.Path, repoDirRel)
 				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
+				// Verify worktree exists before attempting review.
+				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+					markTaskFailed(store, t.ID, fmt.Sprintf("worktree %s not found — was it cleaned up?", worktreePath))
+					fmt.Printf("Task %q failed: worktree not found\n", t.ID)
+					continue
+				}
+
 				// Step 3: Get the diff.
 				diff, err := runGit(ctx, repoPath, "diff", baseBranch+"..."+t.Branch)
 				if err != nil {
@@ -86,21 +93,47 @@ func newReviewCmd() *cobra.Command {
 
 				// Step 4: Review via Claude.
 				prompt := fmt.Sprintf(
-					"## Task: %s\n\n### Original Requirements\n\n%s\n\n"+
-						"### Task Result Summary\n\n%s\n\n"+
-						"### Diff\n\n```diff\n%s\n```\n\n"+
-						"Review this diff against the original requirements.",
+					"## Task: %s\n\n"+
+						"### Original Requirements\n\n%s\n\n"+
+						"### Worker's Result Summary\n\n%s\n\n"+
+						"### Diff (for reference — you can also explore the code directly)\n\n"+
+						"```diff\n%s\n```\n\n"+
+						"Follow your review protocol. Build, test, then review.",
 					t.ID, t.Prompt, t.Result, diff,
 				)
 
 				runner := agent.NewClaudeRunner()
 				result, err := runner.Run(ctx, agent.RunOpts{
 					Prompt: prompt,
-					SystemPrompt: "You are Azazello, the code reviewer for the Retinue system. " +
-						"Review the diff against the original task requirements. " +
-						"If the work satisfies the task, respond with exactly: APPROVED\n" +
-						"If the work has issues, respond with: REJECTED\n<description of issues>",
-					WorkDir: repoPath,
+					SystemPrompt: "You are Azazello, the code reviewer and verification gate for the " +
+						"Retinue system. You have a shell in the task's worktree. Your job " +
+						"is to verify that the work is correct, complete, and mergeable.\n\n" +
+						"## Review Protocol\n\n" +
+						"Follow these steps IN ORDER. Do not skip any step.\n\n" +
+						"### Step 1: Build verification\n" +
+						"Run `go build ./...` in the working directory.\n" +
+						"If the build fails, REJECT immediately with the build errors.\n\n" +
+						"### Step 2: Test verification\n" +
+						"Run `go test ./...` in the working directory.\n" +
+						"If any tests fail, REJECT immediately with the test output.\n\n" +
+						"### Step 3: Diff review\n" +
+						"Examine the diff provided below against the original task\n" +
+						"requirements. Check for:\n" +
+						"- Correctness: Does the code do what was asked?\n" +
+						"- Completeness: Are all requirements addressed?\n" +
+						"- Quality: No debug prints, no TODO/FIXME left behind, no\n" +
+						"  dead code, no obvious bugs.\n" +
+						"- Safety: No hardcoded secrets, no dangerous operations without\n" +
+						"  error handling.\n\n" +
+						"### Step 4: Verdict\n" +
+						"If ALL steps pass, respond with exactly:\n" +
+						"APPROVED\n\n" +
+						"If ANY step fails, respond with exactly:\n" +
+						"REJECTED\n" +
+						"<clear, actionable description of what needs to be fixed>\n\n" +
+						"Be specific in rejections. \"Code looks wrong\" is useless.\n" +
+						"\"Function X doesn't handle the nil case on line Y\" is useful.",
+					WorkDir: worktreePath,
 					Model:   ws.Config.Model,
 					LogFile: filepath.Join(ws.LogsPath(), t.ID+"-review.log"),
 				})
