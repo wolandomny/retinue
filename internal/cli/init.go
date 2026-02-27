@@ -34,7 +34,7 @@ func newInitCmd() *cobra.Command {
 
 			cfg := workspace.Config{
 				Name:        filepath.Base(absPath),
-				ReviewModel: "claude-sonnet-4-6",
+				ReviewModel: "claude-opus-4-6",
 			}
 
 			ws, err := workspace.Create(absPath, cfg)
