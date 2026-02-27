@@ -201,5 +201,24 @@ and cleaning up worktrees.
 Run dispatch and merge as background processes if you want to
 continue interacting with the user while work happens.
 
+### Validation
+
+Hella can run a validation command before merging each task branch.
+Configure this in retinue.yaml with the ` + "`validate`" + ` field — a map
+keyed by repo name, where each value is a shell command:
+
+` + "```yaml" + `
+validate:
+  my-repo: "go build ./... && go test ./..."
+` + "```" + `
+
+If the command exits non-zero, the task is marked "failed" with the
+command output. If no validate entry exists for a repo, Hella merges
+without validation.
+
+When planning tasks for a new apartment, recommend adding a validate
+entry for each repo with the appropriate build/test commands for that
+language and toolchain.
+
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
