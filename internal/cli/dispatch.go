@@ -99,7 +99,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		return fmt.Errorf("resolving work directory: %w", err)
 	}
 
-	// Record the branch name so the review process can find it.
+	// Record the branch name so the merge process can find it.
 	if target.Repo != "" {
 		if err := store.Update(target.ID, func(t *task.Task) {
 			t.Branch = "retinue/" + target.ID
@@ -134,24 +134,8 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
 	}
 
-	// If this is a rework attempt, prepend the reviewer's feedback.
-	taskPrompt := target.Prompt
-	if target.Meta != nil {
-		if feedback, ok := target.Meta["feedback"]; ok && feedback != "" {
-			attempts := target.Meta["review_attempts"]
-			taskPrompt = fmt.Sprintf(
-				"## REWORK REQUIRED (attempt %s)\n\n"+
-					"Your previous submission was rejected by the reviewer. "+
-					"Here is the reviewer's feedback:\n\n%s\n\n"+
-					"---\n\n"+
-					"## Original Task\n\n%s",
-				attempts, feedback, target.Prompt,
-			)
-		}
-	}
-
 	result, err := runner.Run(ctx, agent.RunOpts{
-		Prompt:       taskPrompt,
+		Prompt:       target.Prompt,
 		SystemPrompt: systemPrompt,
 		WorkDir:      workDir,
 		Model:        ws.Config.Model,
@@ -334,7 +318,7 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 
 	wtPath := filepath.Join(worktreeDir, t.ID)
 
-	// If the worktree already exists (rework attempt), reuse it.
+	// If the worktree already exists, reuse it.
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
 		return wtPath, nil
 	}

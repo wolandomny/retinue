@@ -8,7 +8,6 @@ const (
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
 	StatusDone       = "done"
-	StatusReview     = "review"
 	StatusMerged     = "merged"
 	StatusFailed     = "failed"
 )

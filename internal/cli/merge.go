@@ -17,16 +17,14 @@ import (
 
 const baseBranch = "main"
 
-// maxReviewAttempts is the maximum number of times a task can be
-// rejected and retried before it is permanently marked as failed.
-const maxReviewAttempts = 3
+// newMergeCmd returns a command that merges completed task branches
+// back into the base branch.
+func newMergeCmd() *cobra.Command {
+	var taskID string
 
-// newReviewCmd returns a command that runs a persistent polling loop
-// to review, merge, or reject completed task work.
-func newReviewCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "review",
-		Short: "Run a persistent polling loop to review and merge completed task work",
+		Use:   "merge",
+		Short: "Merge completed task branches into the base branch",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := loadWorkspace()
 			if err != nil {
@@ -35,142 +33,69 @@ func newReviewCmd() *cobra.Command {
 
 			ctx := cmd.Context()
 			store := task.NewFileStore(ws.TasksPath())
-			idleMessageShown := false
 
-			for {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				default:
-				}
+			tasks, err := store.Load()
+			if err != nil {
+				return fmt.Errorf("loading tasks: %w", err)
+			}
 
-				tasks, err := store.Load()
-				if err != nil {
-					return fmt.Errorf("loading tasks: %w", err)
-				}
-
-				t := findReviewable(tasks)
-				if t == nil {
-					if !idleMessageShown {
-						fmt.Println("No tasks ready for review. Waiting...")
-						idleMessageShown = true
+			var targets []task.Task
+			if taskID != "" {
+				for _, t := range tasks {
+					if t.ID == taskID {
+						targets = append(targets, t)
+						break
 					}
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(10 * time.Second):
+				}
+				if len(targets) == 0 {
+					return fmt.Errorf("task %q not found", taskID)
+				}
+				if targets[0].Status != task.StatusDone {
+					return fmt.Errorf("task %q is %s, not done", taskID, targets[0].Status)
+				}
+			} else {
+				for _, t := range tasks {
+					if t.Status == task.StatusDone && t.Branch != "" && t.Repo != "" {
+						targets = append(targets, t)
 					}
-					continue
 				}
+			}
 
-				idleMessageShown = false
+			if len(targets) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No tasks ready to merge.")
+				return nil
+			}
 
-				// Step 1: Transition to review.
-				if err := store.Update(t.ID, func(t *task.Task) {
-					t.Status = task.StatusReview
-				}); err != nil {
-					return fmt.Errorf("updating task to review: %w", err)
-				}
-
-				// Step 2: Resolve paths.
+			for _, t := range targets {
 				repoDirRel, ok := ws.Config.Repos[t.Repo]
 				if !ok {
 					markTaskFailed(store, t.ID, fmt.Sprintf("repo %q not found in config", t.Repo))
-					fmt.Printf("Task %q failed: repo %q not found in config\n", t.ID, t.Repo)
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: repo %q not found in config\n", t.ID, t.Repo)
 					continue
 				}
 				repoPath := filepath.Join(ws.Path, repoDirRel)
 				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
-				// Verify worktree exists before attempting review.
 				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-					markTaskFailed(store, t.ID, fmt.Sprintf("worktree %s not found — was it cleaned up?", worktreePath))
-					fmt.Printf("Task %q failed: worktree not found\n", t.ID)
+					markTaskFailed(store, t.ID, fmt.Sprintf("worktree %s not found", worktreePath))
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: worktree not found\n", t.ID)
 					continue
 				}
 
-				// Step 3: Get the diff.
-				diff, err := runGit(ctx, repoPath, "diff", baseBranch+"..."+t.Branch)
-				if err != nil {
-					return fmt.Errorf("getting diff for task %q: %w", t.ID, err)
+				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, ws.Config.Model, ws.LogsPath()); err != nil {
+					markTaskFailed(store, t.ID, err.Error())
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
+					continue
 				}
-
-				// Step 4: Review via Claude.
-				prompt := fmt.Sprintf(
-					"## Task: %s\n\n"+
-						"### Original Requirements\n\n%s\n\n"+
-						"### Worker's Result Summary\n\n%s\n\n"+
-						"### Diff (for reference — you can also explore the code directly)\n\n"+
-						"```diff\n%s\n```\n\n"+
-						"Follow your review protocol. Build, test, then review.",
-					t.ID, t.Prompt, t.Result, diff,
-				)
-
-					// Use the review model if configured, otherwise fall back to
-				// the primary model.
-				reviewModel := ws.Config.ReviewModel
-				if reviewModel == "" {
-					reviewModel = ws.Config.Model
-				}
-
-				runner := agent.NewClaudeRunner()
-				result, err := runner.Run(ctx, agent.RunOpts{
-					Prompt: prompt,
-					SystemPrompt: "You are Azazello, the code reviewer and verification gate for the " +
-						"Retinue system. You have a shell in the task's worktree. Your job " +
-						"is to verify that the work is correct, complete, and mergeable.\n\n" +
-						"## Review Protocol\n\n" +
-						"Follow these steps IN ORDER. Do not skip any step.\n\n" +
-						"### Step 1: Build verification\n" +
-						"Run `go build ./...` in the working directory.\n" +
-						"If the build fails, REJECT immediately with the build errors.\n\n" +
-						"### Step 2: Test verification\n" +
-						"Run `go test ./...` in the working directory.\n" +
-						"If any tests fail, REJECT immediately with the test output.\n\n" +
-						"### Step 3: Diff review\n" +
-						"Examine the diff provided below against the original task\n" +
-						"requirements. Check for:\n" +
-						"- Correctness: Does the code do what was asked?\n" +
-						"- Completeness: Are all requirements addressed?\n" +
-						"- Quality: No debug prints, no TODO/FIXME left behind, no\n" +
-						"  dead code, no obvious bugs.\n" +
-						"- Safety: No hardcoded secrets, no dangerous operations without\n" +
-						"  error handling.\n\n" +
-						"### Step 4: Verdict\n" +
-						"If ALL steps pass, respond with exactly:\n" +
-						"APPROVED\n\n" +
-						"If ANY step fails, respond with exactly:\n" +
-						"REJECTED\n" +
-						"<clear, actionable description of what needs to be fixed>\n\n" +
-						"Be specific in rejections. \"Code looks wrong\" is useless.\n" +
-						"\"Function X doesn't handle the nil case on line Y\" is useful.",
-					WorkDir: worktreePath,
-					Model:   reviewModel,
-					LogFile: filepath.Join(ws.LogsPath(), t.ID+"-review.log"),
-				})
-				if err != nil {
-					return fmt.Errorf("running review for task %q: %w", t.ID, err)
-				}
-
-				// Step 5: Parse the review result.
-				if isApproved(result.Output) {
-					if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, ws.Config.Model, ws.LogsPath()); err != nil {
-						markTaskFailed(store, t.ID, err.Error())
-						fmt.Printf("Task %q failed: %s\n", t.ID, err)
-						continue
-					}
-					markTaskMerged(store, t.ID)
-					fmt.Printf("Task %q merged successfully.\n", t.ID)
-				} else {
-					if handleRejection(store, t.ID, result.Output) {
-						fmt.Printf("Task %q rejected (will retry): %s\n", t.ID, result.Output)
-					} else {
-						fmt.Printf("Task %q permanently failed review: %s\n", t.ID, result.Output)
-					}
-				}
+				markTaskMerged(store, t.ID)
+				fmt.Fprintf(cmd.OutOrStdout(), "Task %q merged successfully.\n", t.ID)
 			}
+
+			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to merge")
 
 	return cmd
 }
@@ -240,10 +165,7 @@ func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, mode
 }
 
 // resolveConflicts spawns a Claude agent to resolve git merge/rebase
-// conflicts in the given directory. It finds all conflicted files,
-// builds a prompt with the conflict markers, and asks Claude to
-// produce resolved versions. Returns nil if all conflicts were
-// resolved and staged.
+// conflicts in the given directory.
 func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) error {
 	// 1. Get the list of conflicted files.
 	out, _ := runGit(ctx, dir, "diff", "--name-only", "--diff-filter=U")
@@ -277,7 +199,7 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 	runner := agent.NewClaudeRunner()
 	_, err := runner.Run(ctx, agent.RunOpts{
 		Prompt: prompt,
-		SystemPrompt: "You are Azazello, resolving git merge conflicts. " +
+		SystemPrompt: "You are resolving git merge conflicts. " +
 			"You have access to the working directory. Read the conflicted files, " +
 			"understand both sides of each conflict, and write resolved versions " +
 			"that preserve the intent of both changes. After resolving, stage " +
@@ -314,52 +236,6 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 	return nil
 }
 
-// handleRejection processes a review rejection. If the task has
-// remaining review attempts, it stores the feedback and resets
-// the task to pending for rework. Otherwise, it marks the task
-// as permanently failed.
-func handleRejection(store *task.FileStore, id, feedback string) (retriable bool) {
-	// Load current task to read attempt count.
-	t, err := store.Get(id)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to load task %q: %v\n", id, err)
-		markTaskFailed(store, id, feedback)
-		return false
-	}
-
-	attempts := 0
-	if t.Meta != nil {
-		if v, ok := t.Meta["review_attempts"]; ok {
-			fmt.Sscanf(v, "%d", &attempts)
-		}
-	}
-	attempts++
-
-	if attempts >= maxReviewAttempts {
-		markTaskFailed(store, id, fmt.Sprintf("failed after %d review attempts. Last feedback: %s", attempts, feedback))
-		return false
-	}
-
-	// Reset to pending with feedback for the worker.
-	if err := store.Update(id, func(t *task.Task) {
-		if t.Meta == nil {
-			t.Meta = make(map[string]string)
-		}
-		t.Meta["review_attempts"] = fmt.Sprintf("%d", attempts)
-		t.Meta["feedback"] = feedback
-		t.Status = task.StatusPending
-		t.Result = ""
-		t.Error = ""
-		t.FinishedAt = nil
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to reset task %q: %v\n", id, err)
-		markTaskFailed(store, id, feedback)
-		return false
-	}
-
-	return true
-}
-
 // markTaskFailed transitions the task to failed status with the given
 // error message, logging any store update errors to stderr.
 func markTaskFailed(store *task.FileStore, id, errMsg string) {
@@ -383,21 +259,6 @@ func markTaskMerged(store *task.FileStore, id string) {
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
 	}
-}
-
-// findReviewable returns the first task with status "done" and a non-empty Branch field.
-func findReviewable(tasks []task.Task) *task.Task {
-	for i := range tasks {
-		if tasks[i].Status == task.StatusDone && tasks[i].Branch != "" && tasks[i].Repo != "" {
-			return &tasks[i]
-		}
-	}
-	return nil
-}
-
-// isApproved checks if the review output starts with "APPROVED".
-func isApproved(output string) bool {
-	return strings.HasPrefix(strings.TrimSpace(output), "APPROVED")
 }
 
 // runGit runs a git command in the given directory and returns the combined output.

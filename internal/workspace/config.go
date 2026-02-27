@@ -6,6 +6,5 @@ type Config struct {
 	GithubAccount string            `yaml:"github_account"` // GitHub account for gh CLI auth
 	Repos         map[string]string `yaml:"repos"`          // repo name → relative path from workspace root
 	Model         string            `yaml:"model"`          // Claude model to use for agents
-	ReviewModel   string            `yaml:"review_model"`   // Claude model to use for Azazello reviews
 	MaxWorkers    int               `yaml:"max_workers"`    // max concurrent worker agents
 }

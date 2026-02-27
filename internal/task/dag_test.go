@@ -39,14 +39,6 @@ func TestReady(t *testing.T) {
 			wantIDs: []string{"b"},
 		},
 		{
-			name: "dependency in review counts as resolved",
-			tasks: []Task{
-				{ID: "a", Status: StatusReview},
-				{ID: "b", Status: StatusPending, DependsOn: []string{"a"}},
-			},
-			wantIDs: []string{"b"},
-		},
-		{
 			name: "dependency in merged counts as resolved",
 			tasks: []Task{
 				{ID: "a", Status: StatusMerged},

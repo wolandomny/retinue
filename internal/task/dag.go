@@ -3,7 +3,7 @@ package task
 import "fmt"
 
 // Ready returns tasks that are pending and have all dependencies satisfied
-// (i.e., all dependencies are in done, review, or merged status).
+// (i.e., all dependencies are in done or merged status).
 func Ready(tasks []Task) []Task {
 	statusByID := make(map[string]string, len(tasks))
 	for _, t := range tasks {
@@ -29,7 +29,7 @@ func depsResolved(deps []string, statusByID map[string]string) bool {
 			return false
 		}
 		switch status {
-		case StatusDone, StatusReview, StatusMerged:
+		case StatusDone, StatusMerged:
 			// resolved
 		default:
 			return false
