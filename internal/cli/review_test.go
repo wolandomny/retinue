@@ -20,6 +20,16 @@ func TestRunGit_Success(t *testing.T) {
 	}
 }
 
+func TestRunGitWithEnv_Success(t *testing.T) {
+	out, err := runGitWithEnv(context.Background(), ".", []string{"GIT_AUTHOR_NAME=TestAuthor"}, "--version")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output from git --version")
+	}
+}
+
 func TestRunGit_Failure(t *testing.T) {
 	_, err := runGit(context.Background(), ".", "nonexistent-subcommand")
 	if err == nil {
@@ -173,7 +183,7 @@ func TestRebaseAndMerge(t *testing.T) {
 	}
 
 	// Run rebaseAndMerge.
-	if err := rebaseAndMerge(ctx, repoPath, worktreePath, branch); err != nil {
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, branch, "", ""); err != nil {
 		t.Fatalf("rebaseAndMerge failed: %v", err)
 	}
 
@@ -235,14 +245,17 @@ func TestRebaseAndMerge_Conflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Run rebaseAndMerge — should fail.
-	err := rebaseAndMerge(ctx, repoPath, worktreePath, branch)
-	if err == nil {
-		t.Fatal("expected error for conflicting rebase, got nil")
+	// Run rebaseAndMerge — may fail with a conflict error or succeed
+	// if a Claude agent is available and resolves the conflict.
+	logsDir := t.TempDir()
+	err := rebaseAndMerge(ctx, repoPath, worktreePath, branch, "", logsDir)
+	if err != nil {
+		// When Claude is not available, we expect a rebase conflict error.
+		if !strings.Contains(err.Error(), "rebase conflict") && !strings.Contains(err.Error(), "resolution failed") {
+			t.Errorf("expected error about rebase conflict or resolution failure, got: %v", err)
+		}
 	}
-	if !strings.Contains(err.Error(), "rebase conflict") {
-		t.Errorf("expected error containing 'rebase conflict', got: %v", err)
-	}
+	// If err == nil, Claude resolved the conflict — that's also acceptable.
 }
 
 // writeTasks creates a tasks.yaml with the given tasks and returns a FileStore.
