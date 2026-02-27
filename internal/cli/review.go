@@ -106,14 +106,14 @@ func newReviewCmd() *cobra.Command {
 					t.ID, t.Prompt, t.Result, diff,
 				)
 
-				// Use the review model if configured, otherwise fall back to
-			// the primary model.
-			reviewModel := ws.Config.ReviewModel
-			if reviewModel == "" {
-				reviewModel = ws.Config.Model
-			}
+					// Use the review model if configured, otherwise fall back to
+				// the primary model.
+				reviewModel := ws.Config.ReviewModel
+				if reviewModel == "" {
+					reviewModel = ws.Config.Model
+				}
 
-			runner := agent.NewClaudeRunner()
+				runner := agent.NewClaudeRunner()
 				result, err := runner.Run(ctx, agent.RunOpts{
 					Prompt: prompt,
 					SystemPrompt: "You are Azazello, the code reviewer and verification gate for the " +
