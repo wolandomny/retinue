@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -58,100 +59,107 @@ func newDispatchCmd() *cobra.Command {
 				target = &ready[0]
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Dispatching task %q...\n", target.ID)
-
-			// Update status to in_progress.
-			now := time.Now()
-			if err := store.Update(target.ID, func(t *task.Task) {
-				t.Status = task.StatusInProgress
-				t.StartedAt = &now
-			}); err != nil {
-				return fmt.Errorf("updating task status: %w", err)
-			}
-
-			// Determine working directory.
-			workDir, err := resolveWorkDir(cmd.Context(), ws, target)
-			if err != nil {
-				return fmt.Errorf("resolving work directory: %w", err)
-			}
-
-			// Record the branch name so the review process can find it.
-			if target.Repo != "" {
-				if err := store.Update(target.ID, func(t *task.Task) {
-					t.Branch = "retinue/" + target.ID
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to record branch: %v\n", err)
-				}
-			}
-
-			// Build system prompt.
-			systemPrompt := fmt.Sprintf(
-				"You are a worker agent in the Retinue system. Your task ID is %q. "+
-					"Complete the following task thoroughly and report your results. "+
-					"Focus only on this task.\n\n"+
-					"IMPORTANT: After completing your work, you MUST commit all changes to git. "+
-					"Stage your files with `git add` and create a commit with a clear, descriptive message. "+
-					"Do not leave work uncommitted.",
-				target.ID,
-			)
-
-			socket := "retinue-" + ws.Config.Name
-			runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
-			logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
-			sessionName := "retinue-" + target.ID
-
-			// Persist session name to task metadata so attach/status can find it.
-			if err := store.Update(target.ID, func(t *task.Task) {
-				if t.Meta == nil {
-					t.Meta = make(map[string]string)
-				}
-				t.Meta["session"] = sessionName
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
-			}
-
-			result, err := runner.Run(cmd.Context(), agent.RunOpts{
-				Prompt:       target.Prompt,
-				SystemPrompt: systemPrompt,
-				WorkDir:      workDir,
-				Model:        ws.Config.Model,
-				LogFile:      logFile,
-				SessionName:  sessionName,
-				Socket:       socket,
-			})
-
-			finishedAt := time.Now()
-
-			if err != nil {
-				if updateErr := store.Update(target.ID, func(t *task.Task) {
-					t.Status = task.StatusFailed
-					t.Error = err.Error()
-					t.Result = result.Output
-					t.FinishedAt = &finishedAt
-					t.Meta["session"] = ""
-				}); updateErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
-				}
-				return fmt.Errorf("task %q failed: %w", target.ID, err)
-			}
-
-			if err := store.Update(target.ID, func(t *task.Task) {
-				t.Status = task.StatusDone
-				t.Result = result.Output
-				t.FinishedAt = &finishedAt
-				t.Meta["session"] = ""
-			}); err != nil {
-				return fmt.Errorf("updating task result: %w", err)
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Task %q completed successfully.\n", target.ID)
-			return nil
+			return dispatchOne(cmd.Context(), ws, store, target, cmd.OutOrStdout())
 		},
 	}
 
 	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to dispatch")
 
 	return cmd
+}
+
+// dispatchOne dispatches a single task to a Claude Code agent
+// running in a tmux session. It blocks until the agent completes,
+// then updates the task's status and result in the store.
+func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, target *task.Task, out io.Writer) error {
+	fmt.Fprintf(out, "Dispatching task %q...\n", target.ID)
+
+	// Update status to in_progress.
+	now := time.Now()
+	if err := store.Update(target.ID, func(t *task.Task) {
+		t.Status = task.StatusInProgress
+		t.StartedAt = &now
+	}); err != nil {
+		return fmt.Errorf("updating task status: %w", err)
+	}
+
+	// Determine working directory.
+	workDir, err := resolveWorkDir(ctx, ws, target)
+	if err != nil {
+		return fmt.Errorf("resolving work directory: %w", err)
+	}
+
+	// Record the branch name so the review process can find it.
+	if target.Repo != "" {
+		if err := store.Update(target.ID, func(t *task.Task) {
+			t.Branch = "retinue/" + target.ID
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to record branch: %v\n", err)
+		}
+	}
+
+	// Build system prompt.
+	systemPrompt := fmt.Sprintf(
+		"You are a worker agent in the Retinue system. Your task ID is %q. "+
+			"Complete the following task thoroughly and report your results. "+
+			"Focus only on this task.\n\n"+
+			"IMPORTANT: After completing your work, you MUST commit all changes to git. "+
+			"Stage your files with `git add` and create a commit with a clear, descriptive message. "+
+			"Do not leave work uncommitted.",
+		target.ID,
+	)
+
+	socket := "retinue-" + ws.Config.Name
+	runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
+	logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
+	sessionName := "retinue-" + target.ID
+
+	// Persist session name to task metadata so attach/status can find it.
+	if err := store.Update(target.ID, func(t *task.Task) {
+		if t.Meta == nil {
+			t.Meta = make(map[string]string)
+		}
+		t.Meta["session"] = sessionName
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
+	}
+
+	result, err := runner.Run(ctx, agent.RunOpts{
+		Prompt:       target.Prompt,
+		SystemPrompt: systemPrompt,
+		WorkDir:      workDir,
+		Model:        ws.Config.Model,
+		LogFile:      logFile,
+		SessionName:  sessionName,
+		Socket:       socket,
+	})
+
+	finishedAt := time.Now()
+
+	if err != nil {
+		if updateErr := store.Update(target.ID, func(t *task.Task) {
+			t.Status = task.StatusFailed
+			t.Error = err.Error()
+			t.Result = result.Output
+			t.FinishedAt = &finishedAt
+			t.Meta["session"] = ""
+		}); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
+		}
+		return fmt.Errorf("task %q failed: %w", target.ID, err)
+	}
+
+	if err := store.Update(target.ID, func(t *task.Task) {
+		t.Status = task.StatusDone
+		t.Result = result.Output
+		t.FinishedAt = &finishedAt
+		t.Meta["session"] = ""
+	}); err != nil {
+		return fmt.Errorf("updating task result: %w", err)
+	}
+
+	fmt.Fprintf(out, "Task %q completed successfully.\n", target.ID)
+	return nil
 }
 
 // resolveWorkDir determines the working directory for a task. If the task has
