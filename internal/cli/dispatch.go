@@ -134,8 +134,24 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
 	}
 
+	// If this is a rework attempt, prepend the reviewer's feedback.
+	taskPrompt := target.Prompt
+	if target.Meta != nil {
+		if feedback, ok := target.Meta["feedback"]; ok && feedback != "" {
+			attempts := target.Meta["review_attempts"]
+			taskPrompt = fmt.Sprintf(
+				"## REWORK REQUIRED (attempt %s)\n\n"+
+					"Your previous submission was rejected by the reviewer. "+
+					"Here is the reviewer's feedback:\n\n%s\n\n"+
+					"---\n\n"+
+					"## Original Task\n\n%s",
+				attempts, feedback, target.Prompt,
+			)
+		}
+	}
+
 	result, err := runner.Run(ctx, agent.RunOpts{
-		Prompt:       target.Prompt,
+		Prompt:       taskPrompt,
 		SystemPrompt: systemPrompt,
 		WorkDir:      workDir,
 		Model:        ws.Config.Model,
@@ -316,13 +332,20 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 		return "", fmt.Errorf("creating worktrees directory: %w", err)
 	}
 
+	wtPath := filepath.Join(worktreeDir, t.ID)
+
+	// If the worktree already exists (rework attempt), reuse it.
+	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
+		return wtPath, nil
+	}
+
 	wtMgr := worktree.NewManager(&worktree.RealGit{}, worktreeDir)
-	wtPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "")
+	createdPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "")
 	if err != nil {
 		return "", err
 	}
 
-	return wtPath, nil
+	return createdPath, nil
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {

@@ -17,6 +17,10 @@ import (
 
 const baseBranch = "main"
 
+// maxReviewAttempts is the maximum number of times a task can be
+// rejected and retried before it is permanently marked as failed.
+const maxReviewAttempts = 3
+
 // newReviewCmd returns a command that runs a persistent polling loop
 // to review, merge, or reject completed task work.
 func newReviewCmd() *cobra.Command {
@@ -151,8 +155,11 @@ func newReviewCmd() *cobra.Command {
 					markTaskMerged(store, t.ID)
 					fmt.Printf("Task %q merged successfully.\n", t.ID)
 				} else {
-					markTaskFailed(store, t.ID, result.Output)
-					fmt.Printf("Task %q failed review: %s\n", t.ID, result.Output)
+					if handleRejection(store, t.ID, result.Output) {
+						fmt.Printf("Task %q rejected (will retry): %s\n", t.ID, result.Output)
+					} else {
+						fmt.Printf("Task %q permanently failed review: %s\n", t.ID, result.Output)
+					}
 				}
 			}
 		},
@@ -298,6 +305,52 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 	}
 
 	return nil
+}
+
+// handleRejection processes a review rejection. If the task has
+// remaining review attempts, it stores the feedback and resets
+// the task to pending for rework. Otherwise, it marks the task
+// as permanently failed.
+func handleRejection(store *task.FileStore, id, feedback string) (retriable bool) {
+	// Load current task to read attempt count.
+	t, err := store.Get(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to load task %q: %v\n", id, err)
+		markTaskFailed(store, id, feedback)
+		return false
+	}
+
+	attempts := 0
+	if t.Meta != nil {
+		if v, ok := t.Meta["review_attempts"]; ok {
+			fmt.Sscanf(v, "%d", &attempts)
+		}
+	}
+	attempts++
+
+	if attempts >= maxReviewAttempts {
+		markTaskFailed(store, id, fmt.Sprintf("failed after %d review attempts. Last feedback: %s", attempts, feedback))
+		return false
+	}
+
+	// Reset to pending with feedback for the worker.
+	if err := store.Update(id, func(t *task.Task) {
+		if t.Meta == nil {
+			t.Meta = make(map[string]string)
+		}
+		t.Meta["review_attempts"] = fmt.Sprintf("%d", attempts)
+		t.Meta["feedback"] = feedback
+		t.Status = task.StatusPending
+		t.Result = ""
+		t.Error = ""
+		t.FinishedAt = nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to reset task %q: %v\n", id, err)
+		markTaskFailed(store, id, feedback)
+		return false
+	}
+
+	return true
 }
 
 // markTaskFailed transitions the task to failed status with the given
