@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const wolandSessionName = "retinue-woland"
+const wolandWindowName = "woland"
 
 // newWolandCmd returns the parent command for interacting with
 // the Woland planning agent.
@@ -45,69 +45,64 @@ func newTalkCmd() *cobra.Command {
 			socket := "retinue-" + ws.Config.Name
 			mgr := session.NewTmuxManager(socket)
 			ctx := context.Background()
-
-			// Check if the session already exists — if so, attach immediately.
-			exists, err := mgr.Exists(ctx, wolandSessionName)
-			if err != nil {
-				return fmt.Errorf("checking tmux session: %w", err)
-			}
+			aptSession := session.ApartmentSession
 
 			tmuxPath, err := exec.LookPath("tmux")
 			if err != nil {
 				return fmt.Errorf("tmux not found in PATH: %w", err)
 			}
 
-			if exists {
-				// Session is already live — just attach.
-				return syscall.Exec(tmuxPath,
-					[]string{"tmux", "-L", socket, "attach-session", "-t", wolandSessionName},
-					os.Environ())
+			// Check if the woland window already exists.
+			hasWindow, err := mgr.HasWindow(ctx, aptSession, wolandWindowName)
+			if err != nil {
+				return fmt.Errorf("checking tmux window: %w", err)
 			}
 
-			// Session doesn't exist — build the prompt and create it.
+			if !hasWindow {
+				// Build prompt and create the window.
 
-			// Read current tasks if they exist.
-			var tasksYAML string
-			store := task.NewFileStore(ws.TasksPath())
-			tasks, err := store.Load()
-			if err != nil {
-				tasksYAML = "(no tasks.yaml found yet)"
-			} else {
-				tf := task.TaskFile{Tasks: tasks}
-				data, err := yaml.Marshal(&tf)
+				// Read current tasks if they exist.
+				var tasksYAML string
+				store := task.NewFileStore(ws.TasksPath())
+				tasks, err := store.Load()
 				if err != nil {
-					return fmt.Errorf("marshaling tasks: %w", err)
+					tasksYAML = "(no tasks.yaml found yet)"
+				} else {
+					tf := task.TaskFile{Tasks: tasks}
+					data, err := yaml.Marshal(&tf)
+					if err != nil {
+						return fmt.Errorf("marshaling tasks: %w", err)
+					}
+					tasksYAML = string(data)
 				}
-				tasksYAML = string(data)
+
+				// Marshal config for the prompt.
+				cfgData, err := yaml.Marshal(&ws.Config)
+				if err != nil {
+					return fmt.Errorf("marshaling config: %w", err)
+				}
+
+				systemPrompt := buildWolandPrompt(ws.Path, string(cfgData), tasksYAML)
+
+				// Build the claude command string for tmux.
+				claudeArgs := []string{
+					"--dangerously-skip-permissions",
+					"--system-prompt", systemPrompt,
+				}
+				if ws.Config.Model != "" {
+					claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
+				}
+
+				claudeCmd := "claude " + shell.Join(claudeArgs)
+
+				if err := mgr.CreateWindow(ctx, aptSession, wolandWindowName, ws.Path, claudeCmd); err != nil {
+					return fmt.Errorf("creating tmux window: %w", err)
+				}
 			}
 
-			// Marshal config for the prompt.
-			cfgData, err := yaml.Marshal(&ws.Config)
-			if err != nil {
-				return fmt.Errorf("marshaling config: %w", err)
-			}
-
-			systemPrompt := buildWolandPrompt(ws.Path, string(cfgData), tasksYAML)
-
-			// Build the claude command string for tmux.
-			claudeArgs := []string{
-				"--dangerously-skip-permissions",
-				"--system-prompt", systemPrompt,
-			}
-			if ws.Config.Model != "" {
-				claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
-			}
-
-			claudeCmd := "claude " + shell.Join(claudeArgs)
-
-			// Create a new detached tmux session running claude.
-			if err := mgr.Create(ctx, wolandSessionName, ws.Path, claudeCmd); err != nil {
-				return fmt.Errorf("creating tmux session: %w", err)
-			}
-
-			// Attach to the newly created session.
+			// Attach to the apartment session, targeting the woland window.
 			return syscall.Exec(tmuxPath,
-				[]string{"tmux", "-L", socket, "attach-session", "-t", wolandSessionName},
+				[]string{"tmux", "-L", socket, "attach-session", "-t", aptSession + ":" + wolandWindowName},
 				os.Environ())
 		},
 	}
