@@ -6,7 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
+
+// ApartmentSession is the tmux session name used within each
+// apartment's dedicated tmux server.
+const ApartmentSession = "retinue"
 
 // Manager manages lifecycle of named terminal sessions.
 type Manager interface {
@@ -23,6 +28,22 @@ type Manager interface {
 	// `tmux wait-for -S <name>` before it exits. Without this signal Wait will
 	// block indefinitely.
 	Wait(ctx context.Context, name string) error
+
+	// CreateWindow creates a named window running a command inside an
+	// existing session. If the session does not exist yet, it is created
+	// with this window as its first window.
+	CreateWindow(ctx context.Context, session, window, workDir, command string) error
+
+	// KillWindow closes a specific window within a session. Returns nil
+	// if the window or session does not exist.
+	KillWindow(ctx context.Context, session, window string) error
+
+	// HasWindow reports whether a named window exists in the given session.
+	HasWindow(ctx context.Context, session, window string) (bool, error)
+
+	// ListWindows returns the names of all windows in the given session.
+	// Returns an empty slice if the session does not exist.
+	ListWindows(ctx context.Context, session string) ([]string, error)
 }
 
 // TmuxManager is a Manager that delegates to the tmux(1) binary.
@@ -98,4 +119,93 @@ func (m *TmuxManager) Wait(ctx context.Context, name string) error {
 		return fmt.Errorf("tmux wait-for %q: %w: %s", name, err, out)
 	}
 	return nil
+}
+
+// CreateWindow creates a named window running a command inside an existing
+// session. If the session does not exist yet, it is created with this window
+// as its first window.
+func (m *TmuxManager) CreateWindow(ctx context.Context, sess, window, workDir, command string) error {
+	// Write command to temp script (same pattern as Create).
+	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("retinue-%s-%s.sh", sess, window))
+	script := fmt.Sprintf("#!/bin/sh\nrm -f '%s'\n%s\n", scriptPath, command)
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		return fmt.Errorf("writing tmux script: %w", err)
+	}
+
+	// Check if session exists.
+	exists, err := m.Exists(ctx, sess)
+	if err != nil {
+		os.Remove(scriptPath)
+		return err
+	}
+
+	if !exists {
+		// Create session with this as the first window.
+		cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs(
+			"new-session", "-d", "-s", sess, "-n", window, "-c", workDir, scriptPath,
+		)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			os.Remove(scriptPath)
+			return fmt.Errorf("tmux new-session %q: %w: %s", sess, err, out)
+		}
+		return nil
+	}
+
+	// Session exists — add a new window.
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs(
+		"new-window", "-t", sess, "-n", window, "-c", workDir, scriptPath,
+	)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("tmux new-window %q/%q: %w: %s", sess, window, err, out)
+	}
+	return nil
+}
+
+// KillWindow closes a specific window within a session. Returns nil if the
+// window or session does not exist.
+func (m *TmuxManager) KillWindow(ctx context.Context, sess, window string) error {
+	target := sess + ":" + window
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs("kill-window", "-t", target)...)
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil // window/session not found — not an error
+		}
+		return fmt.Errorf("tmux kill-window %q: %w", target, err)
+	}
+	return nil
+}
+
+// HasWindow reports whether a named window exists in the given session.
+func (m *TmuxManager) HasWindow(ctx context.Context, sess, window string) (bool, error) {
+	windows, err := m.ListWindows(ctx, sess)
+	if err != nil {
+		return false, err
+	}
+	for _, w := range windows {
+		if w == window {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListWindows returns the names of all windows in the given session. Returns
+// an empty slice if the session does not exist.
+func (m *TmuxManager) ListWindows(ctx context.Context, sess string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs(
+		"list-windows", "-t", sess, "-F", "#{window_name}",
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil // session not found
+		}
+		return nil, fmt.Errorf("tmux list-windows %q: %w: %s", sess, err, out)
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return nil, nil
+	}
+	return strings.Split(raw, "\n"), nil
 }

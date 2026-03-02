@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/wolandomny/retinue/internal/session"
@@ -114,6 +115,136 @@ func TestTmuxArgs_WithSocket(t *testing.T) {
 		if got[i] != expected[i] {
 			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
 		}
+	}
+}
+
+func TestFakeManager_CreateWindowAndHasWindow(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	if err := mgr.CreateWindow(ctx, "sess1", "win1", "/tmp", "echo hi"); err != nil {
+		t.Fatalf("CreateWindow: unexpected error: %v", err)
+	}
+
+	has, err := mgr.HasWindow(ctx, "sess1", "win1")
+	if err != nil {
+		t.Fatalf("HasWindow: unexpected error: %v", err)
+	}
+	if !has {
+		t.Fatal("HasWindow: expected true, got false")
+	}
+
+	has, err = mgr.HasWindow(ctx, "sess1", "win-nope")
+	if err != nil {
+		t.Fatalf("HasWindow non-existent: unexpected error: %v", err)
+	}
+	if has {
+		t.Fatal("HasWindow non-existent: expected false, got true")
+	}
+}
+
+func TestFakeManager_CreateWindowDuplicate(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	if err := mgr.CreateWindow(ctx, "sess1", "win1", "/tmp", "echo hi"); err != nil {
+		t.Fatalf("first CreateWindow: unexpected error: %v", err)
+	}
+	if err := mgr.CreateWindow(ctx, "sess1", "win1", "/tmp", "echo hi"); err == nil {
+		t.Fatal("second CreateWindow with same name: expected error, got nil")
+	}
+}
+
+func TestFakeManager_CreateWindowCreatesSession(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	// First CreateWindow on a new session should succeed (session implicitly created).
+	if err := mgr.CreateWindow(ctx, "newsess", "win1", "/tmp", "echo hello"); err != nil {
+		t.Fatalf("CreateWindow on new session: unexpected error: %v", err)
+	}
+
+	has, err := mgr.HasWindow(ctx, "newsess", "win1")
+	if err != nil {
+		t.Fatalf("HasWindow: unexpected error: %v", err)
+	}
+	if !has {
+		t.Fatal("HasWindow: expected true after CreateWindow on new session")
+	}
+}
+
+func TestFakeManager_KillWindow(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	if err := mgr.CreateWindow(ctx, "sess1", "win1", "/tmp", "echo hi"); err != nil {
+		t.Fatalf("CreateWindow: unexpected error: %v", err)
+	}
+
+	if err := mgr.KillWindow(ctx, "sess1", "win1"); err != nil {
+		t.Fatalf("KillWindow: unexpected error: %v", err)
+	}
+
+	has, err := mgr.HasWindow(ctx, "sess1", "win1")
+	if err != nil {
+		t.Fatalf("HasWindow after KillWindow: unexpected error: %v", err)
+	}
+	if has {
+		t.Fatal("HasWindow after KillWindow: expected false, got true")
+	}
+}
+
+func TestFakeManager_KillWindowNonExistent(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	// Killing a window that does not exist must not return an error.
+	if err := mgr.KillWindow(ctx, "nosess", "nowin"); err != nil {
+		t.Fatalf("KillWindow non-existent: expected nil, got: %v", err)
+	}
+}
+
+func TestFakeManager_ListWindows(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	if err := mgr.CreateWindow(ctx, "sess1", "alpha", "/tmp", "cmd1"); err != nil {
+		t.Fatalf("CreateWindow alpha: unexpected error: %v", err)
+	}
+	if err := mgr.CreateWindow(ctx, "sess1", "beta", "/tmp", "cmd2"); err != nil {
+		t.Fatalf("CreateWindow beta: unexpected error: %v", err)
+	}
+	if err := mgr.CreateWindow(ctx, "sess1", "gamma", "/tmp", "cmd3"); err != nil {
+		t.Fatalf("CreateWindow gamma: unexpected error: %v", err)
+	}
+
+	names, err := mgr.ListWindows(ctx, "sess1")
+	if err != nil {
+		t.Fatalf("ListWindows: unexpected error: %v", err)
+	}
+
+	sort.Strings(names)
+	expected := []string{"alpha", "beta", "gamma"}
+	if len(names) != len(expected) {
+		t.Fatalf("ListWindows: expected %v, got %v", expected, names)
+	}
+	for i := range expected {
+		if names[i] != expected[i] {
+			t.Fatalf("ListWindows[%d]: expected %q, got %q", i, expected[i], names[i])
+		}
+	}
+}
+
+func TestFakeManager_ListWindowsNoSession(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	names, err := mgr.ListWindows(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("ListWindows: unexpected error: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("ListWindows: expected empty slice, got %v", names)
 	}
 }
 

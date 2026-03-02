@@ -12,17 +12,24 @@ type sessionRecord struct {
 	command string
 }
 
+type windowRecord struct {
+	workDir string
+	command string
+}
+
 // FakeManager is an in-memory Manager implementation intended for use in tests.
 // All operations are safe for concurrent use.
 type FakeManager struct {
 	mu       sync.Mutex
 	sessions map[string]sessionRecord
+	windows  map[string]map[string]windowRecord // session -> window -> record
 }
 
 // NewFakeManager returns a FakeManager with no active sessions.
 func NewFakeManager() *FakeManager {
 	return &FakeManager{
 		sessions: make(map[string]sessionRecord),
+		windows:  make(map[string]map[string]windowRecord),
 	}
 }
 
@@ -71,4 +78,72 @@ func (f *FakeManager) Command(name string) string {
 	defer f.mu.Unlock()
 
 	return f.sessions[name].command
+}
+
+// CreateWindow records a new window in the given session. Returns an error if
+// a window with that name already exists in the session.
+func (f *FakeManager) CreateWindow(_ context.Context, sess, window, workDir, command string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.windows[sess] == nil {
+		f.windows[sess] = make(map[string]windowRecord)
+	}
+	if _, exists := f.windows[sess][window]; exists {
+		return fmt.Errorf("window %q already exists in session %q", window, sess)
+	}
+	f.windows[sess][window] = windowRecord{workDir: workDir, command: command}
+	return nil
+}
+
+// KillWindow removes the named window. Returns nil whether or not the window
+// exists, matching the real TmuxManager behaviour.
+func (f *FakeManager) KillWindow(_ context.Context, sess, window string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.windows[sess] != nil {
+		delete(f.windows[sess], window)
+	}
+	return nil
+}
+
+// HasWindow reports whether the named window exists in the given session.
+func (f *FakeManager) HasWindow(_ context.Context, sess, window string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.windows[sess] == nil {
+		return false, nil
+	}
+	_, ok := f.windows[sess][window]
+	return ok, nil
+}
+
+// ListWindows returns the names of all windows in the given session. Returns
+// nil if the session has no windows.
+func (f *FakeManager) ListWindows(_ context.Context, sess string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.windows[sess] == nil {
+		return nil, nil
+	}
+	var names []string
+	for name := range f.windows[sess] {
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// WindowCommand returns the command string recorded for the named window, or
+// an empty string if not found. Intended for tests.
+func (f *FakeManager) WindowCommand(sess, window string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.windows[sess] == nil {
+		return ""
+	}
+	return f.windows[sess][window].command
 }
