@@ -13,14 +13,15 @@ import (
 // Compile-time check: TmuxRunner implements Runner.
 var _ Runner = &TmuxRunner{}
 
-func TestTmuxRunnerUsesProvidedSessionName(t *testing.T) {
+func TestTmuxRunnerUsesProvidedWindowName(t *testing.T) {
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "hello",
-		SessionName: "my-session",
-		WorkDir:     "/tmp",
+		Prompt:           "hello",
+		WindowName:       "my-window",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -28,22 +29,23 @@ func TestTmuxRunnerUsesProvidedSessionName(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	exists, err := fake.Exists(context.Background(), "my-session")
+	exists, err := fake.HasWindow(context.Background(), "retinue", "my-window")
 	if err != nil {
-		t.Fatalf("Exists error: %v", err)
+		t.Fatalf("HasWindow error: %v", err)
 	}
 	if !exists {
-		t.Error("expected session 'my-session' to exist after Run")
+		t.Error("expected window 'my-window' to exist in session 'retinue' after Run")
 	}
 }
 
-func TestTmuxRunnerGeneratesSessionNameWhenEmpty(t *testing.T) {
+func TestTmuxRunnerGeneratesWindowNameWhenEmpty(t *testing.T) {
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:  "hello",
-		WorkDir: "/tmp",
+		Prompt:           "hello",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -51,12 +53,9 @@ func TestTmuxRunnerGeneratesSessionNameWhenEmpty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// We don't know the exact name, but exactly one session should exist
-	// and it should have the "retinue-" prefix.
-	// Inspect via a second FakeManager — we can't enumerate sessions directly,
-	// so instead verify the session was created by trying to create a duplicate
-	// with the same name (we'd need to capture the name some other way).
-	// Instead, just verify Run doesn't error and returns an empty-ish result.
+	// We don't know the exact name, but exactly one window should exist
+	// in the "retinue" session with the "retinue-" prefix.
+	// Just verify Run doesn't error and returns an empty-ish result.
 }
 
 func TestTmuxRunnerCommandContainsPromptAndArgs(t *testing.T) {
@@ -64,11 +63,12 @@ func TestTmuxRunnerCommandContainsPromptAndArgs(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "do something",
-		Model:       "claude-3-5-sonnet",
-		SystemPrompt: "you are helpful",
-		SessionName: "cmd-test",
-		WorkDir:     "/tmp",
+		Prompt:           "do something",
+		Model:            "claude-3-5-sonnet",
+		SystemPrompt:     "you are helpful",
+		WindowName:       "cmd-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -76,9 +76,9 @@ func TestTmuxRunnerCommandContainsPromptAndArgs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cmd := fake.Command("cmd-test")
+	cmd := fake.WindowCommand("retinue", "cmd-test")
 	if cmd == "" {
-		t.Fatal("expected a command to be recorded for session 'cmd-test'")
+		t.Fatal("expected a command to be recorded for window 'cmd-test'")
 	}
 
 	checks := []string{
@@ -116,10 +116,11 @@ func TestTmuxRunnerParsesResultFromLogFile(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "test",
-		SessionName: "log-test",
-		WorkDir:     "/tmp",
-		LogFile:     logFile,
+		Prompt:           "test",
+		WindowName:       "log-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		LogFile:          logFile,
 	}
 
 	result, err := runner.Run(context.Background(), opts)
@@ -137,9 +138,10 @@ func TestTmuxRunnerNoLogFileReturnsEmptyOutput(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "test",
-		SessionName: "no-log",
-		WorkDir:     "/tmp",
+		Prompt:           "test",
+		WindowName:       "no-log",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
 	}
 
 	result, err := runner.Run(context.Background(), opts)
@@ -160,10 +162,11 @@ func TestTmuxRunnerWaitForIncludesSocketFlag(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "test",
-		SessionName: "sock-test",
-		WorkDir:     "/tmp",
-		Socket:      "mysocket",
+		Prompt:           "test",
+		WindowName:       "sock-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		Socket:           "mysocket",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -171,7 +174,7 @@ func TestTmuxRunnerWaitForIncludesSocketFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cmd := fake.Command("sock-test")
+	cmd := fake.WindowCommand("retinue", "sock-test")
 	if !strings.Contains(cmd, "tmux -L 'mysocket' wait-for -S sock-test") {
 		t.Errorf("expected command to contain 'tmux -L 'mysocket' wait-for -S sock-test', got: %s", cmd)
 	}
@@ -182,9 +185,10 @@ func TestTmuxRunnerWaitForOmitsSocketFlagWhenEmpty(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "test",
-		SessionName: "nosock-test",
-		WorkDir:     "/tmp",
+		Prompt:           "test",
+		WindowName:       "nosock-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -192,7 +196,7 @@ func TestTmuxRunnerWaitForOmitsSocketFlagWhenEmpty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cmd := fake.Command("nosock-test")
+	cmd := fake.WindowCommand("retinue", "nosock-test")
 	if !strings.Contains(cmd, "tmux wait-for -S nosock-test") {
 		t.Errorf("expected command to contain 'tmux wait-for -S nosock-test', got: %s", cmd)
 	}
@@ -206,10 +210,11 @@ func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 	runner := &TmuxRunner{Sessions: fake}
 
 	opts := RunOpts{
-		Prompt:      "test",
-		SessionName: "tee-test",
-		WorkDir:     "/tmp",
-		LogFile:     "/var/log/run.log",
+		Prompt:           "test",
+		WindowName:       "tee-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		LogFile:          "/var/log/run.log",
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -217,7 +222,7 @@ func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cmd := fake.Command("tee-test")
+	cmd := fake.WindowCommand("retinue", "tee-test")
 	if !strings.Contains(cmd, "tee") {
 		t.Errorf("expected command to contain 'tee', got: %s", cmd)
 	}

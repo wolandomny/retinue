@@ -122,26 +122,28 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	socket := "retinue-" + ws.Config.Name
 	runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
 	logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
-	sessionName := "retinue-" + target.ID
+	windowName := target.ID // window name = task ID
+	aptSession := session.ApartmentSession
 
-	// Persist session name to task metadata so attach/status can find it.
+	// Persist window name to task metadata so attach/status can find it.
 	if err := store.Update(target.ID, func(t *task.Task) {
 		if t.Meta == nil {
 			t.Meta = make(map[string]string)
 		}
-		t.Meta["session"] = sessionName
+		t.Meta["session"] = windowName // keep key as "session" for compat
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
 	}
 
 	result, err := runner.Run(ctx, agent.RunOpts{
-		Prompt:       target.Prompt,
-		SystemPrompt: systemPrompt,
-		WorkDir:      workDir,
-		Model:        ws.Config.Model,
-		LogFile:      logFile,
-		SessionName:  sessionName,
-		Socket:       socket,
+		Prompt:           target.Prompt,
+		SystemPrompt:     systemPrompt,
+		WorkDir:          workDir,
+		Model:            ws.Config.Model,
+		LogFile:          logFile,
+		WindowName:       windowName,
+		ApartmentSession: aptSession,
+		Socket:           socket,
 	})
 
 	finishedAt := time.Now()
@@ -156,6 +158,8 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		}); updateErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
 		}
+		// NOTE: Intentionally NOT killing the window on failure.
+		// The user can attach to inspect what went wrong.
 		return fmt.Errorf("task %q failed: %w", target.ID, err)
 	}
 
@@ -166,6 +170,12 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		t.Meta["session"] = ""
 	}); err != nil {
 		return fmt.Errorf("updating task result: %w", err)
+	}
+
+	// Auto-close the window on success.
+	mgr := session.NewTmuxManager(socket)
+	if killErr := mgr.KillWindow(ctx, aptSession, windowName); killErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to close window %q: %v\n", windowName, killErr)
 	}
 
 	fmt.Fprintf(out, "Task %q completed successfully.\n", target.ID)

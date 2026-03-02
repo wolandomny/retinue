@@ -4,13 +4,14 @@ import "context"
 
 // RunOpts configures a single agent run.
 type RunOpts struct {
-	Prompt       string
-	SystemPrompt string
-	WorkDir      string
-	Model        string
-	LogFile      string
-	SessionName  string // tmux session name; if empty, TmuxRunner generates one
-	Socket       string // tmux socket name (-L flag); if empty, uses default socket
+	Prompt           string
+	SystemPrompt     string
+	WorkDir          string
+	Model            string
+	LogFile          string
+	WindowName       string // tmux window name within the apartment session
+	ApartmentSession string // tmux session name (e.g. "retinue")
+	Socket           string // tmux socket name (-L flag); if empty, uses default socket
 }
 
 // Result holds the output of an agent run.

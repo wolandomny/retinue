@@ -19,11 +19,11 @@ import (
 const claudeCodeEnvVar = "CLAUDECODE"
 
 // defaultSuffixLen is the length of the random suffix appended to
-// auto-generated session names.
+// auto-generated window names.
 const defaultSuffixLen = 6
 
-// TmuxRunner runs the claude CLI inside a named tmux session.
-// Users can attach to the session with: tmux attach-session -t <name>
+// TmuxRunner runs the claude CLI inside a named tmux window.
+// Users can attach to the session with: tmux attach-session -t <session>
 type TmuxRunner struct {
 	Sessions session.Manager
 }
@@ -33,15 +33,22 @@ func NewTmuxRunner(mgr session.Manager) *TmuxRunner {
 	return &TmuxRunner{Sessions: mgr}
 }
 
-// Run implements Runner by spawning claude inside a detached tmux session.
+// Run implements Runner by spawning claude inside a window of the apartment's
+// tmux session.
 func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
-	// 1. Determine session name.
-	sessionName := opts.SessionName
-	if sessionName == "" {
-		sessionName = "retinue-" + randomSuffix(defaultSuffixLen)
+	// 1. Determine window name.
+	windowName := opts.WindowName
+	if windowName == "" {
+		windowName = "retinue-" + randomSuffix(defaultSuffixLen)
 	}
 
-	// 2. Build the claude command arguments (same as ClaudeRunner).
+	// Determine session name.
+	aptSession := opts.ApartmentSession
+	if aptSession == "" {
+		aptSession = "retinue"
+	}
+
+	// 2. Build the claude command arguments (unchanged).
 	args := []string{
 		"--print",
 		"--verbose",
@@ -60,11 +67,12 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	claudeCmd := "env -u " + claudeCodeEnvVar + " claude " + shell.Join(args)
 
 	// 3. Wrap command to tee output and signal tmux on exit.
+	// Use windowName as the wait-for channel (unique per task).
 	waitCmd := "tmux"
 	if opts.Socket != "" {
 		waitCmd += " -L " + shell.Quote(opts.Socket)
 	}
-	waitCmd += " wait-for -S " + sessionName
+	waitCmd += " wait-for -S " + windowName
 
 	if opts.LogFile != "" {
 		if err := os.MkdirAll(filepath.Dir(opts.LogFile), 0o755); err != nil {
@@ -80,18 +88,18 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		command = fmt.Sprintf("%s; %s", claudeCmd, waitCmd)
 	}
 
-	// 4. Create the tmux session.
+	// 4. Create a window in the apartment session.
 	workDir := opts.WorkDir
 	if workDir == "" {
 		workDir = "."
 	}
-	if err := r.Sessions.Create(ctx, sessionName, workDir, command); err != nil {
-		return Result{}, fmt.Errorf("creating tmux session %q: %w", sessionName, err)
+	if err := r.Sessions.CreateWindow(ctx, aptSession, windowName, workDir, command); err != nil {
+		return Result{}, fmt.Errorf("creating tmux window %q: %w", windowName, err)
 	}
 
-	// 5. Wait for the session to signal completion.
-	if err := r.Sessions.Wait(ctx, sessionName); err != nil {
-		return Result{}, fmt.Errorf("waiting for tmux session %q: %w", sessionName, err)
+	// 5. Wait for the window's command to signal completion.
+	if err := r.Sessions.Wait(ctx, windowName); err != nil {
+		return Result{}, fmt.Errorf("waiting for tmux window %q: %w", windowName, err)
 	}
 
 	// 6. Parse log file for result event.
