@@ -7,16 +7,14 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/task"
 )
 
-// newAttachCmd returns a command that attaches the user's terminal to
-// a running task's tmux session.
 func newAttachCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attach <task-id>",
-		Short: "Attach to the tmux session of a running task",
+		Short: "Attach to the tmux window of a running task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			taskID := args[0]
@@ -27,7 +25,6 @@ func newAttachCmd() *cobra.Command {
 			}
 
 			store := task.NewFileStore(ws.TasksPath())
-
 			t, err := store.Get(taskID)
 			if err != nil {
 				return fmt.Errorf("task %q not found", taskID)
@@ -38,19 +35,24 @@ func newAttachCmd() *cobra.Command {
 				return nil
 			}
 
-			sessionName := t.Meta["session"]
-			if sessionName == "" {
-				return fmt.Errorf("task %q has no active session", taskID)
+			windowName := t.Meta["session"]
+			if windowName == "" {
+				return fmt.Errorf("task %q has no active window", taskID)
 			}
 
 			socket := "retinue-" + ws.Config.Name
+			aptSession := session.ApartmentSession
 
 			tmuxBin, err := exec.LookPath("tmux")
 			if err != nil {
 				return fmt.Errorf("tmux not found in PATH: %w", err)
 			}
 
-			return syscall.Exec(tmuxBin, []string{"tmux", "-L", socket, "attach-session", "-t", sessionName}, os.Environ())
+			// Attach to the apartment session, targeting the task's window.
+			target := aptSession + ":" + windowName
+			return syscall.Exec(tmuxBin,
+				[]string{"tmux", "-L", socket, "attach-session", "-t", target},
+				os.Environ())
 		},
 	}
 

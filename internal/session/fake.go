@@ -87,27 +87,17 @@ func (f *FakeManager) CreateWindow(_ context.Context, session, window, workDir, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.windows[session] == nil {
-		f.windows[session] = make(map[string]windowRecord)
+	wins, ok := f.windows[session]
+	if !ok {
+		wins = make(map[string]windowRecord)
+		f.windows[session] = wins
 		f.sessions[session] = sessionRecord{workDir: workDir}
 	}
-	if _, exists := f.windows[session][window]; exists {
+	if _, exists := wins[window]; exists {
 		return fmt.Errorf("window %q already exists in session %q", window, session)
 	}
-	f.windows[session][window] = windowRecord{workDir: workDir, command: command}
+	wins[window] = windowRecord{workDir: workDir, command: command}
 	return nil
-}
-
-// HasWindow reports whether a window with the given name exists in the session.
-func (f *FakeManager) HasWindow(_ context.Context, session, window string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.windows[session] == nil {
-		return false, nil
-	}
-	_, ok := f.windows[session][window]
-	return ok, nil
 }
 
 // KillWindow removes the named window. Returns nil whether or not the window
@@ -116,23 +106,37 @@ func (f *FakeManager) KillWindow(_ context.Context, session, window string) erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.windows[session] != nil {
-		delete(f.windows[session], window)
+	if wins, ok := f.windows[session]; ok {
+		delete(wins, window)
 	}
 	return nil
 }
 
-// ListWindows returns the names of all windows in the given session. Returns
-// nil if the session has no windows.
+// HasWindow reports whether a window with the given name exists in the session.
+func (f *FakeManager) HasWindow(_ context.Context, session, window string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	wins, ok := f.windows[session]
+	if !ok {
+		return false, nil
+	}
+	_, exists := wins[window]
+	return exists, nil
+}
+
+// ListWindows returns the names of all windows in the given session.
+// Returns nil if the session has no windows.
 func (f *FakeManager) ListWindows(_ context.Context, session string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.windows[session] == nil {
+	wins, ok := f.windows[session]
+	if !ok {
 		return nil, nil
 	}
-	var names []string
-	for name := range f.windows[session] {
+	names := make([]string, 0, len(wins))
+	for name := range wins {
 		names = append(names, name)
 	}
 	return names, nil
@@ -144,8 +148,9 @@ func (f *FakeManager) WindowCommand(session, window string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.windows[session] == nil {
+	wins, ok := f.windows[session]
+	if !ok {
 		return ""
 	}
-	return f.windows[session][window].command
+	return wins[window].command
 }
