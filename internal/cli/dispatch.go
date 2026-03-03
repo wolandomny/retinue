@@ -203,6 +203,47 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
+	// Start watchdog for stall/loop detection.
+	wdState := newWatchdogState()
+	wdCfg := defaultWatchdogConfig()
+	wdCtx, wdCancel := context.WithCancel(ctx)
+	defer wdCancel()
+
+	go func() {
+		ticker := time.NewTicker(wdCfg.PollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				alerts := wdState.check(wdCfg)
+				for _, alert := range alerts {
+					mu.Lock()
+					fmt.Fprintf(out, "[watchdog] Killing task %q: %s\n", alert.taskID, alert.reason)
+					mu.Unlock()
+
+					// Record the failure reason.
+					_ = store.Update(alert.taskID, func(t *task.Task) {
+						now := time.Now()
+						t.Status = task.StatusFailed
+						t.Error = "watchdog: " + alert.reason
+						t.FinishedAt = &now
+						t.Meta["session"] = ""
+					})
+
+					// Kill the tmux window.
+					socket := "retinue-" + ws.Config.Name
+					killMgr := session.NewTmuxManager(socket)
+					_ = killMgr.KillWindow(wdCtx, session.ApartmentSession, alert.taskID)
+
+					// Remove from watchdog tracking.
+					wdState.removeTask(alert.taskID)
+				}
+			case <-wdCtx.Done():
+				return
+			}
+		}
+	}()
+
 	for {
 		// Reload tasks from disk (authoritative state).
 		tasks, err := store.Load()
@@ -246,6 +287,9 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				defer wg.Done()
 				defer func() { <-sem }()
 
+				logFile := filepath.Join(ws.LogsPath(), t.ID+".log")
+				wdState.addTask(t.ID, logFile)
+
 				mu.Lock()
 				fmt.Fprintf(out, "[dispatch] Starting task %q\n", t.ID)
 				mu.Unlock()
@@ -259,6 +303,8 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 					fmt.Fprintf(out, "[dispatch] Task %q done\n", t.ID)
 					mu.Unlock()
 				}
+
+				wdState.removeTask(t.ID)
 
 				mu.Lock()
 				delete(inFlight, t.ID)
