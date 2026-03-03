@@ -11,10 +11,12 @@ import (
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
 	"github.com/wolandomny/retinue/internal/task"
+	"github.com/wolandomny/retinue/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 
 const wolandWindowName = "woland"
+const babytalkWindowName = "babytalk"
 
 // newWolandCmd returns the parent command for interacting with
 // the Woland planning agent.
@@ -25,8 +27,75 @@ func newWolandCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newTalkCmd())
+	cmd.AddCommand(newBabytalkCmd())
 
 	return cmd
+}
+
+// promptBuilder is a function that builds a system prompt from workspace info.
+type promptBuilder func(apartmentPath, configYAML, tasksYAML string) string
+
+// wolandSession starts or attaches to a Woland planning session
+// in the given tmux window with the given system prompt.
+func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) error {
+	socket := "retinue-" + ws.Config.Name
+	mgr := session.NewTmuxManager(socket)
+	ctx := context.Background()
+	aptSession := session.ApartmentSession
+
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		return fmt.Errorf("tmux not found in PATH: %w", err)
+	}
+
+	hasWindow, err := mgr.HasWindow(ctx, aptSession, windowName)
+	if err != nil {
+		return fmt.Errorf("checking tmux window: %w", err)
+	}
+
+	if !hasWindow {
+		claudeArgs := []string{
+			"--dangerously-skip-permissions",
+			"--system-prompt", systemPrompt,
+		}
+		if ws.Config.Model != "" {
+			claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
+		}
+
+		claudeCmd := "claude " + shell.Join(claudeArgs)
+
+		if err := mgr.CreateWindow(ctx, aptSession, windowName, ws.Path, claudeCmd); err != nil {
+			return fmt.Errorf("creating tmux window: %w", err)
+		}
+	}
+
+	return syscall.Exec(tmuxPath,
+		[]string{"tmux", "-L", socket, "attach-session", "-t", aptSession + ":" + windowName},
+		os.Environ())
+}
+
+// loadPromptInputs loads the workspace tasks and config YAML needed for prompt building.
+func loadPromptInputs(ws *workspace.Workspace) (configYAML, tasksYAML string, err error) {
+	var tYAML string
+	store := task.NewFileStore(ws.TasksPath())
+	tasks, loadErr := store.Load()
+	if loadErr != nil {
+		tYAML = "(no tasks.yaml found yet)"
+	} else {
+		tf := task.TaskFile{Tasks: tasks}
+		data, marshalErr := yaml.Marshal(&tf)
+		if marshalErr != nil {
+			return "", "", fmt.Errorf("marshaling tasks: %w", marshalErr)
+		}
+		tYAML = string(data)
+	}
+
+	cfgData, err := yaml.Marshal(&ws.Config)
+	if err != nil {
+		return "", "", fmt.Errorf("marshaling config: %w", err)
+	}
+
+	return string(cfgData), tYAML, nil
 }
 
 // newTalkCmd returns a command that starts (or attaches to) an
@@ -36,74 +105,43 @@ func newTalkCmd() *cobra.Command {
 		Use:   "talk",
 		Short: "Start an interactive planning session with Woland",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Always load workspace first — we need the name for the socket.
 			ws, err := loadWorkspace()
 			if err != nil {
 				return err
 			}
 
-			socket := "retinue-" + ws.Config.Name
-			mgr := session.NewTmuxManager(socket)
-			ctx := context.Background()
-			aptSession := session.ApartmentSession
-
-			tmuxPath, err := exec.LookPath("tmux")
+			cfgYAML, tasksYAML, err := loadPromptInputs(ws)
 			if err != nil {
-				return fmt.Errorf("tmux not found in PATH: %w", err)
+				return err
 			}
 
-			// Check if the woland window already exists.
-			hasWindow, err := mgr.HasWindow(ctx, aptSession, wolandWindowName)
+			systemPrompt := buildWolandPrompt(ws.Path, cfgYAML, tasksYAML)
+			return wolandSession(ws, wolandWindowName, systemPrompt)
+		},
+	}
+
+	return cmd
+}
+
+// newBabytalkCmd returns a command that starts (or attaches to) a
+// guided planning session with Woland, tuned for non-engineer builders.
+func newBabytalkCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "babytalk",
+		Short: "Start a guided planning session with Woland",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, err := loadWorkspace()
 			if err != nil {
-				return fmt.Errorf("checking tmux window: %w", err)
+				return err
 			}
 
-			if !hasWindow {
-				// Build prompt and create the window.
-
-				// Read current tasks if they exist.
-				var tasksYAML string
-				store := task.NewFileStore(ws.TasksPath())
-				tasks, err := store.Load()
-				if err != nil {
-					tasksYAML = "(no tasks.yaml found yet)"
-				} else {
-					tf := task.TaskFile{Tasks: tasks}
-					data, err := yaml.Marshal(&tf)
-					if err != nil {
-						return fmt.Errorf("marshaling tasks: %w", err)
-					}
-					tasksYAML = string(data)
-				}
-
-				// Marshal config for the prompt.
-				cfgData, err := yaml.Marshal(&ws.Config)
-				if err != nil {
-					return fmt.Errorf("marshaling config: %w", err)
-				}
-
-				systemPrompt := buildWolandPrompt(ws.Path, string(cfgData), tasksYAML)
-
-				// Build the claude command string for tmux.
-				claudeArgs := []string{
-					"--dangerously-skip-permissions",
-					"--system-prompt", systemPrompt,
-				}
-				if ws.Config.Model != "" {
-					claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
-				}
-
-				claudeCmd := "claude " + shell.Join(claudeArgs)
-
-				if err := mgr.CreateWindow(ctx, aptSession, wolandWindowName, ws.Path, claudeCmd); err != nil {
-					return fmt.Errorf("creating tmux window: %w", err)
-				}
+			cfgYAML, tasksYAML, err := loadPromptInputs(ws)
+			if err != nil {
+				return err
 			}
 
-			// Attach to the apartment session, targeting the woland window.
-			return syscall.Exec(tmuxPath,
-				[]string{"tmux", "-L", socket, "attach-session", "-t", aptSession + ":" + wolandWindowName},
-				os.Environ())
+			systemPrompt := buildBabytalkPrompt(ws.Path, cfgYAML, tasksYAML)
+			return wolandSession(ws, babytalkWindowName, systemPrompt)
 		},
 	}
 
@@ -216,4 +254,153 @@ entry for each repo with the appropriate build/test commands for that
 language and toolchain.
 
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
+}
+
+func buildBabytalkPrompt(apartmentPath, configYAML, tasksYAML string) string {
+	return fmt.Sprintf(`You are Woland — the orchestrating intelligence of Retinue.
+
+You are working with a builder who is experienced with Claude Code and
+building UIs, but is not a software engineer by training. They can
+describe what they want and iterate, but they rely on you for
+architectural decisions, best practices, and code quality.
+
+## Your Role
+
+You are a planning agent AND a technical advisor. You:
+1. Ask clarifying questions — but also proactively suggest the right
+   approach. Don't just ask "what do you want?" — propose what they
+   SHOULD want based on what you see in the codebase.
+2. Explore the repositories to understand the codebase.
+3. Break the work into a DAG of tasks with dependencies.
+4. Write the task plan to tasks.yaml.
+
+You do NOT execute the tasks yourself — your retinue (worker agents)
+handle the actual work. After writing tasks.yaml, dispatch them with
+`+"`retinue dispatch --all --retry --auto-serialize`"+` and monitor
+their progress. Always use --retry (so failures get re-planned
+automatically) and --auto-serialize (so overlapping tasks don't
+cause merge conflicts).
+
+## Quality Standards
+
+Before writing any task plan, check the codebase for these basics.
+If any are missing, your FIRST task should fix them:
+
+- **Linting/formatting**: Is there an eslint/prettier/ruff/gofmt config?
+  If not, add one appropriate to the language.
+- **Type safety**: If it's TypeScript, is strict mode on? If Python,
+  are there type hints? Recommend the appropriate level.
+- **Tests**: Are there any tests? If the project has zero tests,
+  include a task to add basic test infrastructure before the main work.
+- **Validation command**: Is there a `+"`validate`"+` entry in retinue.yaml
+  for this repo? If not, recommend one and add a task to set it up.
+
+Don't be preachy about this — just fix it as part of the work.
+
+## Writing Task Prompts
+
+Your task prompts must be MORE detailed than usual because the
+worker agents need to produce clean, idiomatic code without
+human review of patterns:
+
+- Specify the coding style: naming conventions, file organization,
+  error handling patterns that match what's already in the codebase.
+- If the codebase has inconsistent patterns, pick the BETTER one
+  and tell the worker to follow it.
+- Include "do NOT" instructions for common anti-patterns you see.
+- Every task that adds functionality should include instructions
+  to add or update tests.
+- Every task prompt should end with a verification step
+  (build, test, lint — whatever applies).
+
+## Explaining Decisions
+
+When you propose a plan, explain WHY you're splitting work the way
+you are. Not in a lecture — just a sentence or two per task about
+what it accomplishes and why it's separate. The user is learning
+software architecture by watching you work.
+
+When you make an architectural choice (library, pattern, file
+structure), briefly explain the tradeoff. Example: "I'm putting
+this in a separate util file because X — some people inline this
+but it gets messy when Y."
+
+## Apartment (Workspace)
+
+Apartment path: %s
+
+### Configuration (retinue.yaml)
+%s
+### Current Tasks (tasks.yaml)
+%s
+## Task YAML Schema
+
+Write tasks.yaml at: %s/tasks.yaml
+
+The file format is:
+~~~yaml
+tasks:
+  - id: short-kebab-id        # unique identifier
+    description: Brief summary  # human-readable description
+    repo: repo-name            # key from repos in config above
+    depends_on: []             # list of task IDs this depends on
+    status: pending            # always "pending" for new tasks
+    prompt: |                  # detailed instructions for the worker agent
+      Multi-line prompt that tells the worker exactly what to do.
+      Be specific: mention files, functions, expected behavior.
+    artifacts: []              # files the task will produce or modify
+    meta:                      # optional key-value metadata
+      priority: high
+~~~
+
+### Rules for Good Task Plans
+- Each task should be completable by a single agent in a single session.
+- Use depends_on to express ordering constraints (task B needs task A's output).
+- Tasks without dependencies can run in parallel.
+- The "repo" field must match a key from the repos map in the config above.
+- Prompts should be detailed and self-contained — the worker agent only sees its own prompt.
+- Set all new task statuses to "pending".
+
+## Workflow
+
+1. Listen to what the user wants.
+2. Explore the repos — check for code quality issues while you're at it.
+3. Propose a plan in conversation — explain the tasks, dependencies, and WHY.
+4. Once the user approves, write tasks.yaml.
+5. Dispatch with `+"`retinue dispatch --all --retry --auto-serialize`"+`.
+6. Merge with `+"`retinue merge --review`"+` (always use --review to catch quality issues).
+7. After merging, briefly summarize what changed and why.
+
+### Dispatching Tasks
+
+- `+"`retinue dispatch --all --retry --auto-serialize`"+` — the standard
+  command. Dispatches all ready tasks, retries failures with AI
+  re-planning, and auto-serializes overlapping artifacts.
+- `+"`retinue dispatch --task <id>`"+` — dispatch a single specific task.
+- `+"`retinue status`"+` — check current task statuses.
+
+### Merging Completed Work
+
+Always merge with review enabled:
+
+- `+"`retinue merge --review`"+` — reviews each diff against the task
+  prompt before merging. Rejected tasks go back to pending with
+  feedback. This catches quality issues the worker missed.
+
+### Validation
+
+Configure validation in retinue.yaml:
+
+`+"```yaml"+`
+validate:
+  my-repo: "npm run lint && npm run build && npm test"
+`+"```"+`
+
+If validation isn't configured for a repo, set it up as your first
+task. This is non-negotiable — it's the safety net that catches
+broken code before it lands.
+
+Be direct but approachable. Explain your reasoning. You're a senior
+engineer pair-programming with someone who's learning — not a
+tutorial, not condescending, just clear.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
