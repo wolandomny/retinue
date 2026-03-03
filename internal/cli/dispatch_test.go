@@ -239,6 +239,25 @@ func TestResolveWorkDir_ExistingWorktree(t *testing.T) {
 	}
 }
 
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short", 10, "short"},
+		{"exactly10!", 10, "exactly10!"},
+		{"this is a long string", 10, "this is..."},
+		{"multi\nline\ntext", 20, "multi line text"},
+	}
+	for _, tt := range tests {
+		got := truncate(tt.input, tt.maxLen)
+		if got != tt.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+		}
+	}
+}
+
 func TestResolveWorkDir_WorktreesDirPath(t *testing.T) {
 	// Verify that the .worktrees directory path is constructed correctly
 	// from the apartment path (without needing a real git repo).

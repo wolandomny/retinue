@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,8 +22,10 @@ import (
 // (or a specific task by ID) to a Claude Code agent.
 func newDispatchCmd() *cobra.Command {
 	var (
-		taskID string
-		all    bool
+		taskID     string
+		all        bool
+		retry      bool
+		maxRetries int
 	)
 
 	cmd := &cobra.Command{
@@ -37,6 +40,9 @@ func newDispatchCmd() *cobra.Command {
 			store := task.NewFileStore(ws.TasksPath())
 
 			if all {
+				if retry {
+					return dispatchAllWithRetry(cmd.Context(), ws, store, cmd.OutOrStdout(), maxRetries)
+				}
 				return dispatchAll(cmd.Context(), ws, store, cmd.OutOrStdout())
 			}
 
@@ -74,6 +80,8 @@ func newDispatchCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to dispatch")
 	cmd.Flags().BoolVar(&all, "all", false, "dispatch all ready tasks and continue until done")
+	cmd.Flags().BoolVar(&retry, "retry", false, "automatically retry failed tasks with error context")
+	cmd.Flags().IntVar(&maxRetries, "max-retries", 2, "maximum retry rounds (used with --retry)")
 
 	return cmd
 }
@@ -426,6 +434,75 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 	}
 
 	return createdPath, nil
+}
+
+// dispatchAllWithRetry runs dispatchAll, then checks for failed tasks.
+// For each failed task, it resets status to pending with the error
+// context appended to the prompt, then runs another dispatch round.
+// Repeats up to maxRetries times.
+func dispatchAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, out io.Writer, maxRetries int) error {
+	for round := 0; round <= maxRetries; round++ {
+		if round > 0 {
+			fmt.Fprintf(out, "\n[dispatch] === Retry round %d/%d ===\n", round, maxRetries)
+		}
+
+		if err := dispatchAll(ctx, ws, store, out); err != nil {
+			return err
+		}
+
+		if round == maxRetries {
+			break // don't retry after the last round
+		}
+
+		// Check for failed tasks that can be retried.
+		tasks, err := store.Load()
+		if err != nil {
+			return fmt.Errorf("loading tasks for retry: %w", err)
+		}
+
+		var retried int
+		for _, t := range tasks {
+			if t.Status != task.StatusFailed {
+				continue
+			}
+
+			// Reset to pending with error context appended.
+			errContext := t.Error
+			if err := store.Update(t.ID, func(tk *task.Task) {
+				tk.Status = task.StatusPending
+				tk.Error = ""
+				tk.Result = ""
+				tk.StartedAt = nil
+				tk.FinishedAt = nil
+				tk.Prompt = tk.Prompt + "\n\n## Previous Attempt Failed\n" +
+					"The previous attempt at this task failed with the following error:\n```\n" +
+					errContext + "\n```\n" +
+					"Please try a different approach or fix the issue described above."
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to reset task %q for retry: %v\n", t.ID, err)
+				continue
+			}
+
+			retried++
+			fmt.Fprintf(out, "[dispatch] Reset task %q for retry (error: %s)\n", t.ID, truncate(errContext, 80))
+		}
+
+		if retried == 0 {
+			fmt.Fprintf(out, "[dispatch] No failed tasks to retry.\n")
+			break
+		}
+	}
+
+	return nil
+}
+
+// truncate shortens a string to maxLen, adding "..." if truncated.
+func truncate(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {
