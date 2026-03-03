@@ -38,6 +38,7 @@ The `retinue.yaml` file configures your apartment:
 
 ```yaml
 name: my-project
+github_account: myorg
 repos:
   api: repos/api
   web: repos/web
@@ -47,6 +48,8 @@ validate:
   api: "go build ./... && go test ./..."
   web: "npm run build && npm test"
 ```
+
+The `github_account` field tells retinue which GitHub account to use for git operations.
 
 The `validate` field is optional but recommended. It maps repo names to shell commands that Hella runs before merging each task branch. If validation fails, the task is marked "failed" and the branch is not merged.
 
@@ -73,13 +76,15 @@ Woland persists across disconnects. If you detach from tmux or close your termin
 
 ### The tmux server
 
-All retinue sessions (Woland and workers) run on a shared tmux server with the socket name `retinue-<apartment-name>`. Woland's session is always named `retinue-woland`. Worker sessions are named `retinue-<task-id>`.
+All retinue processes run on a shared tmux server with the socket name `retinue-<apartment-name>`. Within that server, there is one tmux session named `retinue`. Woland runs in a window named `woland`, and each worker runs in a window named after its task ID.
 
 You can see everything that's running:
 
 ```bash
-tmux -L retinue-my-project list-sessions
+tmux -L retinue-my-project list-windows -t retinue
 ```
+
+Worker windows auto-close when the task completes successfully. Failed task windows stay open so you can attach and inspect.
 
 ### Dispatching tasks
 
@@ -97,12 +102,37 @@ You can also dispatch a single task:
 retinue dispatch --task my-task-id
 ```
 
+Flags:
+
+- `--all` — dispatch all ready tasks and keep going until everything is done or failed.
+- `--task <id>` — dispatch a single task by ID.
+- `--retry` — automatically retry failed tasks. This doesn't just append the error and re-run — it spawns a Claude call to analyze the failure and rewrite the task prompt.
+- `--max-retries N` — maximum retry rounds (default: 2). Used with `--retry`.
+- `--auto-serialize` — detect artifact overlaps between independent tasks and add dependency edges to serialize them, preventing merge conflicts.
+
+### Watchdog
+
+Dispatch includes a watchdog that monitors worker log files while tasks are running. It polls every 30 seconds and catches two failure modes:
+
+- **Stalled workers** — no output for 10 minutes. The watchdog kills the window and fails the task, capturing the last 3 lines of output as diagnostic context.
+- **Looping workers** — 20+ identical consecutive log lines. Same treatment: kill and fail with the repeated line included.
+
+This prevents stuck agents from burning tokens indefinitely.
+
 ### Watching workers
 
-To watch a worker in real time, attach to its tmux session:
+List active windows:
 
 ```bash
-tmux -L retinue-my-project attach-session -t retinue-my-task-id
+retinue ls
+```
+
+This shows all tmux windows in the apartment with their status (planning, in_progress, active).
+
+Attach to a running worker:
+
+```bash
+retinue attach my-task-id
 ```
 
 Detach with `Ctrl-b d` to leave it running.
@@ -121,11 +151,16 @@ For each done task, Hella:
 
 1. Runs the validation command (if configured in `validate`).
 2. Rebases the task branch onto the base branch (main).
-3. If there are rebase conflicts, spawns a Claude agent to resolve them.
+3. If there are rebase conflicts, spawns a Claude agent to resolve them (up to 5 attempts per task).
 4. Fast-forward merges into the base branch (guaranteed — no merge commits).
 5. Cleans up the worktree and branch.
 
 If validation or merge fails, the task is marked "failed" with the error output.
+
+Flags:
+
+- `--task <id>` — merge a single task by ID.
+- `--review` — run a lightweight AI review of the diff against the original task prompt before merging. If the review rejects the work, the task goes back to pending with the feedback appended to its prompt.
 
 ### Task lifecycle
 
@@ -136,6 +171,8 @@ Check status at any time:
 ```bash
 retinue status
 ```
+
+The status table shows each task's ID, status, repo, token usage, and description. The TOKENS column displays input/output token counts and cost per task. Aggregate totals are printed at the bottom.
 
 ## Options
 
