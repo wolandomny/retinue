@@ -155,6 +155,81 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestOverlapWarnings_NoOverlap(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"file1.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"file2.go"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 0 {
+		t.Errorf("expected no overlaps, got %d", len(overlaps))
+	}
+}
+
+func TestOverlapWarnings_IndependentOverlap(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"shared.go"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 1 {
+		t.Fatalf("expected 1 overlap, got %d", len(overlaps))
+	}
+	if overlaps[0].File != "shared.go" {
+		t.Errorf("expected file 'shared.go', got %q", overlaps[0].File)
+	}
+}
+
+func TestOverlapWarnings_DependentOverlapOK(t *testing.T) {
+	// Tasks with a dependency edge can share artifacts — that's expected.
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"shared.go"}, DependsOn: []string{"a"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 0 {
+		t.Errorf("expected no overlaps for dependent tasks, got %d", len(overlaps))
+	}
+}
+
+func TestOverlapWarnings_TransitiveDependencyOK(t *testing.T) {
+	// a -> b -> c: a and c are transitively related, overlap is fine.
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, DependsOn: []string{"a"}},
+		{ID: "c", Status: StatusPending, Artifacts: []string{"shared.go"}, DependsOn: []string{"b"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 0 {
+		t.Errorf("expected no overlaps for transitively related tasks, got %d", len(overlaps))
+	}
+}
+
+func TestOverlapWarnings_SkipsMergedTasks(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusMerged, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"shared.go"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 0 {
+		t.Errorf("expected no overlaps when one task is merged, got %d", len(overlaps))
+	}
+}
+
+func TestOverlapWarnings_MultipleFiles(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"x.go", "y.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"y.go", "z.go"}},
+	}
+	overlaps := OverlapWarnings(tasks)
+	if len(overlaps) != 1 {
+		t.Fatalf("expected 1 overlap (y.go only), got %d", len(overlaps))
+	}
+	if overlaps[0].File != "y.go" {
+		t.Errorf("expected file 'y.go', got %q", overlaps[0].File)
+	}
+}
+
 func TestTopologicalOrder(t *testing.T) {
 	tasks := []Task{
 		{ID: "c", DependsOn: []string{"a", "b"}},

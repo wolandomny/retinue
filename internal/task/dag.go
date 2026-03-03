@@ -95,6 +95,90 @@ func Validate(tasks []Task) error {
 	return nil
 }
 
+// ArtifactOverlap describes two independent tasks that share an artifact.
+type ArtifactOverlap struct {
+	File  string
+	TaskA string
+	TaskB string
+}
+
+// OverlapWarnings checks for artifact overlaps between tasks that
+// have no dependency relationship (neither directly nor transitively).
+// Returns a list of overlaps. An empty list means no concerns.
+func OverlapWarnings(tasks []Task) []ArtifactOverlap {
+	// Build a set of all transitive dependencies for each task.
+	depGraph := make(map[string][]string, len(tasks))
+	for _, t := range tasks {
+		depGraph[t.ID] = t.DependsOn
+	}
+
+	// Compute transitive closure: for each task, the full set of
+	// ancestors and descendants.
+	related := make(map[string]map[string]bool) // taskID -> set of related taskIDs
+	for _, t := range tasks {
+		if related[t.ID] == nil {
+			related[t.ID] = make(map[string]bool)
+		}
+		// Walk up: all transitive dependencies.
+		var walkUp func(id string)
+		walkUp = func(id string) {
+			for _, dep := range depGraph[id] {
+				if !related[t.ID][dep] {
+					related[t.ID][dep] = true
+					if related[dep] == nil {
+						related[dep] = make(map[string]bool)
+					}
+					related[dep][t.ID] = true
+					walkUp(dep)
+				}
+			}
+		}
+		walkUp(t.ID)
+	}
+
+	// Build artifact -> list of task IDs.
+	artifactOwners := make(map[string][]string)
+	for _, t := range tasks {
+		// Skip completed tasks — they've already merged.
+		if t.Status == StatusMerged || t.Status == StatusDone {
+			continue
+		}
+		for _, art := range t.Artifacts {
+			artifactOwners[art] = append(artifactOwners[art], t.ID)
+		}
+	}
+
+	// Find overlaps between unrelated tasks.
+	var overlaps []ArtifactOverlap
+	seen := make(map[string]bool) // "taskA:taskB:file" dedup key
+
+	for file, owners := range artifactOwners {
+		for i := 0; i < len(owners); i++ {
+			for j := i + 1; j < len(owners); j++ {
+				a, b := owners[i], owners[j]
+				// Check if a and b are related (have a dependency path).
+				if related[a] != nil && related[a][b] {
+					continue // related tasks — overlap is expected
+				}
+
+				key := a + ":" + b + ":" + file
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				overlaps = append(overlaps, ArtifactOverlap{
+					File:  file,
+					TaskA: a,
+					TaskB: b,
+				})
+			}
+		}
+	}
+
+	return overlaps
+}
+
 // TopologicalOrder returns tasks sorted so that dependencies come before dependents.
 func TopologicalOrder(tasks []Task) ([]Task, error) {
 	if err := Validate(tasks); err != nil {

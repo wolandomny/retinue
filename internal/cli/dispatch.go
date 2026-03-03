@@ -197,6 +197,20 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		maxWorkers = workspace.DefaultMaxWorkers
 	}
 
+	// Check for artifact overlaps between independent tasks.
+	tasks, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("loading tasks: %w", err)
+	}
+	if overlaps := task.OverlapWarnings(tasks); len(overlaps) > 0 {
+		fmt.Fprintln(out, "[dispatch] ⚠ Artifact overlap warnings:")
+		for _, o := range overlaps {
+			fmt.Fprintf(out, "  %s is modified by independent tasks %q and %q\n", o.File, o.TaskA, o.TaskB)
+		}
+		fmt.Fprintln(out, "  Consider adding dependencies to serialize these tasks.")
+		fmt.Fprintln(out, "")
+	}
+
 	sem := make(chan struct{}, maxWorkers)
 	done := make(chan string, maxWorkers)
 	inFlight := make(map[string]bool)
@@ -342,7 +356,7 @@ drainDone:
 	}
 
 	// Print summary.
-	tasks, _ := store.Load()
+	tasks, _ = store.Load()
 	var succeeded, failed, pending int
 	for _, t := range tasks {
 		switch t.Status {
