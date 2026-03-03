@@ -269,7 +269,10 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 						t.Status = task.StatusFailed
 						t.Error = "watchdog: " + alert.reason
 						t.FinishedAt = &now
-						t.Meta["session"] = ""
+						if t.Meta == nil {
+						t.Meta = make(map[string]string)
+					}
+					t.Meta["session"] = ""
 					})
 
 					// Kill the tmux window.
