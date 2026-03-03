@@ -20,7 +20,10 @@ const baseBranch = "main"
 // newMergeCmd returns a command that merges completed task branches
 // back into the base branch.
 func newMergeCmd() *cobra.Command {
-	var taskID string
+	var (
+		taskID string
+		review bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "merge",
@@ -92,6 +95,31 @@ func newMergeCmd() *cobra.Command {
 					continue
 				}
 
+				// Optional pre-merge review.
+				if review {
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q: reviewing diff...\n", t.ID)
+					verdict, reviewErr := reviewDiff(ctx, worktreePath, t, ws.Config.Model, ws.LogsPath())
+					if reviewErr != nil {
+						fmt.Fprintf(cmd.OutOrStdout(), "Task %q: review failed: %s (proceeding anyway)\n", t.ID, reviewErr)
+					} else if !verdict.Approved {
+						// Move task back to pending with feedback.
+						if err := store.Update(t.ID, func(tk *task.Task) {
+							tk.Status = task.StatusPending
+							tk.Error = ""
+							tk.Prompt = tk.Prompt + "\n\n## Review Feedback (from previous attempt)\n" + verdict.Feedback
+							if verdict.Usage.InputTokens > 0 {
+								tk.Meta["review_tokens"] = fmt.Sprintf("%d/%d", verdict.Usage.InputTokens, verdict.Usage.OutputTokens)
+							}
+						}); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: failed to update rejected task: %v\n", err)
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "Task %q rejected by review:\n%s\n\n", t.ID, verdict.Feedback)
+						continue
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "Task %q: review approved\n", t.ID)
+					}
+				}
+
 				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, ws.Config.Model, ws.LogsPath()); err != nil {
 					markTaskFailed(store, t.ID, err.Error())
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
@@ -106,6 +134,7 @@ func newMergeCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID to merge")
+	cmd.Flags().BoolVar(&review, "review", false, "run AI review of diff before merging")
 
 	return cmd
 }
