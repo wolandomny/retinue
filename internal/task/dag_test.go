@@ -230,6 +230,79 @@ func TestOverlapWarnings_MultipleFiles(t *testing.T) {
 	}
 }
 
+func TestAutoSerializeOverlaps_NoOverlap(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"x.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"y.go"}},
+	}
+	result, added := AutoSerializeOverlaps(tasks)
+	if added != 0 {
+		t.Errorf("expected 0 edges added, got %d", added)
+	}
+	if len(result[0].DependsOn) != 0 || len(result[1].DependsOn) != 0 {
+		t.Error("expected no dependencies added")
+	}
+}
+
+func TestAutoSerializeOverlaps_AddsEdge(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"shared.go"}},
+	}
+	result, added := AutoSerializeOverlaps(tasks)
+	if added != 1 {
+		t.Errorf("expected 1 edge added, got %d", added)
+	}
+	// Later task (b) should depend on earlier task (a).
+	if len(result[1].DependsOn) != 1 || result[1].DependsOn[0] != "a" {
+		t.Errorf("expected b to depend on a, got %v", result[1].DependsOn)
+	}
+	// Earlier task (a) should have no new dependencies.
+	if len(result[0].DependsOn) != 0 {
+		t.Errorf("expected a to have no deps, got %v", result[0].DependsOn)
+	}
+}
+
+func TestAutoSerializeOverlaps_NoDuplicateEdges(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"x.go", "y.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"x.go", "y.go"}},
+	}
+	result, added := AutoSerializeOverlaps(tasks)
+	if added != 1 {
+		t.Errorf("expected 1 edge (not 2), got %d", added)
+	}
+	if len(result[1].DependsOn) != 1 {
+		t.Errorf("expected exactly 1 dep on b, got %v", result[1].DependsOn)
+	}
+}
+
+func TestAutoSerializeOverlaps_ExistingDeps(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, DependsOn: []string{"a"}, Artifacts: []string{"shared.go"}},
+	}
+	_, added := AutoSerializeOverlaps(tasks)
+	if added != 0 {
+		t.Errorf("expected 0 edges (already dependent), got %d", added)
+	}
+}
+
+func TestAutoSerializeOverlaps_ThreeWayOverlap(t *testing.T) {
+	tasks := []Task{
+		{ID: "a", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "b", Status: StatusPending, Artifacts: []string{"shared.go"}},
+		{ID: "c", Status: StatusPending, Artifacts: []string{"shared.go"}},
+	}
+	result, added := AutoSerializeOverlaps(tasks)
+	// Should serialize: b depends on a, c depends on b (or a).
+	// At minimum, edges should be added to prevent concurrent modification.
+	if added < 2 {
+		t.Errorf("expected at least 2 edges for 3-way overlap, got %d", added)
+	}
+	_ = result
+}
+
 func TestTopologicalOrder(t *testing.T) {
 	tasks := []Task{
 		{ID: "c", DependsOn: []string{"a", "b"}},

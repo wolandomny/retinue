@@ -22,10 +22,11 @@ import (
 // (or a specific task by ID) to a Claude Code agent.
 func newDispatchCmd() *cobra.Command {
 	var (
-		taskID     string
-		all        bool
-		retry      bool
-		maxRetries int
+		taskID        string
+		all           bool
+		retry         bool
+		maxRetries    int
+		autoSerialize bool
 	)
 
 	cmd := &cobra.Command{
@@ -38,6 +39,20 @@ func newDispatchCmd() *cobra.Command {
 			}
 
 			store := task.NewFileStore(ws.TasksPath())
+
+			if all && autoSerialize {
+				tasks, err := store.Load()
+				if err != nil {
+					return fmt.Errorf("loading tasks for auto-serialize: %w", err)
+				}
+				tasks, edgesAdded := task.AutoSerializeOverlaps(tasks)
+				if edgesAdded > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "[dispatch] Auto-serialized %d overlapping task pair(s)\n", edgesAdded)
+					if err := store.Save(tasks); err != nil {
+						return fmt.Errorf("saving serialized tasks: %w", err)
+					}
+				}
+			}
 
 			if all {
 				if retry {
@@ -82,6 +97,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "dispatch all ready tasks and continue until done")
 	cmd.Flags().BoolVar(&retry, "retry", false, "automatically retry failed tasks with error context")
 	cmd.Flags().IntVar(&maxRetries, "max-retries", 2, "maximum retry rounds (used with --retry)")
+	cmd.Flags().BoolVar(&autoSerialize, "auto-serialize", false, "automatically serialize tasks with overlapping artifacts")
 
 	return cmd
 }
