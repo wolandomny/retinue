@@ -277,18 +277,25 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				for _, alert := range alerts {
 					mu.Lock()
 					fmt.Fprintf(out, "[watchdog] Killing task %q: %s\n", alert.taskID, alert.reason)
+					if alert.context != "" {
+						fmt.Fprintf(out, "[watchdog] Context for %q:\n%s\n", alert.taskID, alert.context)
+					}
 					mu.Unlock()
 
 					// Record the failure reason.
 					_ = store.Update(alert.taskID, func(t *task.Task) {
 						now := time.Now()
 						t.Status = task.StatusFailed
-						t.Error = "watchdog: " + alert.reason
+						errMsg := "watchdog: " + alert.reason
+						if alert.context != "" {
+							errMsg += "\n\nContext:\n" + alert.context
+						}
+						t.Error = errMsg
 						t.FinishedAt = &now
 						if t.Meta == nil {
-						t.Meta = make(map[string]string)
-					}
-					t.Meta["session"] = ""
+							t.Meta = make(map[string]string)
+						}
+						t.Meta["session"] = ""
 					})
 
 					// Kill the tmux window.

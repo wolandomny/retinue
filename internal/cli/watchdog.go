@@ -92,18 +92,21 @@ func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
 			state.lastSize = currentSize
 
 			// Read the new bytes for loop detection.
-			if reason, looping := checkForLoop(state, newBytes, cfg.LoopThreshold); looping {
+			if reason, repeatedLine, looping := checkForLoop(state, newBytes, cfg.LoopThreshold); looping {
 				alerts = append(alerts, watchdogAlert{
-					taskID: taskID,
-					reason: reason,
+					taskID:  taskID,
+					reason:  reason,
+					context: "repeated: " + repeatedLine,
 				})
 			}
 		} else {
 			// No new output — check stall timeout.
 			if now.Sub(state.lastCheckTime) > cfg.StallTimeout {
+				logCtx := tailLogFile(state.logFile, 3)
 				alerts = append(alerts, watchdogAlert{
-					taskID: taskID,
-					reason: fmt.Sprintf("no output for %s", now.Sub(state.lastCheckTime).Round(time.Second)),
+					taskID:  taskID,
+					reason:  fmt.Sprintf("no output for %s", now.Sub(state.lastCheckTime).Round(time.Second)),
+					context: logCtx,
 				})
 			}
 		}
@@ -113,17 +116,59 @@ func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
 }
 
 type watchdogAlert struct {
-	taskID string
-	reason string
+	taskID  string
+	reason  string
+	context string // last few lines of worker output for diagnostics
+}
+
+// tailLogFile reads the last n non-empty lines from a log file.
+// Returns an empty string if the file can't be read.
+func tailLogFile(logFile string, n int) string {
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	// Filter to non-empty lines and take the last n.
+	var nonEmpty []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+
+	start := len(nonEmpty) - n
+	if start < 0 {
+		start = 0
+	}
+	tail := nonEmpty[start:]
+
+	// Truncate each line to 200 chars.
+	var result []string
+	for _, line := range tail {
+		if len(line) > 200 {
+			line = line[:200] + "..."
+		}
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // checkForLoop reads the tail of the log file and checks whether
 // the last N lines are identical (indicating a loop).
-func checkForLoop(state *taskWatchState, newBytes int64, threshold int) (string, bool) {
+func checkForLoop(state *taskWatchState, newBytes int64, threshold int) (string, string, bool) {
 	// Read the tail of the file for new content.
 	f, err := os.Open(state.logFile)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	defer f.Close()
 
@@ -134,7 +179,7 @@ func checkForLoop(state *taskWatchState, newBytes int64, threshold int) (string,
 	}
 	buf := make([]byte, newBytes)
 	if _, err := f.ReadAt(buf, offset); err != nil {
-		return "", false
+		return "", "", false
 	}
 
 	// Split into lines and update ring buffer.
@@ -149,18 +194,22 @@ func checkForLoop(state *taskWatchState, newBytes int64, threshold int) (string,
 
 	// Check if the last `threshold` lines are all identical.
 	if len(state.lastLines) < threshold {
-		return "", false
+		return "", "", false
 	}
 	tail := state.lastLines[len(state.lastLines)-threshold:]
 	first := tail[0]
 	if first == "" {
-		return "", false
+		return "", "", false
 	}
 	for _, line := range tail[1:] {
 		if line != first {
-			return "", false
+			return "", "", false
 		}
 	}
 
-	return fmt.Sprintf("detected loop: %d identical lines", threshold), true
+	repeated := first
+	if len(repeated) > 200 {
+		repeated = repeated[:200] + "..."
+	}
+	return fmt.Sprintf("detected loop: %d identical lines", threshold), repeated, true
 }

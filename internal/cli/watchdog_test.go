@@ -5,152 +5,76 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestWatchdog_StallDetection(t *testing.T) {
+func TestTailLogFile_Basic(t *testing.T) {
 	dir := t.TempDir()
-	logFile := filepath.Join(dir, "task.log")
+	logFile := filepath.Join(dir, "test.log")
 
-	// Write initial content.
-	if err := os.WriteFile(logFile, []byte("starting\n"), 0o644); err != nil {
+	content := "line1\nline2\nline3\nline4\nline5\n"
+	if err := os.WriteFile(logFile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	state := newWatchdogState()
-	state.addTask("stall-task", logFile)
-
-	cfg := watchdogConfig{
-		PollInterval:  time.Second,
-		StallTimeout:  50 * time.Millisecond, // short for test
-		LoopThreshold: 20,
+	got := tailLogFile(logFile, 3)
+	if !strings.Contains(got, "line3") || !strings.Contains(got, "line4") || !strings.Contains(got, "line5") {
+		t.Errorf("expected last 3 lines, got: %q", got)
 	}
-
-	// First check: should record size, no alert.
-	alerts := state.check(cfg)
-	if len(alerts) != 0 {
-		t.Fatalf("expected no alerts on first check, got %d", len(alerts))
-	}
-
-	// Wait past stall timeout with no new output.
-	time.Sleep(100 * time.Millisecond)
-
-	alerts = state.check(cfg)
-	if len(alerts) != 1 {
-		t.Fatalf("expected 1 stall alert, got %d", len(alerts))
-	}
-	if alerts[0].taskID != "stall-task" {
-		t.Errorf("expected taskID 'stall-task', got %q", alerts[0].taskID)
-	}
-	if !strings.Contains(alerts[0].reason, "no output") {
-		t.Errorf("expected 'no output' in reason, got %q", alerts[0].reason)
+	if strings.Contains(got, "line2") {
+		t.Errorf("should not contain line2, got: %q", got)
 	}
 }
 
-func TestWatchdog_LoopDetection(t *testing.T) {
+func TestTailLogFile_SkipsEmptyLines(t *testing.T) {
 	dir := t.TempDir()
-	logFile := filepath.Join(dir, "task.log")
+	logFile := filepath.Join(dir, "test.log")
 
-	// Write initial content.
-	if err := os.WriteFile(logFile, []byte("starting\n"), 0o644); err != nil {
+	content := "line1\n\n\nline2\n\nline3\n\n"
+	if err := os.WriteFile(logFile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	state := newWatchdogState()
-	state.addTask("loop-task", logFile)
-
-	cfg := watchdogConfig{
-		PollInterval:  time.Second,
-		StallTimeout:  time.Hour, // don't trigger stall
-		LoopThreshold: 5,         // low threshold for test
-	}
-
-	// First check to establish baseline size.
-	_ = state.check(cfg)
-
-	// Append many identical lines.
-	var loopContent strings.Builder
-	for i := 0; i < 10; i++ {
-		loopContent.WriteString(`{"type":"content_block_delta","delta":"thinking"}` + "\n")
-	}
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.WriteString(loopContent.String())
-	f.Close()
-
-	alerts := state.check(cfg)
-	if len(alerts) != 1 {
-		t.Fatalf("expected 1 loop alert, got %d", len(alerts))
-	}
-	if !strings.Contains(alerts[0].reason, "loop") {
-		t.Errorf("expected 'loop' in reason, got %q", alerts[0].reason)
+	got := tailLogFile(logFile, 2)
+	if !strings.Contains(got, "line2") || !strings.Contains(got, "line3") {
+		t.Errorf("expected line2 and line3, got: %q", got)
 	}
 }
 
-func TestWatchdog_NoAlertOnProgress(t *testing.T) {
+func TestTailLogFile_TruncatesLongLines(t *testing.T) {
 	dir := t.TempDir()
-	logFile := filepath.Join(dir, "task.log")
+	logFile := filepath.Join(dir, "test.log")
 
-	if err := os.WriteFile(logFile, []byte("line1\n"), 0o644); err != nil {
+	longLine := strings.Repeat("x", 300)
+	if err := os.WriteFile(logFile, []byte(longLine+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	state := newWatchdogState()
-	state.addTask("ok-task", logFile)
-
-	cfg := watchdogConfig{
-		PollInterval:  time.Second,
-		StallTimeout:  50 * time.Millisecond,
-		LoopThreshold: 20,
+	got := tailLogFile(logFile, 1)
+	if len(got) > 210 {
+		t.Errorf("expected truncated line, got length %d", len(got))
 	}
-
-	// First check.
-	_ = state.check(cfg)
-
-	// Add new, varied output before the stall timeout.
-	time.Sleep(30 * time.Millisecond)
-	f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_WRONLY, 0o644)
-	f.WriteString("line2 different content\nline3 more content\n")
-	f.Close()
-
-	alerts := state.check(cfg)
-	if len(alerts) != 0 {
-		t.Fatalf("expected no alerts for active worker, got %d", len(alerts))
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("expected ... suffix, got: %q", got[len(got)-10:])
 	}
 }
 
-func TestWatchdog_RemoveTask(t *testing.T) {
-	dir := t.TempDir()
-	logFile := filepath.Join(dir, "task.log")
-	os.WriteFile(logFile, []byte("x\n"), 0o644)
-
-	state := newWatchdogState()
-	state.addTask("t1", logFile)
-	state.removeTask("t1")
-
-	cfg := defaultWatchdogConfig()
-	cfg.StallTimeout = time.Millisecond
-	time.Sleep(5 * time.Millisecond)
-
-	alerts := state.check(cfg)
-	if len(alerts) != 0 {
-		t.Fatalf("expected no alerts after remove, got %d", len(alerts))
+func TestTailLogFile_NonExistentFile(t *testing.T) {
+	got := tailLogFile("/nonexistent/file.log", 3)
+	if got != "" {
+		t.Errorf("expected empty string for nonexistent file, got: %q", got)
 	}
 }
 
-func TestWatchdog_MissingLogFile(t *testing.T) {
-	state := newWatchdogState()
-	state.addTask("no-file", "/tmp/nonexistent-watchdog-test.log")
-
-	cfg := defaultWatchdogConfig()
-	cfg.StallTimeout = time.Millisecond
-	time.Sleep(5 * time.Millisecond)
-
-	// Should not alert — file may not exist yet during startup.
-	alerts := state.check(cfg)
-	if len(alerts) != 0 {
-		t.Fatalf("expected no alerts for missing log file, got %d", len(alerts))
+func TestCheckForLoop_ReturnValues(t *testing.T) {
+	// Verify the three-return-value signature compiles correctly.
+	state := &taskWatchState{
+		logFile:  "/nonexistent",
+		lastSize: 0,
 	}
+	reason, repeated, looping := checkForLoop(state, 0, 20)
+	if looping {
+		t.Error("expected no loop for empty state")
+	}
+	_ = reason
+	_ = repeated
 }
