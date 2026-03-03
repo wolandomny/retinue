@@ -154,6 +154,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			t.Error = err.Error()
 			t.Result = result.Output
 			t.FinishedAt = &finishedAt
+			if t.Meta == nil {
+				t.Meta = make(map[string]string)
+			}
 			t.Meta["session"] = ""
 		}); updateErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
@@ -167,6 +170,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		t.Status = task.StatusDone
 		t.Result = result.Output
 		t.FinishedAt = &finishedAt
+		if t.Meta == nil {
+			t.Meta = make(map[string]string)
+		}
 		t.Meta["session"] = ""
 	}); err != nil {
 		return fmt.Errorf("updating task result: %w", err)
