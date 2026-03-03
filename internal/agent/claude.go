@@ -24,10 +24,18 @@ func NewClaudeRunner() *ClaudeRunner {
 
 // claudeStreamEvent represents a single event in the Claude CLI's
 // stream-json output format. The "result" event type carries the
-// agent's final output in the Result field.
+// agent's final output and usage statistics.
 type claudeStreamEvent struct {
-	Type   string `json:"type"`
-	Result string `json:"result"`
+	Type      string     `json:"type"`
+	Result    string     `json:"result"`
+	TotalCost float64    `json:"total_cost_usd"`
+	Usage     *usageData `json:"usage,omitempty"`
+}
+
+// usageData holds token counts from a result event.
+type usageData struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {

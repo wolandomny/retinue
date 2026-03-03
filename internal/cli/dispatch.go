@@ -149,6 +149,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	finishedAt := time.Now()
 
 	if err != nil {
+		// Parse usage even on failure.
+		usage, _ := agent.ParseUsageFromLog(logFile)
+
 		if updateErr := store.Update(target.ID, func(t *task.Task) {
 			t.Status = task.StatusFailed
 			t.Error = err.Error()
@@ -158,6 +161,13 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				t.Meta = make(map[string]string)
 			}
 			t.Meta["session"] = ""
+			if usage.InputTokens > 0 {
+				t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+				t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+			}
+			if usage.TotalCostUSD > 0 {
+				t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+			}
 		}); updateErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
 		}
@@ -165,6 +175,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		// The user can attach to inspect what went wrong.
 		return fmt.Errorf("task %q failed: %w", target.ID, err)
 	}
+
+	// Parse usage from log file.
+	usage, _ := agent.ParseUsageFromLog(logFile)
 
 	if err := store.Update(target.ID, func(t *task.Task) {
 		t.Status = task.StatusDone
@@ -174,6 +187,13 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			t.Meta = make(map[string]string)
 		}
 		t.Meta["session"] = ""
+		if usage.InputTokens > 0 {
+			t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+			t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+		}
+		if usage.TotalCostUSD > 0 {
+			t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+		}
 	}); err != nil {
 		return fmt.Errorf("updating task result: %w", err)
 	}
