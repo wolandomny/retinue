@@ -149,7 +149,7 @@ func (m *TmuxManager) CreateWindow(ctx context.Context, session, window, workDir
 	// Session exists — add a new window.
 	target := session + ":"
 	cmd := exec.CommandContext(ctx, "tmux", m.TmuxArgs(
-		"new-window", "-t", target, "-n", window, "-c", workDir, scriptPath,
+		"new-window", "-d", "-t", target, "-n", window, "-c", workDir, scriptPath,
 	)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(scriptPath)
