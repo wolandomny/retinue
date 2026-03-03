@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -46,7 +47,32 @@ func newStatusCmd() *cobra.Command {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Status, t.Repo, tokens, desc)
 			}
 
-			return w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
+
+			// Aggregate cost totals across all tasks.
+			var totalIn, totalOut int
+			var totalCost float64
+			for _, t := range tasks {
+				if t.Meta == nil {
+					continue
+				}
+				totalIn += atoi(t.Meta["input_tokens"])
+				totalOut += atoi(t.Meta["output_tokens"])
+				totalCost += parseFloat(t.Meta["cost_usd"])
+			}
+
+			if totalIn > 0 || totalOut > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "\nTotal: %dk input / %dk output",
+					totalIn/1000, totalOut/1000)
+				if totalCost > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), " ($%.2f)", totalCost)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+
+			return nil
 		},
 	}
 
@@ -71,6 +97,18 @@ func formatTokens(meta map[string]string) string {
 		return fmt.Sprintf("%dk/%dk ($%s)", inK, outK, cost)
 	}
 	return fmt.Sprintf("%dk/%dk", inK, outK)
+}
+
+// parseFloat parses a string as a float64, returning 0 on failure.
+func parseFloat(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func atoi(s string) int {
