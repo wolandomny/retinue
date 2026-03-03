@@ -469,18 +469,43 @@ func dispatchAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *t
 				continue
 			}
 
-			// Reset to pending with error context appended.
+			// Try smart re-planning first.
 			errContext := t.Error
+			var revisedPrompt string
+			replanRes, replanErr := replanFailedTask(ctx, t, ws.Config.Model, ws.LogsPath())
+
+			if replanErr != nil {
+				// Fall back to mechanical retry.
+				fmt.Fprintf(out, "[dispatch] Re-plan failed for %q (%v), using mechanical retry\n", t.ID, replanErr)
+				revisedPrompt = t.Prompt + "\n\n## Previous Attempt Failed\n" +
+					"The previous attempt at this task failed with the following error:\n```\n" +
+					errContext + "\n```\n" +
+					"Please try a different approach or fix the issue described above."
+			} else {
+				revisedPrompt = replanRes.RevisedPrompt
+				fmt.Fprintf(out, "[dispatch] Re-planned task %q (used %s)\n", t.ID, replanRes.Usage)
+			}
+
 			if err := store.Update(t.ID, func(tk *task.Task) {
 				tk.Status = task.StatusPending
 				tk.Error = ""
 				tk.Result = ""
 				tk.StartedAt = nil
 				tk.FinishedAt = nil
-				tk.Prompt = tk.Prompt + "\n\n## Previous Attempt Failed\n" +
-					"The previous attempt at this task failed with the following error:\n```\n" +
-					errContext + "\n```\n" +
-					"Please try a different approach or fix the issue described above."
+				tk.Prompt = revisedPrompt
+				if tk.Meta == nil {
+					tk.Meta = make(map[string]string)
+				}
+				// Record re-plan usage in metadata.
+				if replanErr == nil {
+					if replanRes.Usage.InputTokens > 0 {
+						tk.Meta["replan_input_tokens"] = fmt.Sprintf("%d", replanRes.Usage.InputTokens)
+						tk.Meta["replan_output_tokens"] = fmt.Sprintf("%d", replanRes.Usage.OutputTokens)
+					}
+					if replanRes.Usage.TotalCostUSD > 0 {
+						tk.Meta["replan_cost_usd"] = fmt.Sprintf("%.4f", replanRes.Usage.TotalCostUSD)
+					}
+				}
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to reset task %q for retry: %v\n", t.ID, err)
 				continue
