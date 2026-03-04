@@ -261,9 +261,9 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// Start watchdog for stall/loop detection.
-	wdState := newWatchdogState()
-	wdCfg := defaultWatchdogConfig()
+	// Start Abadonna — the silent monitor for stall/loop detection.
+	wdState := newAbadonnaState()
+	wdCfg := defaultAbadonnaConfig()
 	wdCtx, wdCancel := context.WithCancel(ctx)
 	defer wdCancel()
 
@@ -276,9 +276,9 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				alerts := wdState.check(wdCfg)
 				for _, alert := range alerts {
 					mu.Lock()
-					fmt.Fprintf(out, "[watchdog] Killing task %q: %s\n", alert.taskID, alert.reason)
+					fmt.Fprintf(out, "[abadonna] Killing task %q: %s\n", alert.taskID, alert.reason)
 					if alert.context != "" {
-						fmt.Fprintf(out, "[watchdog] Context for %q:\n%s\n", alert.taskID, alert.context)
+						fmt.Fprintf(out, "[abadonna] Context for %q:\n%s\n", alert.taskID, alert.context)
 					}
 					mu.Unlock()
 
@@ -286,7 +286,7 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 					_ = store.Update(alert.taskID, func(t *task.Task) {
 						now := time.Now()
 						t.Status = task.StatusFailed
-						errMsg := "watchdog: " + alert.reason
+						errMsg := "abadonna: " + alert.reason
 						if alert.context != "" {
 							errMsg += "\n\nContext:\n" + alert.context
 						}
@@ -303,7 +303,7 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 					killMgr := session.NewTmuxManager(socket)
 					_ = killMgr.KillWindow(wdCtx, session.ApartmentSession, alert.taskID)
 
-					// Remove from watchdog tracking.
+					// Remove from Abadonna's watch.
 					wdState.removeTask(alert.taskID)
 				}
 			case <-wdCtx.Done():

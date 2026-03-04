@@ -8,9 +8,10 @@ import (
 	"time"
 )
 
-// watchdogConfig holds tunable parameters for the watchdog.
-type watchdogConfig struct {
-	// PollInterval is how often the watchdog checks each log file.
+// abadonnaConfig holds tunable parameters for Abadonna, the silent
+// monitor that watches worker logs and kills stalled or looping agents.
+type abadonnaConfig struct {
+	// PollInterval is how often Abadonna checks each log file.
 	PollInterval time.Duration
 
 	// StallTimeout is how long a worker can go without new log output
@@ -22,17 +23,17 @@ type watchdogConfig struct {
 	LoopThreshold int
 }
 
-// defaultWatchdogConfig returns sensible defaults.
-func defaultWatchdogConfig() watchdogConfig {
-	return watchdogConfig{
+// defaultAbadonnaConfig returns sensible defaults.
+func defaultAbadonnaConfig() abadonnaConfig {
+	return abadonnaConfig{
 		PollInterval:  30 * time.Second,
 		StallTimeout:  10 * time.Minute,
 		LoopThreshold: 20,
 	}
 }
 
-// watchdogState tracks per-task monitoring state.
-type watchdogState struct {
+// abadonnaState tracks per-task monitoring state.
+type abadonnaState struct {
 	mu    sync.Mutex
 	tasks map[string]*taskWatchState // taskID -> state
 }
@@ -44,14 +45,14 @@ type taskWatchState struct {
 	lastLines     []string // ring buffer of recent lines for loop detection
 }
 
-func newWatchdogState() *watchdogState {
-	return &watchdogState{
+func newAbadonnaState() *abadonnaState {
+	return &abadonnaState{
 		tasks: make(map[string]*taskWatchState),
 	}
 }
 
 // addTask registers a task for monitoring.
-func (w *watchdogState) addTask(taskID, logFile string) {
+func (w *abadonnaState) addTask(taskID, logFile string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.tasks[taskID] = &taskWatchState{
@@ -61,7 +62,7 @@ func (w *watchdogState) addTask(taskID, logFile string) {
 }
 
 // removeTask stops monitoring a task (called when task completes).
-func (w *watchdogState) removeTask(taskID string) {
+func (w *abadonnaState) removeTask(taskID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.tasks, taskID)
@@ -69,11 +70,11 @@ func (w *watchdogState) removeTask(taskID string) {
 
 // check examines all tracked tasks and returns a list of taskIDs
 // that should be killed, along with the reason.
-func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
+func (w *abadonnaState) check(cfg abadonnaConfig) []abadonnaAlert {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	var alerts []watchdogAlert
+	var alerts []abadonnaAlert
 	now := time.Now()
 
 	for taskID, state := range w.tasks {
@@ -93,7 +94,7 @@ func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
 
 			// Read the new bytes for loop detection.
 			if reason, repeatedLine, looping := checkForLoop(state, newBytes, cfg.LoopThreshold); looping {
-				alerts = append(alerts, watchdogAlert{
+				alerts = append(alerts, abadonnaAlert{
 					taskID:  taskID,
 					reason:  reason,
 					context: "repeated: " + repeatedLine,
@@ -103,7 +104,7 @@ func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
 			// No new output — check stall timeout.
 			if now.Sub(state.lastCheckTime) > cfg.StallTimeout {
 				logCtx := tailLogFile(state.logFile, 3)
-				alerts = append(alerts, watchdogAlert{
+				alerts = append(alerts, abadonnaAlert{
 					taskID:  taskID,
 					reason:  fmt.Sprintf("no output for %s", now.Sub(state.lastCheckTime).Round(time.Second)),
 					context: logCtx,
@@ -115,7 +116,7 @@ func (w *watchdogState) check(cfg watchdogConfig) []watchdogAlert {
 	return alerts
 }
 
-type watchdogAlert struct {
+type abadonnaAlert struct {
 	taskID  string
 	reason  string
 	context string // last few lines of worker output for diagnostics
