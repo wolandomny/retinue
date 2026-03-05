@@ -179,68 +179,6 @@ func OverlapWarnings(tasks []Task) []ArtifactOverlap {
 	return overlaps
 }
 
-// AutoSerializeOverlaps detects independent tasks that share
-// artifacts and adds dependency edges to serialize them. For each
-// pair of overlapping independent tasks, the later task (by slice
-// position) gets a dependency on the earlier one. Returns the
-// modified slice and the number of edges added.
-func AutoSerializeOverlaps(tasks []Task) ([]Task, int) {
-	overlaps := OverlapWarnings(tasks)
-	if len(overlaps) == 0 {
-		return tasks, 0
-	}
-
-	// Build a map for quick task lookup by ID.
-	idxByID := make(map[string]int, len(tasks))
-	for i, t := range tasks {
-		idxByID[t.ID] = i
-	}
-
-	// Track edges we've already added to avoid duplicates.
-	added := make(map[string]bool)
-	edgesAdded := 0
-
-	for _, o := range overlaps {
-		idxA, okA := idxByID[o.TaskA]
-		idxB, okB := idxByID[o.TaskB]
-		if !okA || !okB {
-			continue
-		}
-
-		// Later task depends on earlier task.
-		var earlier, later string
-		if idxA < idxB {
-			earlier, later = o.TaskA, o.TaskB
-		} else {
-			earlier, later = o.TaskB, o.TaskA
-		}
-
-		edgeKey := earlier + "->" + later
-		if added[edgeKey] {
-			continue
-		}
-
-		// Check if dependency already exists.
-		laterIdx := idxByID[later]
-		alreadyDep := false
-		for _, dep := range tasks[laterIdx].DependsOn {
-			if dep == earlier {
-				alreadyDep = true
-				break
-			}
-		}
-		if alreadyDep {
-			continue
-		}
-
-		tasks[laterIdx].DependsOn = append(tasks[laterIdx].DependsOn, earlier)
-		added[edgeKey] = true
-		edgesAdded++
-	}
-
-	return tasks, edgesAdded
-}
-
 // TopologicalOrder returns tasks sorted so that dependencies come before dependents.
 func TopologicalOrder(tasks []Task) ([]Task, error) {
 	if err := Validate(tasks); err != nil {
