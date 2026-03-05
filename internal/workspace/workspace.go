@@ -11,6 +11,7 @@ import (
 const (
 	ConfigFile  = "retinue.yaml"
 	TasksFile   = "tasks.yaml"
+	ArchiveFile = "tasks-archive.yaml"
 	WorktreeDir = ".worktrees"
 	LogsDir     = "logs"
 	ReposDir    = "repos"
@@ -107,6 +108,11 @@ func (ws *Workspace) SaveConfig() error {
 // TasksPath returns the path to the tasks.yaml file.
 func (ws *Workspace) TasksPath() string {
 	return filepath.Join(ws.Path, TasksFile)
+}
+
+// ArchivePath returns the path to the tasks-archive.yaml file.
+func (ws *Workspace) ArchivePath() string {
+	return filepath.Join(ws.Path, ArchiveFile)
 }
 
 // LogsPath returns the path to the logs directory.

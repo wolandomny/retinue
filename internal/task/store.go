@@ -62,6 +62,54 @@ func (s *FileStore) Get(id string) (*Task, error) {
 	return nil, fmt.Errorf("task %q not found", id)
 }
 
+// Archive removes a task from the main tasks file and appends it
+// to the archive file. The task is saved with its final state.
+func (s *FileStore) Archive(id string, archivePath string) error {
+	// Load current tasks.
+	tasks, err := s.Load()
+	if err != nil {
+		return fmt.Errorf("loading tasks for archive: %w", err)
+	}
+
+	// Find and remove the task.
+	var archived *Task
+	var remaining []Task
+	for i := range tasks {
+		if tasks[i].ID == id {
+			archived = &tasks[i]
+		} else {
+			remaining = append(remaining, tasks[i])
+		}
+	}
+
+	if archived == nil {
+		return fmt.Errorf("task %q not found for archiving", id)
+	}
+
+	// Append to archive file.
+	var archiveTasks []Task
+	if data, err := os.ReadFile(archivePath); err == nil {
+		var tf TaskFile
+		if parseErr := yaml.Unmarshal(data, &tf); parseErr == nil {
+			archiveTasks = tf.Tasks
+		}
+	}
+	// If file doesn't exist or can't be parsed, start fresh.
+
+	archiveTasks = append(archiveTasks, *archived)
+
+	archiveData, err := yaml.Marshal(&TaskFile{Tasks: archiveTasks})
+	if err != nil {
+		return fmt.Errorf("marshaling archive: %w", err)
+	}
+	if err := os.WriteFile(archivePath, archiveData, 0o644); err != nil {
+		return fmt.Errorf("writing archive: %w", err)
+	}
+
+	// Save remaining tasks back to the main file.
+	return s.Save(remaining)
+}
+
 func (s *FileStore) Update(id string, fn func(*Task)) error {
 	tasks, err := s.Load()
 	if err != nil {

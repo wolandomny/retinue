@@ -126,7 +126,7 @@ func newMergeCmd() *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
 					continue
 				}
-				markTaskMerged(store, t.ID)
+				markTaskMerged(store, t.ID, ws.ArchivePath())
 				fmt.Fprintf(cmd.OutOrStdout(), "Task %q merged successfully.\n", t.ID)
 			}
 
@@ -322,15 +322,20 @@ func markTaskFailed(store *task.FileStore, id, errMsg string) {
 	}
 }
 
-// markTaskMerged transitions the task to merged status, logging any
-// store update errors to stderr.
-func markTaskMerged(store *task.FileStore, id string) {
+// markTaskMerged transitions the task to merged status and archives
+// it from the active tasks file to the archive file.
+func markTaskMerged(store *task.FileStore, id, archivePath string) {
 	if err := store.Update(id, func(t *task.Task) {
 		now := time.Now()
 		t.Status = task.StatusMerged
 		t.FinishedAt = &now
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
+		return
+	}
+
+	if err := store.Archive(id, archivePath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to archive task %q: %v\n", id, err)
 	}
 }
 

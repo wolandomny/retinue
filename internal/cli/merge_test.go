@@ -206,16 +206,32 @@ func TestRebaseAndMerge_CustomBaseBranch(t *testing.T) {
 }
 
 func TestMarkTaskMerged_SetsStatus(t *testing.T) {
-	store := writeTasks(t, []task.Task{
+	dir := t.TempDir()
+	tasksPath := filepath.Join(dir, "tasks.yaml")
+	archivePath := filepath.Join(dir, "tasks-archive.yaml")
+
+	store := task.NewFileStore(tasksPath)
+	store.Save([]task.Task{
 		{ID: "t1", Status: task.StatusDone},
 	})
-	markTaskMerged(store, "t1")
+	markTaskMerged(store, "t1", archivePath)
 
+	// Task should be removed from the main file (archived).
 	tasks, _ := store.Load()
-	if tasks[0].Status != task.StatusMerged {
-		t.Fatalf("expected merged, got %s", tasks[0].Status)
+	if len(tasks) != 0 {
+		t.Fatalf("expected 0 remaining tasks, got %d", len(tasks))
 	}
-	if tasks[0].FinishedAt == nil {
+
+	// Task should be in the archive with merged status.
+	archiveStore := task.NewFileStore(archivePath)
+	archived, _ := archiveStore.Load()
+	if len(archived) != 1 {
+		t.Fatalf("expected 1 archived task, got %d", len(archived))
+	}
+	if archived[0].Status != task.StatusMerged {
+		t.Fatalf("expected merged, got %s", archived[0].Status)
+	}
+	if archived[0].FinishedAt == nil {
 		t.Fatal("expected FinishedAt to be set")
 	}
 }

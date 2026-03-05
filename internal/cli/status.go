@@ -14,6 +14,8 @@ const maxDescriptionLen = 60
 // newStatusCmd returns a command that displays the current status of
 // all tasks in a tabular format.
 func newStatusCmd() *cobra.Command {
+	var showAll bool
+
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show status of all tasks",
@@ -27,6 +29,15 @@ func newStatusCmd() *cobra.Command {
 			tasks, err := store.Load()
 			if err != nil {
 				return err
+			}
+
+			// Optionally include archived tasks.
+			if showAll {
+				archiveStore := task.NewFileStore(ws.ArchivePath())
+				archived, archiveErr := archiveStore.Load()
+				if archiveErr == nil && len(archived) > 0 {
+					tasks = append(archived, tasks...)
+				}
 			}
 
 			if len(tasks) == 0 {
@@ -75,6 +86,8 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&showAll, "all", false, "include archived (merged) tasks")
 
 	return cmd
 }
