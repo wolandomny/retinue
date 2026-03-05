@@ -453,8 +453,11 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 		return wtPath, nil
 	}
 
+	// Resolve which branch to create the worktree from.
+	baseBranch := task.ResolveBaseBranch(*t, ws.Config.Repos)
+
 	wtMgr := worktree.NewManager(&worktree.RealGit{}, worktreeDir)
-	createdPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "")
+	createdPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "", baseBranch)
 	if err != nil {
 		return "", err
 	}

@@ -29,7 +29,7 @@ func TestManagerCreate(t *testing.T) {
 	git := &FakeGit{}
 	mgr := NewManager(git, "/worktrees")
 
-	path, err := mgr.Create(context.Background(), "/repo", "task-1", "")
+	path, err := mgr.Create(context.Background(), "/repo", "task-1", "", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestManagerCreateCustomBranch(t *testing.T) {
 	git := &FakeGit{}
 	mgr := NewManager(git, "/worktrees")
 
-	_, err := mgr.Create(context.Background(), "/repo", "task-1", "my-branch")
+	_, err := mgr.Create(context.Background(), "/repo", "task-1", "my-branch", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -75,9 +75,50 @@ func TestManagerCreateError(t *testing.T) {
 	git := &FakeGit{Err: fmt.Errorf("git error")}
 	mgr := NewManager(git, "/worktrees")
 
-	_, err := mgr.Create(context.Background(), "/repo", "task-1", "")
+	_, err := mgr.Create(context.Background(), "/repo", "task-1", "", "")
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestManagerCreateWithStartPoint(t *testing.T) {
+	git := &FakeGit{}
+	mgr := NewManager(git, "/worktrees")
+
+	_, err := mgr.Create(context.Background(), "/repo", "task-1", "", "develop")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(git.Calls) != 1 {
+		t.Fatalf("expected 1 git call, got %d", len(git.Calls))
+	}
+
+	args := strings.Join(git.Calls[0].Args, " ")
+	// Should include: worktree add -b retinue/task-1 /worktrees/task-1 develop
+	if !strings.Contains(args, "develop") {
+		t.Errorf("expected startPoint 'develop' in args, got: %s", args)
+	}
+	if !strings.Contains(args, "retinue/task-1") {
+		t.Errorf("expected default branch name, got: %s", args)
+	}
+}
+
+func TestManagerCreateWithStartPointAndBranch(t *testing.T) {
+	git := &FakeGit{}
+	mgr := NewManager(git, "/worktrees")
+
+	_, err := mgr.Create(context.Background(), "/repo", "task-1", "my-branch", "develop")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(git.Calls[0].Args, " ")
+	if !strings.Contains(args, "my-branch") {
+		t.Errorf("expected custom branch, got: %s", args)
+	}
+	if !strings.Contains(args, "develop") {
+		t.Errorf("expected startPoint, got: %s", args)
 	}
 }
 
