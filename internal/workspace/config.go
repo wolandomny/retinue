@@ -14,8 +14,9 @@ type Config struct {
 
 // RepoConfig holds per-repository configuration.
 type RepoConfig struct {
-	Path       string `yaml:"path"`
-	BaseBranch string `yaml:"base_branch,omitempty"`
+	Path        string `yaml:"path"`
+	BaseBranch  string `yaml:"base_branch,omitempty"`
+	CommitStyle string `yaml:"commit_style,omitempty"`
 }
 
 // UnmarshalYAML supports both simple string format ("repos/retinue")

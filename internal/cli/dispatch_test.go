@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wolandomny/retinue/internal/task"
@@ -278,5 +279,35 @@ func TestResolveWorkDir_WorktreesDirPath(t *testing.T) {
 	worktreesDir := filepath.Join(aptDir, ".worktrees")
 	if _, err := os.Stat(worktreesDir); err != nil {
 		t.Errorf(".worktrees directory should be created at %q: %v", worktreesDir, err)
+	}
+}
+
+func TestCommitStylePrompt_Empty(t *testing.T) {
+	got := commitStylePrompt("")
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestCommitStylePrompt_Conventional(t *testing.T) {
+	got := commitStylePrompt("conventional")
+	if got == "" {
+		t.Fatal("expected non-empty prompt for 'conventional'")
+	}
+	if !strings.Contains(got, "feat:") {
+		t.Error("expected 'feat:' in conventional prompt")
+	}
+	if !strings.Contains(got, "fix:") {
+		t.Error("expected 'fix:' in conventional prompt")
+	}
+	if !strings.Contains(got, "Conventional Commits") {
+		t.Error("expected 'Conventional Commits' in prompt")
+	}
+}
+
+func TestCommitStylePrompt_Custom(t *testing.T) {
+	got := commitStylePrompt("Always prefix with JIRA ticket number")
+	if !strings.Contains(got, "JIRA ticket number") {
+		t.Errorf("expected custom string in prompt, got %q", got)
 	}
 }

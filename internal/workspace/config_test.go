@@ -48,6 +48,32 @@ func TestRepoConfig_UnmarshalYAML_ObjectNoBaseBranch(t *testing.T) {
 	}
 }
 
+func TestRepoConfig_UnmarshalYAML_WithCommitStyle(t *testing.T) {
+	input := "path: repos/retinue\ncommit_style: conventional\n"
+	var rc RepoConfig
+	if err := yaml.Unmarshal([]byte(input), &rc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rc.Path != "repos/retinue" {
+		t.Errorf("Path = %q, want %q", rc.Path, "repos/retinue")
+	}
+	if rc.CommitStyle != "conventional" {
+		t.Errorf("CommitStyle = %q, want %q", rc.CommitStyle, "conventional")
+	}
+}
+
+func TestRepoConfig_UnmarshalYAML_StringFormatNoCommitStyle(t *testing.T) {
+	// String format can't carry commit_style — verify it's empty.
+	input := `repos/retinue`
+	var rc RepoConfig
+	if err := yaml.Unmarshal([]byte(input), &rc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rc.CommitStyle != "" {
+		t.Errorf("CommitStyle = %q, want empty", rc.CommitStyle)
+	}
+}
+
 func TestConfig_UnmarshalYAML_MixedRepoFormats(t *testing.T) {
 	input := `
 name: test

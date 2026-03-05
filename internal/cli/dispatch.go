@@ -126,6 +126,13 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		target.ID,
 	)
 
+	// Append commit style instructions if configured for this repo.
+	if target.Repo != "" {
+		if repoCfg, ok := ws.Config.Repos[target.Repo]; ok {
+			systemPrompt += commitStylePrompt(repoCfg.CommitStyle)
+		}
+	}
+
 	socket := "retinue-" + ws.Config.Name
 	runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
 	logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
@@ -540,6 +547,27 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// commitStylePrompt returns a system prompt fragment for the given
+// commit style. Known keywords are expanded to full instructions;
+// unknown non-empty strings are passed through as-is.
+func commitStylePrompt(style string) string {
+	switch style {
+	case "":
+		return ""
+	case "conventional":
+		return "\n\nUse Conventional Commits for all commit messages. " +
+			"Each commit message must start with a type prefix: " +
+			"feat: (new feature), fix: (bug fix), refactor: (code restructuring), " +
+			"test: (adding/updating tests), docs: (documentation), " +
+			"chore: (maintenance/tooling), ci: (CI/CD changes), " +
+			"perf: (performance improvement), build: (build system). " +
+			"Format: \"type: concise imperative description\". " +
+			"Examples: \"feat: add watchdog goroutine\", \"fix: nil map in store update\"."
+	default:
+		return "\n\nCommit message style: " + style
+	}
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {
