@@ -133,6 +133,78 @@ func TestRebaseAndMerge_FastForwardOnly(t *testing.T) {
 	}
 }
 
+func TestRebaseAndMerge_CustomBaseBranch(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initTestRepo(t)
+
+	// Create a "develop" branch from main.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "develop"); err != nil {
+		t.Fatal(err)
+	}
+	// Add a commit to develop.
+	if err := os.WriteFile(filepath.Join(repoPath, "develop.txt"), []byte("develop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "develop base"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a feature branch off develop.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Go back to develop.
+	if _, err := runGit(ctx, repoPath, "checkout", "develop"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree for feature.
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge feature into develop (not main).
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "develop", "", ""); err != nil {
+		t.Fatalf("rebaseAndMerge to develop failed: %v", err)
+	}
+
+	// Verify we're on develop and it has the feature commit.
+	branch, err := runGit(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "develop" {
+		t.Errorf("expected to be on 'develop', got %q", branch)
+	}
+
+	// Verify feature.txt exists on develop.
+	if _, err := os.Stat(filepath.Join(repoPath, "feature.txt")); os.IsNotExist(err) {
+		t.Error("feature.txt should exist on develop after merge")
+	}
+
+	// Verify main is unchanged (doesn't have feature.txt).
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "feature.txt")); !os.IsNotExist(err) {
+		t.Error("feature.txt should NOT exist on main")
+	}
+}
+
 func TestMarkTaskMerged_SetsStatus(t *testing.T) {
 	store := writeTasks(t, []task.Task{
 		{ID: "t1", Status: task.StatusDone},
