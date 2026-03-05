@@ -118,7 +118,7 @@ func TestRebaseAndMerge_FastForwardOnly(t *testing.T) {
 	}
 
 	// Merge via rebaseAndMerge.
-	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "", ""); err != nil {
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "main", "", ""); err != nil {
 		t.Fatalf("rebaseAndMerge failed: %v", err)
 	}
 

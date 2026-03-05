@@ -434,12 +434,12 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 		return ws.Path, nil
 	}
 
-	repoPath, ok := ws.Config.Repos[t.Repo]
+	repoCfg, ok := ws.Config.Repos[t.Repo]
 	if !ok {
 		return ws.Path, nil
 	}
 
-	repoAbsPath := filepath.Join(ws.Path, repoPath)
+	repoAbsPath := filepath.Join(ws.Path, repoCfg.Path)
 
 	worktreeDir := filepath.Join(ws.Path, workspace.WorktreeDir)
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {

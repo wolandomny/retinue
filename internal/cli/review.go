@@ -19,7 +19,7 @@ type reviewVerdict struct {
 
 // reviewDiff runs a lightweight Claude review of the task's diff
 // against its original prompt. Returns a verdict.
-func reviewDiff(ctx context.Context, worktreePath string, t task.Task, model, logsPath string) (reviewVerdict, error) {
+func reviewDiff(ctx context.Context, worktreePath string, t task.Task, baseBranch, model, logsPath string) (reviewVerdict, error) {
 	// Get the diff against the base branch.
 	diff, err := runGit(ctx, worktreePath, "diff", baseBranch+"...HEAD")
 	if err != nil {

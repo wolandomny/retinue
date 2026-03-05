@@ -15,7 +15,6 @@ import (
 	"github.com/wolandomny/retinue/internal/workspace"
 )
 
-const baseBranch = "main"
 
 // newMergeCmd returns a command that merges completed task branches
 // back into the base branch.
@@ -70,13 +69,13 @@ func newMergeCmd() *cobra.Command {
 			}
 
 			for _, t := range targets {
-				repoDirRel, ok := ws.Config.Repos[t.Repo]
+				repoCfg, ok := ws.Config.Repos[t.Repo]
 				if !ok {
 					markTaskFailed(store, t.ID, fmt.Sprintf("repo %q not found in config", t.Repo))
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: repo %q not found in config\n", t.ID, t.Repo)
 					continue
 				}
-				repoPath := filepath.Join(ws.Path, repoDirRel)
+				repoPath := filepath.Join(ws.Path, repoCfg.Path)
 				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
 
 				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
@@ -84,6 +83,8 @@ func newMergeCmd() *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: worktree not found\n", t.ID)
 					continue
 				}
+
+				baseBranch := task.ResolveBaseBranch(t, ws.Config.Repos)
 
 				// Run validation before merging.
 				if cmdStr, ok := ws.Config.Validate[t.Repo]; ok && cmdStr != "" {
@@ -98,7 +99,7 @@ func newMergeCmd() *cobra.Command {
 				// Optional pre-merge review.
 				if review {
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q: reviewing diff...\n", t.ID)
-					verdict, reviewErr := reviewDiff(ctx, worktreePath, t, ws.Config.Model, ws.LogsPath())
+					verdict, reviewErr := reviewDiff(ctx, worktreePath, t, baseBranch, ws.Config.Model, ws.LogsPath())
 					if reviewErr != nil {
 						fmt.Fprintf(cmd.OutOrStdout(), "Task %q: review failed: %s (proceeding anyway)\n", t.ID, reviewErr)
 					} else if !verdict.Approved {
@@ -120,7 +121,7 @@ func newMergeCmd() *cobra.Command {
 					}
 				}
 
-				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, ws.Config.Model, ws.LogsPath()); err != nil {
+				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, baseBranch, ws.Config.Model, ws.LogsPath()); err != nil {
 					markTaskFailed(store, t.ID, err.Error())
 					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
 					continue
@@ -144,7 +145,7 @@ func newMergeCmd() *cobra.Command {
 // On success it removes the worktree and deletes the branch.
 // If the rebase encounters conflicts, it spawns a Claude agent to
 // resolve them before continuing.
-func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, model, logsPath string) error {
+func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath string) error {
 	// Rebase in the worktree.
 	if _, rebaseErr := runGit(ctx, worktreePath, "rebase", baseBranch); rebaseErr != nil {
 		// Rebase failed — attempt to resolve conflicts.

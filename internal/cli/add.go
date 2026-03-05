@@ -67,9 +67,9 @@ func newAddRepoCmd() *cobra.Command {
 			}
 
 			if ws.Config.Repos == nil {
-				ws.Config.Repos = make(map[string]string)
+				ws.Config.Repos = make(map[string]workspace.RepoConfig)
 			}
-			ws.Config.Repos[name] = filepath.Join(workspace.ReposDir, name)
+			ws.Config.Repos[name] = workspace.RepoConfig{Path: filepath.Join(workspace.ReposDir, name)}
 
 			if err := ws.SaveConfig(); err != nil {
 				return fmt.Errorf("updating config: %w", err)

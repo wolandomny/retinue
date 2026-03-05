@@ -15,7 +15,7 @@ func TestResolveWorkDir_NoRepo(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: "/tmp/test-apartment",
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": "repos/myrepo"},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
 		},
 	}
 	tk := &task.Task{ID: "task-1", Repo: ""}
@@ -33,7 +33,7 @@ func TestResolveWorkDir_UnknownRepo(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: "/tmp/test-apartment",
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": "repos/myrepo"},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
 		},
 	}
 	tk := &task.Task{ID: "task-1", Repo: "nonexistent"}
@@ -73,7 +73,7 @@ func TestResolveWorkDir_CreatesWorktree(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: aptDir,
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": "repos/myrepo"},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
 		},
 	}
 	tk := &task.Task{ID: "test-task-1", Repo: "myrepo"}
@@ -140,7 +140,7 @@ func TestDispatch_SetsBranchAfterWorktreeCreation(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: aptDir,
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": "repos/myrepo"},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
 		},
 	}
 
@@ -211,7 +211,7 @@ func TestResolveWorkDir_ExistingWorktree(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: aptDir,
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": repoRelPath},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
 		},
 	}
 	tk := &task.Task{ID: "existing-wt", Repo: "myrepo"}
@@ -266,7 +266,7 @@ func TestResolveWorkDir_WorktreesDirPath(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: aptDir,
 		Config: workspace.Config{
-			Repos: map[string]string{"myrepo": "repos/myrepo"},
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
 		},
 	}
 	tk := &task.Task{ID: "path-check", Repo: "myrepo"}
