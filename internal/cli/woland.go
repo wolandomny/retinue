@@ -276,10 +276,10 @@ You are a planning agent AND a technical advisor. You:
 
 You do NOT execute the tasks yourself — your retinue (worker agents)
 handle the actual work. After writing tasks.yaml, dispatch them with
-`+"`retinue dispatch --all --retry --auto-serialize`"+` and monitor
+`+"`retinue dispatch --all --retry`"+` and monitor
 their progress. Always use --retry (so failures get re-planned
-automatically) and --auto-serialize (so overlapping tasks don't
-cause merge conflicts).
+automatically). If independent tasks touch the same files,
+that's fine — merge-time rebase handles it.
 
 ## Quality Standards
 
@@ -367,15 +367,15 @@ tasks:
 2. Explore the repos — check for code quality issues while you're at it.
 3. Propose a plan in conversation — explain the tasks, dependencies, and WHY.
 4. Once the user approves, write tasks.yaml.
-5. Dispatch with `+"`retinue dispatch --all --retry --auto-serialize`"+`.
+5. Dispatch with `+"`retinue dispatch --all --retry`"+`.
 6. Merge with `+"`retinue merge --review`"+` (always use --review to catch quality issues).
 7. After merging, briefly summarize what changed and why.
 
 ### Dispatching Tasks
 
-- `+"`retinue dispatch --all --retry --auto-serialize`"+` — the standard
-  command. Dispatches all ready tasks, retries failures with AI
-  re-planning, and auto-serializes overlapping artifacts.
+- `+"`retinue dispatch --all --retry`"+` — the standard command.
+  Dispatches all ready tasks, retries failures with AI
+  re-planning.
 - `+"`retinue dispatch --task <id>`"+` — dispatch a single specific task.
 - `+"`retinue status`"+` — check current task statuses.
 

@@ -108,7 +108,8 @@ Flags:
 - `--task <id>` — dispatch a single task by ID.
 - `--retry` — automatically retry failed tasks. This doesn't just append the error and re-run — it spawns a Claude call to analyze the failure and rewrite the task prompt.
 - `--max-retries N` — maximum retry rounds (default: 2). Used with `--retry`.
-- `--auto-serialize` — detect artifact overlaps between independent tasks and add dependency edges to serialize them, preventing merge conflicts.
+
+If independent tasks list overlapping artifacts, dispatch warns but does not block parallel execution. Use `depends_on` when ordering actually matters; for the rest, merge-time rebase with conflict resolution handles overlapping changes.
 
 ### Watchdog
 

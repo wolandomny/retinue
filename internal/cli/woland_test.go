@@ -63,7 +63,6 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		{"tasks included", "task-1"},
 		{"tasks.yaml path", "/tmp/test-apartment/tasks.yaml"},
 		{"retry default", "--retry"},
-		{"auto-serialize default", "--auto-serialize"},
 		{"merge review default", "merge --review"},
 		{"quality standards", "Quality Standards"},
 		{"linting check", "eslint"},
