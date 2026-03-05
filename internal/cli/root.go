@@ -30,6 +30,13 @@ func newRootCmd() *cobra.Command {
 		newWolandCmd(),
 	)
 
+	// Add config reference to help command.
+	cmd.InitDefaultHelpCmd()
+	helpCmd, _, _ := cmd.Find([]string{"help"})
+	if helpCmd != nil && helpCmd.Name() == "help" {
+		helpCmd.AddCommand(newHelpConfigCmd())
+	}
+
 	return cmd
 }
 

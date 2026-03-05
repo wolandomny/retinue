@@ -26,6 +26,7 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 		{"schema depends_on", "depends_on:"},
 		{"schema prompt field", "prompt: |"},
 		{"dispatch instruction", "retinue dispatch"},
+		{"help config hint", "retinue help config"},
 	}
 
 	for _, c := range checks {
@@ -68,6 +69,7 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		{"linting check", "eslint"},
 		{"explain decisions", "Explaining Decisions"},
 		{"validation emphasis", "non-negotiable"},
+		{"help config hint", "retinue help config"},
 	}
 
 	for _, c := range checks {

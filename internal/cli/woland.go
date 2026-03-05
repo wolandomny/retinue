@@ -170,6 +170,7 @@ handle the actual work. After writing tasks.yaml, dispatch them with
 Apartment path: %s
 
 ### Configuration (retinue.yaml)
+Run ` + "`retinue help config`" + ` for the full config and task schema reference.
 %s
 ### Current Tasks (tasks.yaml)
 %s
@@ -330,6 +331,7 @@ but it gets messy when Y."
 Apartment path: %s
 
 ### Configuration (retinue.yaml)
+Run ` + "`retinue help config`" + ` for the full config and task schema reference.
 %s
 ### Current Tasks (tasks.yaml)
 %s
