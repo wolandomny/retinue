@@ -578,28 +578,46 @@ func commitStylePrompt(style string) string {
 }
 
 // buildDependencyContext creates a system prompt section containing the
-// results from completed dependency tasks. Each dependency's result is
-// truncated to 4000 chars (taking the tail, since agent summaries appear
-// at the end of output). Dependencies with empty results are skipped.
+// results from completed dependency tasks, summarizing what each dependency
+// produced so the worker agent knows what its predecessors accomplished.
+// Each dependency's result is truncated to 4000 chars (taking the tail,
+// since agent summaries appear at the end of output).
 func buildDependencyContext(store *task.FileStore, deps []string) string {
-	var sections []string
-	for _, depID := range deps {
-		t, err := store.Get(depID)
-		if err != nil || t.Result == "" {
-			continue
-		}
-		result := t.Result
-		const maxLen = 4000
-		if len(result) > maxLen {
-			result = result[len(result)-maxLen:]
-		}
-		section := fmt.Sprintf("### Task %q (%s)\n%s", t.ID, t.Description, result)
-		sections = append(sections, section)
-	}
-	if len(sections) == 0 {
+	if len(deps) == 0 {
 		return ""
 	}
-	return "# Context from Completed Dependencies\n\n" + strings.Join(sections, "\n\n")
+
+	var b strings.Builder
+	b.WriteString("# Context from Completed Dependencies\n")
+	b.WriteString("The following tasks have already been completed and merged:\n\n")
+
+	wrote := false
+	for _, depID := range deps {
+		t, err := store.Get(depID)
+		if err != nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("### %s\n", depID))
+		if t.Description != "" {
+			b.WriteString(fmt.Sprintf("Description: %s\n", t.Description))
+		}
+		if t.Result != "" {
+			result := t.Result
+			const maxLen = 4000
+			if len(result) > maxLen {
+				result = result[len(result)-maxLen:]
+			}
+			b.WriteString(fmt.Sprintf("Result: %s\n", result))
+		}
+		b.WriteString("\n")
+		wrote = true
+	}
+
+	if !wrote {
+		return ""
+	}
+
+	return b.String()
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {

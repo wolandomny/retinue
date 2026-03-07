@@ -208,17 +208,21 @@ tasks:
 2. Explore the repos using the tools available to you (read files, search code, etc.).
 3. Propose a plan in conversation — describe the tasks, their dependencies, and rationale.
 4. Once the user approves, write tasks.yaml.
-5. Dispatch the tasks by running ` + "`retinue dispatch --all`" + ` via bash.
-6. Run ` + "`retinue merge`" + ` to land completed branches onto the base branch.
-7. Monitor progress with ` + "`retinue status`" + ` and report results to the user.
+5. Run ` + "`retinue run --retry`" + ` to dispatch, merge, and monitor all tasks
+   in a single autonomous loop.
+6. Monitor progress with ` + "`retinue status`" + ` and report results to the user.
 
 ### Dispatching Tasks
 
 You can dispatch tasks directly from this session:
 
+- ` + "`retinue run`" + ` — the all-in-one command. Dispatches tasks, merges
+  completed work, dispatches newly-unblocked tasks, and repeats until
+  done. Use ` + "`--retry`" + ` for automatic failure recovery and ` + "`--review`" + `
+  for pre-merge AI review.
 - ` + "`retinue dispatch --all`" + ` — dispatches all ready tasks concurrently,
   waits for completions, dispatches newly-unblocked tasks, and exits
-  when everything is done or failed. This is the primary command.
+  when everything is done or failed. Use for fine-grained control.
 - ` + "`retinue dispatch --task <id>`" + ` — dispatch a single specific task.
 - ` + "`retinue status`" + ` — check current task statuses.
 
@@ -369,21 +373,24 @@ tasks:
 2. Explore the repos — check for code quality issues while you're at it.
 3. Propose a plan in conversation — explain the tasks, dependencies, and WHY.
 4. Once the user approves, write tasks.yaml.
-5. Dispatch with `+"`retinue dispatch --all --retry`"+`.
-6. Merge with `+"`retinue merge --review`"+` (always use --review to catch quality issues).
-7. After merging, briefly summarize what changed and why.
+5. Run `+"`retinue run --retry --review`"+` to dispatch, merge, and monitor
+   all tasks autonomously with failure recovery and quality review.
+6. After completion, briefly summarize what changed and why.
 
 ### Dispatching Tasks
 
-- `+"`retinue dispatch --all --retry`"+` — the standard command.
-  Dispatches all ready tasks, retries failures with AI
-  re-planning.
+- `+"`retinue run --retry --review`"+` — the standard command.
+  Dispatches, merges, and monitors all tasks in one loop.
+  Retries failures with AI re-planning and reviews diffs
+  before merging.
+- `+"`retinue dispatch --all --retry`"+` — dispatches all ready tasks
+  without merging. Use for fine-grained control.
 - `+"`retinue dispatch --task <id>`"+` — dispatch a single specific task.
 - `+"`retinue status`"+` — check current task statuses.
 
 ### Merging Completed Work
 
-Always merge with review enabled:
+`+"`retinue run`"+` handles merging automatically. For manual use:
 
 - `+"`retinue merge --review`"+` — reviews each diff against the task
   prompt before merging. Rejected tasks go back to pending with

@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 		newDispatchCmd(),
 		newLsCmd(),
 		newMergeCmd(),
+		newRunCmd(),
 		newStatusCmd(),
 		newWolandCmd(),
 	)
