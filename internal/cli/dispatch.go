@@ -133,6 +133,13 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		}
 	}
 
+	// Inject dependency context if this task has predecessors.
+	if len(target.DependsOn) > 0 {
+		if depContext := buildDependencyContext(store, target.DependsOn); depContext != "" {
+			systemPrompt += "\n\n" + depContext
+		}
+	}
+
 	socket := "retinue-" + ws.Config.Name
 	runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
 	logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
@@ -568,6 +575,31 @@ func commitStylePrompt(style string) string {
 	default:
 		return "\n\nCommit message style: " + style
 	}
+}
+
+// buildDependencyContext creates a system prompt section containing the
+// results from completed dependency tasks. Each dependency's result is
+// truncated to 4000 chars (taking the tail, since agent summaries appear
+// at the end of output). Dependencies with empty results are skipped.
+func buildDependencyContext(store *task.FileStore, deps []string) string {
+	var sections []string
+	for _, depID := range deps {
+		t, err := store.Get(depID)
+		if err != nil || t.Result == "" {
+			continue
+		}
+		result := t.Result
+		const maxLen = 4000
+		if len(result) > maxLen {
+			result = result[len(result)-maxLen:]
+		}
+		section := fmt.Sprintf("### Task %q (%s)\n%s", t.ID, t.Description, result)
+		sections = append(sections, section)
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "# Context from Completed Dependencies\n\n" + strings.Join(sections, "\n\n")
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {

@@ -311,3 +311,55 @@ func TestCommitStylePrompt_Custom(t *testing.T) {
 		t.Errorf("expected custom string in prompt, got %q", got)
 	}
 }
+
+func TestBuildDependencyContext_WithResults(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "dep-1", Description: "First dep", Status: task.StatusDone, Result: "Result from dep 1"},
+		{ID: "dep-2", Description: "Second dep", Status: task.StatusDone, Result: "Result from dep 2"},
+	})
+	got := buildDependencyContext(store, []string{"dep-1", "dep-2"})
+	if !strings.Contains(got, "Context from Completed Dependencies") {
+		t.Error("missing header")
+	}
+	if !strings.Contains(got, "dep-1") || !strings.Contains(got, "Result from dep 1") {
+		t.Error("missing dep-1 content")
+	}
+	if !strings.Contains(got, "dep-2") || !strings.Contains(got, "Result from dep 2") {
+		t.Error("missing dep-2 content")
+	}
+}
+
+func TestBuildDependencyContext_Truncation(t *testing.T) {
+	// Create a result longer than 4000 chars.
+	longResult := strings.Repeat("x", 5000) + "TAIL_MARKER"
+	store := writeTasks(t, []task.Task{
+		{ID: "dep-long", Description: "Long dep", Status: task.StatusDone, Result: longResult},
+	})
+	got := buildDependencyContext(store, []string{"dep-long"})
+	if !strings.Contains(got, "TAIL_MARKER") {
+		t.Error("truncation should keep the tail (TAIL_MARKER missing)")
+	}
+	// The 'x' prefix should be partially truncated.
+	xCount := strings.Count(got, "x")
+	if xCount >= 5000 {
+		t.Errorf("expected truncation, but got %d x's", xCount)
+	}
+}
+
+func TestBuildDependencyContext_NoDeps(t *testing.T) {
+	store := writeTasks(t, []task.Task{})
+	got := buildDependencyContext(store, []string{})
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestBuildDependencyContext_EmptyResult(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "dep-empty", Description: "Empty dep", Status: task.StatusDone, Result: ""},
+	})
+	got := buildDependencyContext(store, []string{"dep-empty"})
+	if got != "" {
+		t.Errorf("expected empty string for dep with no result, got %q", got)
+	}
+}

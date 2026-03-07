@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wolandomny/retinue/internal/task"
+	"github.com/wolandomny/retinue/internal/workspace"
 )
 
 func TestRunValidation_NoConfig(t *testing.T) {
@@ -232,6 +234,123 @@ func TestMarkTaskMerged_SetsStatus(t *testing.T) {
 		t.Fatalf("expected merged, got %s", archived[0].Status)
 	}
 	if archived[0].FinishedAt == nil {
+		t.Fatal("expected FinishedAt to be set")
+	}
+}
+
+func TestMergeOne_NoArchiveKeepsTask(t *testing.T) {
+	ctx := context.Background()
+
+	// Create the apartment directory with a repo inside it.
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoPath := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initialize the git repo.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if _, err := runGit(ctx, repoPath, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a branch with a commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a worktree for the branch inside the apartment's .worktrees dir.
+	worktreeDir := filepath.Join(aptDir, ".worktrees")
+	os.MkdirAll(worktreeDir, 0o755)
+	worktreePath := filepath.Join(worktreeDir, "t1")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up workspace and store.
+	tasksPath := filepath.Join(aptDir, "tasks.yaml")
+	store := task.NewFileStore(tasksPath)
+	store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+	})
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
+		},
+	}
+
+	result := mergeOne(ctx, mergeOneOpts{
+		ws:      ws,
+		store:   store,
+		t:       task.Task{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+		review:  false,
+		archive: false,
+		out:     io.Discard,
+	})
+
+	if result.Err != nil {
+		t.Fatalf("mergeOne failed: %v", result.Err)
+	}
+	if !result.Merged {
+		t.Fatal("expected Merged=true")
+	}
+
+	// Task should still be in tasks.yaml (not archived).
+	tasks, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task still in file, got %d", len(tasks))
+	}
+	if tasks[0].Status != task.StatusMerged {
+		t.Fatalf("expected merged status, got %s", tasks[0].Status)
+	}
+}
+
+func TestMarkTaskMergedNoArchive(t *testing.T) {
+	store := writeTasks(t, []task.Task{
+		{ID: "t1", Status: task.StatusDone},
+	})
+	markTaskMergedNoArchive(store, "t1")
+
+	tasks, _ := store.Load()
+	if len(tasks) != 1 {
+		t.Fatalf("expected task to remain, got %d tasks", len(tasks))
+	}
+	if tasks[0].Status != task.StatusMerged {
+		t.Fatalf("expected merged, got %s", tasks[0].Status)
+	}
+	if tasks[0].FinishedAt == nil {
 		t.Fatal("expected FinishedAt to be set")
 	}
 }

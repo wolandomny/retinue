@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,88 @@ import (
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
+
+type mergeOneOpts struct {
+	ws      *workspace.Workspace
+	store   *task.FileStore
+	t       task.Task
+	review  bool
+	archive bool // false during runAll to keep tasks visible for dependency resolution
+	out     io.Writer
+}
+
+type mergeOneResult struct {
+	Merged   bool
+	Rejected bool
+	Err      error
+}
+
+// mergeOne performs the merge logic for a single task.
+func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
+	repoCfg, ok := opts.ws.Config.Repos[opts.t.Repo]
+	if !ok {
+		errMsg := fmt.Sprintf("repo %q not found in config", opts.t.Repo)
+		markTaskFailed(opts.store, opts.t.ID, errMsg)
+		return mergeOneResult{Err: fmt.Errorf("%s", errMsg)}
+	}
+	repoPath := filepath.Join(opts.ws.Path, repoCfg.Path)
+	worktreePath := filepath.Join(opts.ws.Path, workspace.WorktreeDir, opts.t.ID)
+
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		errMsg := fmt.Sprintf("worktree %s not found", worktreePath)
+		markTaskFailed(opts.store, opts.t.ID, errMsg)
+		return mergeOneResult{Err: fmt.Errorf("%s", errMsg)}
+	}
+
+	baseBranch := task.ResolveBaseBranch(opts.t, opts.ws.Config.Repos)
+
+	// Run validation before merging.
+	if cmdStr, ok := opts.ws.Config.Validate[opts.t.Repo]; ok && cmdStr != "" {
+		fmt.Fprintf(opts.out, "Task %q: running validation...\n", opts.t.ID)
+	}
+	if err := runValidation(ctx, worktreePath, opts.t.Repo, opts.ws.Config.Validate); err != nil {
+		markTaskFailed(opts.store, opts.t.ID, err.Error())
+		fmt.Fprintf(opts.out, "Task %q failed validation: %s\n", opts.t.ID, err)
+		return mergeOneResult{Err: err}
+	}
+
+	// Optional pre-merge review.
+	if opts.review {
+		fmt.Fprintf(opts.out, "Task %q: reviewing diff...\n", opts.t.ID)
+		verdict, reviewErr := reviewDiff(ctx, worktreePath, opts.t, baseBranch, opts.ws.Config.Model, opts.ws.LogsPath())
+		if reviewErr != nil {
+			fmt.Fprintf(opts.out, "Task %q: review failed: %s (proceeding anyway)\n", opts.t.ID, reviewErr)
+		} else if !verdict.Approved {
+			// Move task back to pending with feedback.
+			if err := opts.store.Update(opts.t.ID, func(tk *task.Task) {
+				tk.Status = task.StatusPending
+				tk.Error = ""
+				tk.Prompt = tk.Prompt + "\n\n## Review Feedback (from previous attempt)\n" + verdict.Feedback
+				if verdict.Usage.InputTokens > 0 {
+					tk.Meta["review_tokens"] = fmt.Sprintf("%d/%d", verdict.Usage.InputTokens, verdict.Usage.OutputTokens)
+				}
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update rejected task: %v\n", err)
+			}
+			fmt.Fprintf(opts.out, "Task %q rejected by review:\n%s\n\n", opts.t.ID, verdict.Feedback)
+			return mergeOneResult{Rejected: true}
+		} else {
+			fmt.Fprintf(opts.out, "Task %q: review approved\n", opts.t.ID)
+		}
+	}
+
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, opts.t.Branch, baseBranch, opts.ws.Config.Model, opts.ws.LogsPath()); err != nil {
+		markTaskFailed(opts.store, opts.t.ID, err.Error())
+		return mergeOneResult{Err: err}
+	}
+
+	if opts.archive {
+		markTaskMerged(opts.store, opts.t.ID, opts.ws.ArchivePath())
+	} else {
+		markTaskMergedNoArchive(opts.store, opts.t.ID)
+	}
+	return mergeOneResult{Merged: true}
+}
 
 
 // newMergeCmd returns a command that merges completed task branches
@@ -69,65 +152,21 @@ func newMergeCmd() *cobra.Command {
 			}
 
 			for _, t := range targets {
-				repoCfg, ok := ws.Config.Repos[t.Repo]
-				if !ok {
-					markTaskFailed(store, t.ID, fmt.Sprintf("repo %q not found in config", t.Repo))
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: repo %q not found in config\n", t.ID, t.Repo)
-					continue
+				result := mergeOne(ctx, mergeOneOpts{
+					ws:      ws,
+					store:   store,
+					t:       t,
+					review:  review,
+					archive: true,
+					out:     cmd.OutOrStdout(),
+				})
+				if result.Err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, result.Err)
+				} else if result.Rejected {
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q rejected by review\n", t.ID)
+				} else if result.Merged {
+					fmt.Fprintf(cmd.OutOrStdout(), "Task %q merged successfully.\n", t.ID)
 				}
-				repoPath := filepath.Join(ws.Path, repoCfg.Path)
-				worktreePath := filepath.Join(ws.Path, workspace.WorktreeDir, t.ID)
-
-				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-					markTaskFailed(store, t.ID, fmt.Sprintf("worktree %s not found", worktreePath))
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: worktree not found\n", t.ID)
-					continue
-				}
-
-				baseBranch := task.ResolveBaseBranch(t, ws.Config.Repos)
-
-				// Run validation before merging.
-				if cmdStr, ok := ws.Config.Validate[t.Repo]; ok && cmdStr != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q: running validation...\n", t.ID)
-				}
-				if err := runValidation(ctx, worktreePath, t.Repo, ws.Config.Validate); err != nil {
-					markTaskFailed(store, t.ID, err.Error())
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed validation: %s\n", t.ID, err)
-					continue
-				}
-
-				// Optional pre-merge review.
-				if review {
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q: reviewing diff...\n", t.ID)
-					verdict, reviewErr := reviewDiff(ctx, worktreePath, t, baseBranch, ws.Config.Model, ws.LogsPath())
-					if reviewErr != nil {
-						fmt.Fprintf(cmd.OutOrStdout(), "Task %q: review failed: %s (proceeding anyway)\n", t.ID, reviewErr)
-					} else if !verdict.Approved {
-						// Move task back to pending with feedback.
-						if err := store.Update(t.ID, func(tk *task.Task) {
-							tk.Status = task.StatusPending
-							tk.Error = ""
-							tk.Prompt = tk.Prompt + "\n\n## Review Feedback (from previous attempt)\n" + verdict.Feedback
-							if verdict.Usage.InputTokens > 0 {
-								tk.Meta["review_tokens"] = fmt.Sprintf("%d/%d", verdict.Usage.InputTokens, verdict.Usage.OutputTokens)
-							}
-						}); err != nil {
-							fmt.Fprintf(os.Stderr, "warning: failed to update rejected task: %v\n", err)
-						}
-						fmt.Fprintf(cmd.OutOrStdout(), "Task %q rejected by review:\n%s\n\n", t.ID, verdict.Feedback)
-						continue
-					} else {
-						fmt.Fprintf(cmd.OutOrStdout(), "Task %q: review approved\n", t.ID)
-					}
-				}
-
-				if err := rebaseAndMerge(ctx, repoPath, worktreePath, t.Branch, baseBranch, ws.Config.Model, ws.LogsPath()); err != nil {
-					markTaskFailed(store, t.ID, err.Error())
-					fmt.Fprintf(cmd.OutOrStdout(), "Task %q failed: %s\n", t.ID, err)
-					continue
-				}
-				markTaskMerged(store, t.ID, ws.ArchivePath())
-				fmt.Fprintf(cmd.OutOrStdout(), "Task %q merged successfully.\n", t.ID)
 			}
 
 			return nil
@@ -316,6 +355,19 @@ func markTaskFailed(store *task.FileStore, id, errMsg string) {
 		now := time.Now()
 		t.Status = task.StatusFailed
 		t.Error = errMsg
+		t.FinishedAt = &now
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
+	}
+}
+
+// markTaskMergedNoArchive transitions the task to merged status but
+// does NOT archive it. The task stays in tasks.yaml so that
+// depsResolved() can find it during runAll.
+func markTaskMergedNoArchive(store *task.FileStore, id string) {
+	if err := store.Update(id, func(t *task.Task) {
+		now := time.Now()
+		t.Status = task.StatusMerged
 		t.FinishedAt = &now
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
