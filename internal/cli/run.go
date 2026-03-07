@@ -136,11 +136,11 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 					archive: false,
 					out:     out,
 				})
-				if result.merged {
+				if result.Merged {
 					fmt.Fprintf(out, "[run] Merged task %q\n", t.ID)
-				} else if result.rejected {
+				} else if result.Rejected {
 					fmt.Fprintf(out, "[run] Task %q rejected by review, will re-dispatch\n", t.ID)
-				} else if result.failed {
+				} else if result.Err != nil {
 					fmt.Fprintf(out, "[run] Task %q merge failed\n", t.ID)
 				}
 			} else {
@@ -267,7 +267,7 @@ drainDone:
 				archive: false,
 				out:     out,
 			})
-			if result.merged {
+			if result.Merged {
 				fmt.Fprintf(out, "[run] Final merge: task %q merged\n", t.ID)
 			}
 		} else {

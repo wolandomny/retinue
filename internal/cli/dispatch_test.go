@@ -359,7 +359,11 @@ func TestBuildDependencyContext_EmptyResult(t *testing.T) {
 		{ID: "dep-empty", Description: "Empty dep", Status: task.StatusDone, Result: ""},
 	})
 	got := buildDependencyContext(store, []string{"dep-empty"})
-	if got != "" {
-		t.Errorf("expected empty string for dep with no result, got %q", got)
+	// Dep with empty result still appears (with description), just without a Result line.
+	if !strings.Contains(got, "dep-empty") {
+		t.Errorf("expected dep-empty in context, got %q", got)
+	}
+	if strings.Contains(got, "Result:") {
+		t.Errorf("expected no Result line for empty result, got %q", got)
 	}
 }

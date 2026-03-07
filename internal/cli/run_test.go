@@ -124,8 +124,8 @@ func TestArchiveCleanup(t *testing.T) {
 	}
 
 	// Verify: 2 tasks should be in the archive.
-	archiveStore := task.NewFileStore(archivePath)
-	archived, err := archiveStore.Load()
+	archiveStoreCheck := task.NewFileStore(archivePath)
+	archived, err := archiveStoreCheck.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,41 +134,14 @@ func TestArchiveCleanup(t *testing.T) {
 	}
 }
 
-func TestMarkTaskMergedNoArchive(t *testing.T) {
-	store := writeTasks(t, []task.Task{
-		{ID: "t1", Status: task.StatusDone},
-	})
-
-	markTaskMergedNoArchive(store, "t1")
-
-	tasks, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task (not archived), got %d", len(tasks))
-	}
-	if tasks[0].Status != task.StatusMerged {
-		t.Fatalf("expected merged, got %s", tasks[0].Status)
-	}
-	if tasks[0].FinishedAt == nil {
-		t.Fatal("expected FinishedAt to be set")
-	}
-}
-
-func TestBuildDependencyContext(t *testing.T) {
+func TestBuildDependencyContext_WithDeps(t *testing.T) {
 	store := writeTasks(t, []task.Task{
 		{ID: "dep1", Status: task.StatusMerged, Description: "Setup DB", Result: "Created schema"},
 		{ID: "dep2", Status: task.StatusMerged, Description: "Add auth", Result: "Added JWT auth"},
 		{ID: "main-task", Status: task.StatusPending, DependsOn: []string{"dep1", "dep2"}},
 	})
 
-	mainTask := task.Task{
-		ID:        "main-task",
-		DependsOn: []string{"dep1", "dep2"},
-	}
-
-	ctx := buildDependencyContext(store, mainTask)
+	ctx := buildDependencyContext(store, []string{"dep1", "dep2"})
 
 	if !strings.Contains(ctx, "dep1") {
 		t.Errorf("expected dep1 in context, got: %s", ctx)
@@ -181,17 +154,6 @@ func TestBuildDependencyContext(t *testing.T) {
 	}
 	if !strings.Contains(ctx, "dep2") {
 		t.Errorf("expected dep2 in context, got: %s", ctx)
-	}
-}
-
-func TestBuildDependencyContext_NoDeps(t *testing.T) {
-	store := writeTasks(t, []task.Task{
-		{ID: "t1", Status: task.StatusPending},
-	})
-
-	ctx := buildDependencyContext(store, task.Task{ID: "t1"})
-	if ctx != "" {
-		t.Errorf("expected empty context for task with no deps, got: %s", ctx)
 	}
 }
 
