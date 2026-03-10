@@ -5,7 +5,7 @@ package shell
 import "strings"
 
 // Quote wraps s in single quotes, escaping embedded single quotes
-// using the '\'' idiom. The result is safe to embed in a POSIX shell
+// using the '\” idiom. The result is safe to embed in a POSIX shell
 // command string.
 func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"

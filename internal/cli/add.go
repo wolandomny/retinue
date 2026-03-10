@@ -30,10 +30,10 @@ func newAddRepoCmd() *cobra.Command {
 	var nameFlag string
 
 	cmd := &cobra.Command{
-		Use:   "repo <host/owner/repo>",
-		Short: "Clone a repo into the apartment and register it",
+		Use:     "repo <host/owner/repo>",
+		Short:   "Clone a repo into the apartment and register it",
 		Example: "  retinue add repo github.com/org/api",
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath := strings.TrimSuffix(args[0], ".git")
 			gitURL := "https://" + repoPath + ".git"

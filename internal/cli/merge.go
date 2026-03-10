@@ -98,7 +98,6 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 	return mergeOneResult{Merged: true}
 }
 
-
 // newMergeCmd returns a command that merges completed task branches
 // back into the base branch.
 func newMergeCmd() *cobra.Command {
@@ -360,7 +359,6 @@ func markTaskFailed(store *task.FileStore, id, errMsg string) {
 		fmt.Fprintf(os.Stderr, "warning: failed to update task %q: %v\n", id, err)
 	}
 }
-
 
 // markTaskMergedNoArchive transitions the task to merged status but
 // does NOT archive it. The task stays in tasks.yaml so that

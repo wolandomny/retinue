@@ -67,7 +67,7 @@ func (m *TmuxManager) Create(ctx context.Context, name, workDir, command string)
 	// Write the command to a temp script to avoid tmux's command length limit.
 	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("retinue-%s.sh", name))
 	script := fmt.Sprintf("#!/bin/sh\nrm -f '%s'\n%s\n", scriptPath, command)
-	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return fmt.Errorf("writing tmux script: %w", err)
 	}
 
@@ -124,7 +124,7 @@ func (m *TmuxManager) CreateWindow(ctx context.Context, session, window, workDir
 	// Write the command to a temp script to avoid tmux's command length limit.
 	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("retinue-%s-%s.sh", session, window))
 	script := fmt.Sprintf("#!/bin/sh\nrm -f '%s'\n%s\n", scriptPath, command)
-	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return fmt.Errorf("writing tmux script: %w", err)
 	}
 

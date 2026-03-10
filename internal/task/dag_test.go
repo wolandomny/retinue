@@ -6,9 +6,9 @@ import (
 
 func TestReady(t *testing.T) {
 	tests := []struct {
-		name     string
-		tasks    []Task
-		wantIDs  []string
+		name    string
+		tasks   []Task
+		wantIDs []string
 	}{
 		{
 			name:    "empty list",

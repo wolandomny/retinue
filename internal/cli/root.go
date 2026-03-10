@@ -11,9 +11,9 @@ var workspaceFlag string
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "retinue",
-		Short: "Multi-agent orchestration CLI for Claude Code",
-		Long:  "Retinue orchestrates multiple Claude Code agents to work on tasks in parallel across repositories.",
+		Use:          "retinue",
+		Short:        "Multi-agent orchestration CLI for Claude Code",
+		Long:         "Retinue orchestrates multiple Claude Code agents to work on tasks in parallel across repositories.",
 		SilenceUsage: true,
 	}
 
