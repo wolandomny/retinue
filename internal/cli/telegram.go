@@ -3,8 +3,10 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -133,6 +135,40 @@ func runTelegramSetup(ctx context.Context) error {
 	}
 	fmt.Println("Chat ID saved to retinue.yaml.")
 
+	// Write .mcp.json with the retinue-telegram server config.
+	mcpPath := filepath.Join(ws.Path, ".mcp.json")
+	mcpCfg := map[string]interface{}{}
+
+	if existing, err := os.ReadFile(mcpPath); err == nil {
+		if err := json.Unmarshal(existing, &mcpCfg); err != nil {
+			return fmt.Errorf("parsing existing .mcp.json: %w", err)
+		}
+	}
+
+	servers, ok := mcpCfg["mcpServers"].(map[string]interface{})
+	if !ok {
+		servers = map[string]interface{}{}
+	}
+	servers["retinue-telegram"] = map[string]interface{}{
+		"command": "retinue",
+		"args":    []string{"mcp", "telegram"},
+		"env": map[string]string{
+			"RETINUE_TELEGRAM_TOKEN":   token,
+			"RETINUE_TELEGRAM_CHAT_ID": fmt.Sprintf("%d", chatID),
+		},
+	}
+	mcpCfg["mcpServers"] = servers
+
+	mcpData, err := json.MarshalIndent(mcpCfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling .mcp.json: %w", err)
+	}
+	if err := os.WriteFile(mcpPath, mcpData, 0o644); err != nil {
+		return fmt.Errorf("writing .mcp.json: %w", err)
+	}
+	fmt.Printf("MCP config written to %s\n", mcpPath)
+
+	// Step 3: Shell profile configuration.
 	fmt.Println()
 	fmt.Println("Step 3: Configure your environment")
 	fmt.Println()
@@ -141,26 +177,6 @@ func runTelegramSetup(ctx context.Context) error {
 	fmt.Printf("    export RETINUE_TELEGRAM_TOKEN=\"%s\"\n", token)
 	fmt.Println()
 	fmt.Println("  Then reload: source ~/.zshrc")
-
-	// Step 4: Claude Code MCP configuration.
-	fmt.Println()
-	fmt.Println("Step 4: Configure Claude Code")
-	fmt.Println()
-	fmt.Println("  Add the following to your Claude Code MCP settings")
-	fmt.Println("  (usually ~/.claude/mcp.json or the project's .mcp.json):")
-	fmt.Println()
-	fmt.Println("  {")
-	fmt.Println(`    "mcpServers": {`)
-	fmt.Println(`      "retinue-telegram": {`)
-	fmt.Println(`        "command": "retinue",`)
-	fmt.Println(`        "args": ["mcp", "telegram"],`)
-	fmt.Println(`        "env": {`)
-	fmt.Printf("          \"RETINUE_TELEGRAM_TOKEN\": \"%s\",\n", token)
-	fmt.Printf("          \"RETINUE_TELEGRAM_CHAT_ID\": \"%d\"\n", chatID)
-	fmt.Println(`        }`)
-	fmt.Println(`      }`)
-	fmt.Println(`    }`)
-	fmt.Println("  }")
 
 	fmt.Println()
 	fmt.Println("Setup complete! Start a Woland session to test:")
