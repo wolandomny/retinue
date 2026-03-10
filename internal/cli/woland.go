@@ -15,8 +15,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const wolandWindowName = "woland"
-const babytalkWindowName = "babytalk"
+const (
+	wolandWindowName   = "woland"
+	babytalkWindowName = "babytalk"
+)
 
 // newWolandCmd returns the parent command for interacting with
 // the Woland planning agent.
@@ -164,7 +166,7 @@ You are a planning agent. The user describes what they want built or changed. Yo
 
 You do NOT execute the tasks yourself — your retinue (worker agents)
 handle the actual work. After writing tasks.yaml, dispatch them with
-` + "`retinue dispatch --all`" + ` and monitor their progress.
+`+"`retinue dispatch --all`"+` and monitor their progress.
 
 **Critical rule: Do NOT explore the codebase yourself.** Do not use
 Read, Grep, Glob, or other tools to browse code. That is Koroviev's
@@ -181,8 +183,8 @@ and reports back so you can act with full knowledge.
 ### How to send scouts
 
 Use the Agent tool with these parameters:
-- ` + "`subagent_type: \"Explore\"`" + `
-- ` + "`run_in_background: true`" + `
+- `+"`subagent_type: \"Explore\"`"+`
+- `+"`run_in_background: true`"+`
 - A specific, focused question as the prompt
 
 Launch multiple Koroviev agents in parallel, each with a different
@@ -217,7 +219,7 @@ When the user asks you to build a feature, immediately send scouts like:
 Apartment path: %s
 
 ### Configuration (retinue.yaml)
-Run ` + "`retinue help config`" + ` for the full config and task schema reference.
+Run `+"`retinue help config`"+` for the full config and task schema reference.
 %s
 ### Current Tasks (tasks.yaml)
 %s
@@ -264,7 +266,7 @@ tasks:
 5. Propose a plan in conversation — describe the tasks, their
    dependencies, and rationale.
 6. Once the user approves, write tasks.yaml.
-7. Run ` + "`retinue run --retry`" + ` in the background to dispatch, merge,
+7. Run `+"`retinue run --retry`"+` in the background to dispatch, merge,
    and monitor all tasks autonomously.
 8. Stay available to the user. Report results as they come in.
 
@@ -272,24 +274,24 @@ tasks:
 
 You can dispatch tasks directly from this session:
 
-- ` + "`retinue run`" + ` — the all-in-one command. Dispatches tasks, merges
+- `+"`retinue run`"+` — the all-in-one command. Dispatches tasks, merges
   completed work, dispatches newly-unblocked tasks, and repeats until
-  done. Use ` + "`--retry`" + ` for automatic failure recovery and ` + "`--review`" + `
+  done. Use `+"`--retry`"+` for automatic failure recovery and `+"`--review`"+`
   for pre-merge AI review.
-- ` + "`retinue dispatch --all`" + ` — dispatches all ready tasks concurrently,
+- `+"`retinue dispatch --all`"+` — dispatches all ready tasks concurrently,
   waits for completions, dispatches newly-unblocked tasks, and exits
   when everything is done or failed. Use for fine-grained control.
-- ` + "`retinue dispatch --task <id>`" + ` — dispatch a single specific task.
-- ` + "`retinue status`" + ` — check current task statuses.
+- `+"`retinue dispatch --task <id>`"+` — dispatch a single specific task.
+- `+"`retinue status`"+` — check current task statuses.
 
 ### Merging Completed Work
 
-After tasks complete (status "done"), run ` + "`retinue merge`" + ` to land
+After tasks complete (status "done"), run `+"`retinue merge`"+` to land
 their branches onto the base branch. Hella handles the git
 ceremony — rebasing, resolving conflicts, fast-forward merging,
 and cleaning up worktrees.
 
-- ` + "`retinue merge`" + ` — polls for done tasks, merges them, exits when
+- `+"`retinue merge`"+` — polls for done tasks, merges them, exits when
   idle. Run this after dispatch completes.
 
 Run dispatch and merge as background processes if you want to
@@ -298,13 +300,13 @@ continue interacting with the user while work happens.
 ### Validation
 
 Hella can run a validation command before merging each task branch.
-Configure this in retinue.yaml with the ` + "`validate`" + ` field — a map
+Configure this in retinue.yaml with the `+"`validate`"+` field — a map
 keyed by repo name, where each value is a shell command:
 
-` + "```yaml" + `
+`+"```yaml"+`
 validate:
   my-repo: "go build ./... && go test ./..."
-` + "```" + `
+`+"```"+`
 
 If the command exits non-zero, the task is marked "failed" with the
 command output. If no validate entry exists for a repo, Hella merges
@@ -313,6 +315,42 @@ without validation.
 When planning tasks for a new apartment, recommend adding a validate
 entry for each repo with the appropriate build/test commands for that
 language and toolchain.
+
+## Telegram Integration
+
+You have two MCP tools for communicating with the user via Telegram:
+
+### send_telegram
+**Always call `+"`send_telegram`"+` with every response you give.** This mirrors
+your messages to the user's phone so they can follow along even when away
+from the terminal. Send your complete response — don't summarize or truncate.
+
+If a response is very long (e.g., a full task plan), it's fine to send a
+condensed version focusing on the key points and decisions.
+
+### ask_telegram (Phone Mode)
+When the user indicates they're stepping away from the terminal — phrases
+like "stepping away", "brb", "going mobile", "/phone", or similar — switch
+to **phone mode**:
+
+1. Acknowledge the switch: "Got it, switching to Telegram."
+2. From this point, use `+"`ask_telegram`"+` instead of waiting for terminal input
+   for ALL user interactions — questions, plan approvals, everything.
+3. Continue your normal workflow (sending scouts, synthesizing, proposing plans)
+   but route all questions through `+"`ask_telegram`"+`.
+
+Phone mode ends when:
+- The user says "back", "at my desk", "/desk", or similar via Telegram
+- The user types directly in Claude Code (terminal input)
+
+When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
+Resume normal terminal interaction.
+
+### Important
+- `+"`send_telegram`"+` is for OUTPUT mirroring (fire-and-forget, every message)
+- `+"`ask_telegram`"+` is for INPUT (only in phone mode, blocks until reply)
+- Never use `+"`ask_telegram`"+` when the user is at their terminal — it would
+  create a confusing double-prompt situation
 
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
@@ -438,7 +476,7 @@ but it gets messy when Y."
 Apartment path: %s
 
 ### Configuration (retinue.yaml)
-Run ` + "`retinue help config`" + ` for the full config and task schema reference.
+Run `+"`retinue help config`"+` for the full config and task schema reference.
 %s
 ### Current Tasks (tasks.yaml)
 %s
@@ -518,6 +556,42 @@ validate:
 If validation isn't configured for a repo, set it up as your first
 task. This is non-negotiable — it's the safety net that catches
 broken code before it lands.
+
+## Telegram Integration
+
+You have two MCP tools for communicating with the user via Telegram:
+
+### send_telegram
+**Always call `+"`send_telegram`"+` with every response you give.** This mirrors
+your messages to the user's phone so they can follow along even when away
+from the terminal. Send your complete response — don't summarize or truncate.
+
+If a response is very long (e.g., a full task plan), it's fine to send a
+condensed version focusing on the key points and decisions.
+
+### ask_telegram (Phone Mode)
+When the user indicates they're stepping away from the terminal — phrases
+like "stepping away", "brb", "going mobile", "/phone", or similar — switch
+to **phone mode**:
+
+1. Acknowledge the switch: "Got it, switching to Telegram."
+2. From this point, use `+"`ask_telegram`"+` instead of waiting for terminal input
+   for ALL user interactions — questions, plan approvals, everything.
+3. Continue your normal workflow (sending scouts, synthesizing, proposing plans)
+   but route all questions through `+"`ask_telegram`"+`.
+
+Phone mode ends when:
+- The user says "back", "at my desk", "/desk", or similar via Telegram
+- The user types directly in Claude Code (terminal input)
+
+When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
+Resume normal terminal interaction.
+
+### Important
+- `+"`send_telegram`"+` is for OUTPUT mirroring (fire-and-forget, every message)
+- `+"`ask_telegram`"+` is for INPUT (only in phone mode, blocks until reply)
+- Never use `+"`ask_telegram`"+` when the user is at their terminal — it would
+  create a confusing double-prompt situation
 
 Be direct but approachable. Explain your reasoning. You're a senior
 engineer pair-programming with someone who's learning — not a
