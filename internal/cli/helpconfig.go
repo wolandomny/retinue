@@ -79,6 +79,7 @@ Task fields:
   repo            string      Key from repos map in retinue.yaml
   branch          string      Git branch name (auto-generated if omitted)
   base_branch     string      Branch to merge into (overrides repo config)
+  model           string      Claude model override (falls back to workspace model)
   depends_on      []string    Task IDs this depends on (for ordering)
   status          string      Task status (see below)
   prompt          string      Detailed instructions for the worker agent

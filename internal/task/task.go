@@ -21,6 +21,7 @@ type Task struct {
 	Repo        string            `yaml:"repo"`
 	Branch      string            `yaml:"branch,omitempty"`
 	BaseBranch  string            `yaml:"base_branch,omitempty"`
+	Model       string            `yaml:"model,omitempty"`
 	DependsOn   []string          `yaml:"depends_on"`
 	Status      string            `yaml:"status"`
 	Prompt      string            `yaml:"prompt"`

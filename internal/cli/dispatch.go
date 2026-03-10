@@ -156,11 +156,17 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		fmt.Fprintf(os.Stderr, "warning: failed to record session: %v\n", err)
 	}
 
+	// Use task-level model if set, otherwise fall back to workspace default.
+	model := ws.Config.Model
+	if target.Model != "" {
+		model = target.Model
+	}
+
 	result, err := runner.Run(ctx, agent.RunOpts{
 		Prompt:           target.Prompt,
 		SystemPrompt:     systemPrompt,
 		WorkDir:          workDir,
-		Model:            ws.Config.Model,
+		Model:            model,
 		LogFile:          logFile,
 		WindowName:       windowName,
 		ApartmentSession: aptSession,

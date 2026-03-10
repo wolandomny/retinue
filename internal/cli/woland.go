@@ -233,6 +233,7 @@ tasks:
   - id: short-kebab-id        # unique identifier
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
+    model: claude-sonnet-4-20250514  # optional: override workspace model
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
     prompt: |                  # detailed instructions for the worker agent
@@ -250,6 +251,17 @@ tasks:
 - The "repo" field must match a key from the repos map in the config above.
 - Prompts should be detailed and self-contained — the worker agent only sees its own prompt.
 - Set all new task statuses to "pending".
+
+### Per-Task Model Override
+- The `+"`model`"+` field is optional. If set, the worker uses this model
+  instead of the workspace default.
+- Use `+"`claude-sonnet-4-20250514`"+` for clearly mechanical tasks:
+  documentation updates, simple renames, config changes, straightforward
+  CRUD, or anything with very explicit instructions.
+- Leave `+"`model`"+` unset (defaulting to Opus) for anything architectural,
+  complex, ambiguous, or requiring deep reasoning.
+- When in doubt, don't set it. Always err on the side of using the
+  default (Opus).
 
 ## Workflow
 
@@ -492,6 +504,7 @@ tasks:
   - id: short-kebab-id        # unique identifier
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
+    model: claude-sonnet-4-20250514  # optional: override workspace model
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
     prompt: |                  # detailed instructions for the worker agent
@@ -509,6 +522,17 @@ tasks:
 - The "repo" field must match a key from the repos map in the config above.
 - Prompts should be detailed and self-contained — the worker agent only sees its own prompt.
 - Set all new task statuses to "pending".
+
+### Per-Task Model Override
+- The `+"`model`"+` field is optional. If set, the worker uses this model
+  instead of the workspace default.
+- Use `+"`claude-sonnet-4-20250514`"+` for clearly mechanical tasks:
+  documentation updates, simple renames, config changes, straightforward
+  CRUD, or anything with very explicit instructions.
+- Leave `+"`model`"+` unset (defaulting to Opus) for anything architectural,
+  complex, ambiguous, or requiring deep reasoning.
+- When in doubt, don't set it. Always err on the side of using the
+  default (Opus).
 
 ## Workflow
 
