@@ -2,13 +2,69 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
+
+func TestSyncWriter_ConcurrentWrites(t *testing.T) {
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	sw := &syncWriter{mu: &mu, w: &buf}
+
+	const goroutines = 10
+	const writes = 100
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < writes; j++ {
+				fmt.Fprintf(sw, "goroutine %d write %d\n", id, j)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != goroutines*writes {
+		t.Errorf("expected %d lines, got %d", goroutines*writes, len(lines))
+	}
+
+	// Verify no interleaved output — each line should match the pattern.
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "goroutine ") || !strings.Contains(line, " write ") {
+			t.Errorf("line %d looks corrupted: %q", i, line)
+		}
+	}
+}
+
+func TestSyncWriter_ImplementsIOWriter(t *testing.T) {
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	sw := &syncWriter{mu: &mu, w: &buf}
+
+	// Verify it satisfies io.Writer interface.
+	var w io.Writer = sw
+	n, err := w.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("expected 5 bytes written, got %d", n)
+	}
+	if buf.String() != "hello" {
+		t.Fatalf("expected 'hello', got %q", buf.String())
+	}
+}
 
 func TestPrintRunSummary(t *testing.T) {
 	dir := t.TempDir()

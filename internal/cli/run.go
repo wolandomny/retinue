@@ -50,8 +50,24 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
+// syncWriter wraps an io.Writer with mutex protection so that
+// multiple goroutines (merge goroutine, dispatch workers, Abadonna)
+// can write without interleaving output.
+type syncWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (sw *syncWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
+
 // runAll runs an iterative dispatch+merge loop until all tasks are
-// complete or no more progress can be made.
+// complete or no more progress can be made. Merges run in a background
+// goroutine (sequentially) so that dispatch can proceed without waiting
+// for validation, rebase, or merge to finish.
 func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, out io.Writer, review bool) error {
 	maxWorkers := ws.Config.MaxWorkers
 	if maxWorkers <= 0 {
@@ -63,6 +79,61 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 	inFlight := make(map[string]bool)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+
+	// --- Merge infrastructure ---
+	// mergeCh feeds "done" tasks to a background goroutine that processes
+	// merges one at a time (sequential to avoid rebase/ff-merge races).
+	// The large buffer prevents the main loop from blocking on send.
+	mergeCh := make(chan task.Task, 1024)
+	// mergeDone signals the main loop that a merge completed so it can
+	// re-evaluate exit conditions and discover newly-ready tasks.
+	mergeDone := make(chan struct{}, 1)
+	// merging tracks task IDs currently queued or in-flight for merge,
+	// preventing the main loop from re-triggering merge for the same task.
+	merging := make(map[string]bool)
+	var mergeWg sync.WaitGroup
+	// mergeOut is a mutex-protected writer passed to mergeOne so its
+	// internal Fprintf calls don't race with dispatch/Abadonna output.
+	mergeOut := &syncWriter{mu: &mu, w: out}
+
+	// Start the merge goroutine — reads from mergeCh and processes
+	// merges sequentially (one at a time).
+	go func() {
+		for t := range mergeCh {
+			if t.Branch != "" && t.Repo != "" {
+				result := mergeOne(ctx, mergeOneOpts{
+					ws:      ws,
+					store:   store,
+					t:       t,
+					review:  review,
+					archive: false,
+					out:     mergeOut,
+				})
+				if result.Merged {
+					fmt.Fprintf(mergeOut, "[run] Merged task %q\n", t.ID)
+				} else if result.Rejected {
+					fmt.Fprintf(mergeOut, "[run] Task %q rejected by review, will re-dispatch\n", t.ID)
+				} else if result.Err != nil {
+					fmt.Fprintf(mergeOut, "[run] Task %q merge failed\n", t.ID)
+				}
+			} else {
+				// Repo-less task — mark merged without archive.
+				markTaskMergedNoArchive(store, t.ID)
+				fmt.Fprintf(mergeOut, "[run] Marked repo-less task %q as merged\n", t.ID)
+			}
+
+			mu.Lock()
+			delete(merging, t.ID)
+			mu.Unlock()
+			mergeWg.Done()
+
+			// Signal the main loop that a merge completed.
+			select {
+			case mergeDone <- struct{}{}:
+			default:
+			}
+		}
+	}()
 
 	// Start Abadonna — the silent monitor for stall/loop detection.
 	wdState := newAbadonnaState()
@@ -116,8 +187,8 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 	}()
 
 	for {
-		// === MERGE PHASE ===
-		// Reload tasks from disk.
+		// === QUEUE DONE TASKS FOR BACKGROUND MERGE ===
+		// Reload tasks from disk to discover newly-completed tasks.
 		tasks, err := store.Load()
 		if err != nil {
 			return fmt.Errorf("loading tasks: %w", err)
@@ -127,31 +198,20 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 			if t.Status != task.StatusDone {
 				continue
 			}
-			if t.Branch != "" && t.Repo != "" {
-				result := mergeOne(ctx, mergeOneOpts{
-					ws:      ws,
-					store:   store,
-					t:       t,
-					review:  review,
-					archive: false,
-					out:     out,
-				})
-				if result.Merged {
-					fmt.Fprintf(out, "[run] Merged task %q\n", t.ID)
-				} else if result.Rejected {
-					fmt.Fprintf(out, "[run] Task %q rejected by review, will re-dispatch\n", t.ID)
-				} else if result.Err != nil {
-					fmt.Fprintf(out, "[run] Task %q merge failed\n", t.ID)
-				}
-			} else {
-				// Repo-less task — mark merged without archive.
-				markTaskMergedNoArchive(store, t.ID)
-				fmt.Fprintf(out, "[run] Marked repo-less task %q as merged\n", t.ID)
+			mu.Lock()
+			already := merging[t.ID]
+			if !already {
+				merging[t.ID] = true
+			}
+			mu.Unlock()
+			if !already {
+				mergeWg.Add(1)
+				mergeCh <- t
 			}
 		}
 
 		// === DISPATCH PHASE ===
-		// Reload tasks (state may have changed from merges).
+		// Reload tasks (merge goroutine may have updated state).
 		tasks, err = store.Load()
 		if err != nil {
 			return fmt.Errorf("loading tasks: %w", err)
@@ -169,12 +229,13 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 		}
 		mu.Unlock()
 
-		// If nothing to dispatch and nothing in-flight, we're done.
+		// Exit when nothing to dispatch, nothing executing, and nothing merging.
 		mu.Lock()
 		nInFlight := len(inFlight)
+		nMerging := len(merging)
 		mu.Unlock()
 
-		if len(toDispatch) == 0 && nInFlight == 0 {
+		if len(toDispatch) == 0 && nInFlight == 0 && nMerging == 0 {
 			break
 		}
 
@@ -220,21 +281,26 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 			}()
 		}
 
-		// Wait for at least one task to complete before looping.
+		// Wait for at least one event (dispatch or merge completion)
+		// before re-evaluating the loop.
 		mu.Lock()
-		hasInFlight := len(inFlight) > 0
+		hasWork := len(inFlight) > 0 || len(merging) > 0
 		mu.Unlock()
 
-		if hasInFlight {
+		if hasWork {
 			select {
 			case <-done:
+			case <-mergeDone:
 			case <-ctx.Done():
+				close(mergeCh)
+				mergeWg.Wait()
 				wg.Wait()
 				return ctx.Err()
 			}
 		}
 	}
 
+	// Wait for all dispatch workers to finish.
 	wg.Wait()
 
 	// Drain done channel.
@@ -249,7 +315,8 @@ drainDone:
 
 	// === POST-LOOP CLEANUP ===
 
-	// Final merge pass — merge any tasks that completed in the last iteration.
+	// Queue any final "done" tasks that completed in the last iteration
+	// (dispatch workers may have finished after the exit check).
 	tasks, err := store.Load()
 	if err != nil {
 		return fmt.Errorf("loading tasks for final merge: %w", err)
@@ -258,23 +325,21 @@ drainDone:
 		if t.Status != task.StatusDone {
 			continue
 		}
-		if t.Branch != "" && t.Repo != "" {
-			result := mergeOne(ctx, mergeOneOpts{
-				ws:      ws,
-				store:   store,
-				t:       t,
-				review:  review,
-				archive: false,
-				out:     out,
-			})
-			if result.Merged {
-				fmt.Fprintf(out, "[run] Final merge: task %q merged\n", t.ID)
-			}
-		} else {
-			markTaskMergedNoArchive(store, t.ID)
-			fmt.Fprintf(out, "[run] Final merge: repo-less task %q marked merged\n", t.ID)
+		mu.Lock()
+		already := merging[t.ID]
+		if !already {
+			merging[t.ID] = true
+		}
+		mu.Unlock()
+		if !already {
+			mergeWg.Add(1)
+			mergeCh <- t
 		}
 	}
+
+	// Close the merge channel and wait for all in-flight merges.
+	close(mergeCh)
+	mergeWg.Wait()
 
 	// Archive all merged tasks.
 	tasks, err = store.Load()
