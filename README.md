@@ -11,7 +11,7 @@ make build      # builds to bin/retinue
 make install    # installs to $GOPATH/bin
 ```
 
-Requires Go 1.25+ and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
+Requires Go 1.25+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [tmux](https://github.com/tmux/tmux) installed. Tmux is used to run all worker agents and the Woland planning session.
 
 ## Quick start
 
@@ -71,6 +71,14 @@ This opens (or reattaches to) an interactive Claude Code session inside tmux. De
 6. Report results back to you.
 
 Woland persists across disconnects. If you detach from tmux or close your terminal, `retinue woland talk` reattaches to the same session.
+
+There's also a guided variant for non-engineers:
+
+```bash
+retinue woland babytalk
+```
+
+Babytalk uses the same planning workflow but with a system prompt tuned for non-engineer builders. It provides more architectural explanation, learning-focused guidance, and always dispatches with `--retry --review` for safer execution.
 
 ## How work gets done
 
@@ -163,6 +171,20 @@ Flags:
 - `--task <id>` — merge a single task by ID.
 - `--review` — run a lightweight AI review of the diff against the original task prompt before merging. If the review rejects the work, the task goes back to pending with the feedback appended to its prompt.
 
+### The all-in-one loop
+
+`retinue run` combines dispatch and merge into a single loop. It dispatches ready tasks, waits for them to finish, merges completed branches, and repeats until everything is done or failed.
+
+```bash
+retinue run
+```
+
+This is typically what Woland calls under the hood. Flags:
+
+- `--retry` — automatically retry failed tasks. Each retry spawns a Claude call to analyze the failure and rewrite the task prompt before re-dispatching.
+- `--max-retries N` — maximum retry rounds (default: 2). Used with `--retry`.
+- `--review` — run an AI review of each task's diff before merging. If the review rejects the work, the task goes back to pending with feedback appended to its prompt.
+
 ### Task lifecycle
 
 Tasks move through: `pending` → `in_progress` → `done` → `merged` (or `failed`).
@@ -178,3 +200,64 @@ The status table shows each task's ID, status, repo, token usage, and descriptio
 ## Options
 
 - `-w, --workspace <path>` — point to an apartment directory (default: current directory)
+
+## Tasks schema
+
+The `tasks.yaml` file defines all work items. Each task has these fields:
+
+```yaml
+tasks:
+  - id: add-auth            # unique identifier
+    description: Add JWT authentication to the API  # human-readable summary
+    repo: api               # repository key (must match retinue.yaml)
+    depends_on:              # task IDs that must complete first
+      - setup-db
+    status: pending          # pending | in_progress | done | merged | failed
+    prompt: |                # detailed instructions for the worker agent
+      Add JWT middleware to the Echo server.
+      Use the golang-jwt/jwt/v5 library.
+    artifacts:               # files this task will create or modify
+      - internal/auth/jwt.go
+      - internal/middleware/auth.go
+    meta:                    # optional key-value metadata
+      priority: high
+```
+
+The `branch` and `base_branch` fields are optional — retinue auto-generates the branch as `retinue/<task-id>` and defaults the base to `main`. The `result`, `error`, `started_at`, and `finished_at` fields are managed by retinue during execution.
+
+For the full config and task schema reference, run:
+
+```bash
+retinue help config
+```
+
+## Telegram integration
+
+Retinue can route Woland's communication through Telegram, so you can step away from your terminal and stay in the loop from your phone.
+
+### Setup
+
+```bash
+retinue telegram setup
+```
+
+The interactive setup walks you through:
+
+1. Creating a bot via [@BotFather](https://t.me/BotFather) in Telegram.
+2. Pasting your bot token — the CLI validates it against the Telegram API.
+3. Sending a message to your new bot so the CLI can detect your chat ID.
+4. Saving the `chat_id` to `retinue.yaml` and writing MCP tool config to `.mcp.json`.
+
+After setup, add the bot token to your shell profile:
+
+```bash
+export RETINUE_TELEGRAM_TOKEN="<your-bot-token>"
+```
+
+### Phone mode
+
+When you're talking to Woland and need to step away, just say "stepping away" or type `/phone`. Woland switches to Telegram — sending responses and asking questions through your bot instead of the terminal.
+
+When you're back at your desk, say "back" or type `/desk` (in Telegram or the terminal) and Woland switches back to the terminal session.
+
+Outside of phone mode, Woland won't message you on Telegram unless background work has been running for a while and there's something important to report.
