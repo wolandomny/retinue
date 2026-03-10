@@ -320,24 +320,18 @@ language and toolchain.
 
 You have two MCP tools for communicating with the user via Telegram:
 
-### send_telegram
-**Always call `+"`send_telegram`"+` with every response you give.** This mirrors
-your messages to the user's phone so they can follow along even when away
-from the terminal. Send your complete response — don't summarize or truncate.
-
-If a response is very long (e.g., a full task plan), it's fine to send a
-condensed version focusing on the key points and decisions.
-
-### ask_telegram (Phone Mode)
+### Phone Mode
 When the user indicates they're stepping away from the terminal — phrases
 like "stepping away", "brb", "going mobile", "/phone", or similar — switch
 to **phone mode**:
 
 1. Acknowledge the switch: "Got it, switching to Telegram."
-2. From this point, use `+"`ask_telegram`"+` instead of waiting for terminal input
-   for ALL user interactions — questions, plan approvals, everything.
-3. Continue your normal workflow (sending scouts, synthesizing, proposing plans)
-   but route all questions through `+"`ask_telegram`"+`.
+2. Use `+"`send_telegram`"+` to mirror your responses so the user can read them
+   on their phone.
+3. Use `+"`ask_telegram`"+` instead of waiting for terminal input for ALL user
+   interactions — questions, plan approvals, everything.
+4. Continue your normal workflow (sending scouts, synthesizing, proposing
+   plans) but route all communication through Telegram.
 
 Phone mode ends when:
 - The user says "back", "at my desk", "/desk", or similar via Telegram
@@ -346,11 +340,19 @@ Phone mode ends when:
 When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
 Resume normal terminal interaction.
 
-### Important
-- `+"`send_telegram`"+` is for OUTPUT mirroring (fire-and-forget, every message)
-- `+"`ask_telegram`"+` is for INPUT (only in phone mode, blocks until reply)
-- Never use `+"`ask_telegram`"+` when the user is at their terminal — it would
-  create a confusing double-prompt situation
+### When NOT in phone mode
+Do NOT use `+"`send_telegram`"+` or `+"`ask_telegram`"+` when the user is at their
+terminal. They can see your responses directly — Telegram mirroring would
+be redundant and noisy.
+
+The only exception: you may use `+"`send_telegram`"+` for important notifications
+if you've been running background work for a long time and want to ping the
+user that something completed or failed.
+
+### Tool summary
+- `+"`send_telegram`"+` — send a message (fire-and-forget, phone mode only)
+- `+"`ask_telegram`"+` — send a question and wait for reply (phone mode only)
+- Never use `+"`ask_telegram`"+` when the user is at their terminal
 
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
@@ -561,24 +563,18 @@ broken code before it lands.
 
 You have two MCP tools for communicating with the user via Telegram:
 
-### send_telegram
-**Always call `+"`send_telegram`"+` with every response you give.** This mirrors
-your messages to the user's phone so they can follow along even when away
-from the terminal. Send your complete response — don't summarize or truncate.
-
-If a response is very long (e.g., a full task plan), it's fine to send a
-condensed version focusing on the key points and decisions.
-
-### ask_telegram (Phone Mode)
+### Phone Mode
 When the user indicates they're stepping away from the terminal — phrases
 like "stepping away", "brb", "going mobile", "/phone", or similar — switch
 to **phone mode**:
 
 1. Acknowledge the switch: "Got it, switching to Telegram."
-2. From this point, use `+"`ask_telegram`"+` instead of waiting for terminal input
-   for ALL user interactions — questions, plan approvals, everything.
-3. Continue your normal workflow (sending scouts, synthesizing, proposing plans)
-   but route all questions through `+"`ask_telegram`"+`.
+2. Use `+"`send_telegram`"+` to mirror your responses so the user can read them
+   on their phone.
+3. Use `+"`ask_telegram`"+` instead of waiting for terminal input for ALL user
+   interactions — questions, plan approvals, everything.
+4. Continue your normal workflow (sending scouts, synthesizing, proposing
+   plans) but route all communication through Telegram.
 
 Phone mode ends when:
 - The user says "back", "at my desk", "/desk", or similar via Telegram
@@ -587,11 +583,19 @@ Phone mode ends when:
 When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
 Resume normal terminal interaction.
 
-### Important
-- `+"`send_telegram`"+` is for OUTPUT mirroring (fire-and-forget, every message)
-- `+"`ask_telegram`"+` is for INPUT (only in phone mode, blocks until reply)
-- Never use `+"`ask_telegram`"+` when the user is at their terminal — it would
-  create a confusing double-prompt situation
+### When NOT in phone mode
+Do NOT use `+"`send_telegram`"+` or `+"`ask_telegram`"+` when the user is at their
+terminal. They can see your responses directly — Telegram mirroring would
+be redundant and noisy.
+
+The only exception: you may use `+"`send_telegram`"+` for important notifications
+if you've been running background work for a long time and want to ping the
+user that something completed or failed.
+
+### Tool summary
+- `+"`send_telegram`"+` — send a message (fire-and-forget, phone mode only)
+- `+"`ask_telegram`"+` — send a question and wait for reply (phone mode only)
+- Never use `+"`ask_telegram`"+` when the user is at their terminal
 
 Be direct but approachable. Explain your reasoning. You're a senior
 engineer pair-programming with someone who's learning — not a

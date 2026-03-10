@@ -72,7 +72,7 @@ func newMCPTelegramCmd() *cobra.Command {
 
 			srv.AddTool(mcp.ToolDef{
 				Name:        "send_telegram",
-				Description: "Send a message to the user's Telegram chat. Use this to mirror every response you give so the user can read it on their phone.",
+				Description: "Send a message to the user's Telegram chat. Use this in phone mode to mirror responses when the user is away from the terminal.",
 				InputSchema: mcp.InputSchema{
 					Type: "object",
 					Properties: map[string]mcp.Property{
