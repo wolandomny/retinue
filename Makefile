@@ -28,4 +28,5 @@ clean:
 	rm -rf $(BINDIR) coverage.out coverage.html
 
 install: build
-	cp $(BINDIR)/$(BINARY) $(GOPATH)/bin/$(BINARY)
+	mkdir -p $(shell go env GOPATH)/bin
+	cp $(BINDIR)/$(BINARY) $(shell go env GOPATH)/bin/$(BINARY)

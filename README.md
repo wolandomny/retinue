@@ -6,12 +6,23 @@ Retinue manages task dependencies as a DAG, dispatches ready tasks to Claude Cod
 
 ## Installation
 
+Requires [Go 1.25+](https://go.dev/dl/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [tmux](https://github.com/tmux/tmux).
+
 ```bash
-make build      # builds to bin/retinue
-make install    # installs to $GOPATH/bin
+make install    # builds the binary and installs to $(go env GOPATH)/bin
 ```
 
-Requires Go 1.25+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [tmux](https://github.com/tmux/tmux) installed. Tmux is used to run all worker agents and the Woland planning session.
+Make sure `$(go env GOPATH)/bin` is in your `PATH`. If you haven't already, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+```bash
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+Then reload your shell (`source ~/.zshrc`) or open a new terminal. Verify with:
+
+```bash
+retinue --help
+```
 
 ## Quick start
 
