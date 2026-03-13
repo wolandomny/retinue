@@ -28,9 +28,10 @@ type Task struct {
 	Artifacts   []string          `yaml:"artifacts"`
 	Result      string            `yaml:"result,omitempty"`
 	Error       string            `yaml:"error,omitempty"`
-	StartedAt   *time.Time        `yaml:"started_at,omitempty"`
-	FinishedAt  *time.Time        `yaml:"finished_at,omitempty"`
-	Meta        map[string]string `yaml:"meta,omitempty"`
+	StartedAt    *time.Time        `yaml:"started_at,omitempty"`
+	FinishedAt   *time.Time        `yaml:"finished_at,omitempty"`
+	Meta         map[string]string `yaml:"meta,omitempty"`
+	SkipValidate bool              `yaml:"skip_validate,omitempty" json:"skip_validate,omitempty"`
 }
 
 // TaskFile is the top-level structure of tasks.yaml.

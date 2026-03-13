@@ -354,3 +354,193 @@ func TestMarkTaskMergedNoArchive(t *testing.T) {
 		t.Fatal("expected FinishedAt to be set")
 	}
 }
+
+func TestMergeOne_SkipValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// Create the apartment directory with a repo inside it.
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoPath := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initialize the git repo.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if _, err := runGit(ctx, repoPath, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a branch with a commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a worktree for the branch inside the apartment's .worktrees dir.
+	worktreeDir := filepath.Join(aptDir, ".worktrees")
+	os.MkdirAll(worktreeDir, 0o755)
+	worktreePath := filepath.Join(worktreeDir, "t1")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up workspace and store.
+	tasksPath := filepath.Join(aptDir, "tasks.yaml")
+	store := task.NewFileStore(tasksPath)
+	store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature", SkipValidate: true},
+	})
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos:    map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
+			Validate: map[string]string{"myrepo": "false"}, // Validation command that would fail
+		},
+	}
+
+	var output strings.Builder
+	result := mergeOne(ctx, mergeOneOpts{
+		ws:      ws,
+		store:   store,
+		t:       task.Task{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature", SkipValidate: true},
+		review:  false,
+		archive: false,
+		out:     &output,
+	})
+
+	// Should succeed despite failing validation command because skip_validate=true
+	if result.Err != nil {
+		t.Fatalf("mergeOne failed: %v", result.Err)
+	}
+	if !result.Merged {
+		t.Fatal("expected Merged=true")
+	}
+
+	// Verify the skip message appeared in output
+	if !strings.Contains(output.String(), "skipping validation (skip_validate=true)") {
+		t.Errorf("expected skip validation message in output, got: %s", output.String())
+	}
+}
+
+func TestMergeOne_ValidationStillRuns(t *testing.T) {
+	ctx := context.Background()
+
+	// Create the apartment directory with a repo inside it.
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoPath := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initialize the git repo.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if _, err := runGit(ctx, repoPath, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a branch with a commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a worktree for the branch inside the apartment's .worktrees dir.
+	worktreeDir := filepath.Join(aptDir, ".worktrees")
+	os.MkdirAll(worktreeDir, 0o755)
+	worktreePath := filepath.Join(worktreeDir, "t1")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up workspace and store.
+	tasksPath := filepath.Join(aptDir, "tasks.yaml")
+	store := task.NewFileStore(tasksPath)
+	store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature", SkipValidate: false},
+	})
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos:    map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
+			Validate: map[string]string{"myrepo": "false"}, // Validation command that will fail
+		},
+	}
+
+	var output strings.Builder
+	result := mergeOne(ctx, mergeOneOpts{
+		ws:      ws,
+		store:   store,
+		t:       task.Task{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature", SkipValidate: false},
+		review:  false,
+		archive: false,
+		out:     &output,
+	})
+
+	// Should fail due to validation failure since skip_validate=false
+	if result.Err == nil {
+		t.Fatal("expected mergeOne to fail due to validation failure")
+	}
+	if result.Merged {
+		t.Fatal("expected Merged=false due to validation failure")
+	}
+
+	// Verify the validation failed message appeared in output
+	if !strings.Contains(output.String(), "failed validation") {
+		t.Errorf("expected validation failure message in output, got: %s", output.String())
+	}
+}

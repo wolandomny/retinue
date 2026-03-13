@@ -52,13 +52,15 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 	baseBranch := task.ResolveBaseBranch(opts.t, opts.ws.Config.Repos)
 
 	// Run validation before merging.
-	if cmdStr, ok := opts.ws.Config.Validate[opts.t.Repo]; ok && cmdStr != "" {
+	if cmdStr, ok := opts.ws.Config.Validate[opts.t.Repo]; ok && cmdStr != "" && !opts.t.SkipValidate {
 		fmt.Fprintf(opts.out, "Task %q: running validation...\n", opts.t.ID)
-	}
-	if err := runValidation(ctx, worktreePath, opts.t.Repo, opts.ws.Config.Validate); err != nil {
-		markTaskFailed(opts.store, opts.t.ID, err.Error())
-		fmt.Fprintf(opts.out, "Task %q failed validation: %s\n", opts.t.ID, err)
-		return mergeOneResult{Err: err}
+		if err := runValidation(ctx, worktreePath, opts.t.Repo, opts.ws.Config.Validate); err != nil {
+			markTaskFailed(opts.store, opts.t.ID, err.Error())
+			fmt.Fprintf(opts.out, "Task %q failed validation: %s\n", opts.t.ID, err)
+			return mergeOneResult{Err: err}
+		}
+	} else if opts.t.SkipValidate {
+		fmt.Fprintf(opts.out, "Task %q: skipping validation (skip_validate=true)\n", opts.t.ID)
 	}
 
 	// Optional pre-merge review.

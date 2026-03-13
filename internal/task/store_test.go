@@ -3,6 +3,7 @@ package task
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -282,5 +283,63 @@ func TestFileStoreYAMLFormat(t *testing.T) {
 	}
 	if tasks[0].Meta["priority"] != "high" {
 		t.Errorf("task.Meta[priority] = %q, want %q", tasks[0].Meta["priority"], "high")
+	}
+}
+
+func TestSkipValidateField_YAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.yaml")
+	store := NewFileStore(path)
+
+	// Test task with skip_validate: true
+	tasks := []Task{
+		{
+			ID:           "skip-validation",
+			Description:  "Task that skips validation",
+			Repo:         "api",
+			Status:       StatusPending,
+			Prompt:       "Do something",
+			SkipValidate: true,
+		},
+		{
+			ID:           "normal-task",
+			Description:  "Normal task",
+			Repo:         "api",
+			Status:       StatusPending,
+			Prompt:       "Do something else",
+			SkipValidate: false,
+		},
+	}
+
+	// Save and reload
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(loaded) != 2 {
+		t.Fatalf("Load() returned %d tasks, want 2", len(loaded))
+	}
+
+	// Check the skip_validate field was preserved
+	if loaded[0].SkipValidate != true {
+		t.Errorf("loaded[0].SkipValidate = %v, want true", loaded[0].SkipValidate)
+	}
+	if loaded[1].SkipValidate != false {
+		t.Errorf("loaded[1].SkipValidate = %v, want false", loaded[1].SkipValidate)
+	}
+
+	// Also test that the YAML file contains the field when set to true
+	fileContent, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+
+	if !strings.Contains(string(fileContent), "skip_validate: true") {
+		t.Errorf("YAML file should contain 'skip_validate: true', got:\n%s", string(fileContent))
 	}
 }

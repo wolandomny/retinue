@@ -89,6 +89,7 @@ Task fields:
   started_at      timestamp   When dispatch started (set by system)
   finished_at     timestamp   When task completed (set by system)
   meta            map         Arbitrary key-value metadata
+  skip_validate   bool        Skip per-task validation before merge (default: false)
 
 Status values:
 
