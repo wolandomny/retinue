@@ -3,22 +3,28 @@ package task
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
 // FileStore persists tasks to a YAML file on disk. All operations
-// (Load, Save, Get, Update) are atomic at the file level — each call
-// reads or rewrites the entire file.
+// (Load, Save, Get, Update, Archive) are protected by a RWMutex so
+// that compound Load→Modify→Save cycles are atomic. Read-only
+// operations (Load, Get) take a read lock; mutating operations
+// (Save, Update, Archive) take a write lock.
 type FileStore struct {
 	Path string
+	mu   sync.RWMutex
 }
 
 func NewFileStore(path string) *FileStore {
 	return &FileStore{Path: path}
 }
 
-func (s *FileStore) Load() ([]Task, error) {
+// load reads and parses the tasks file without acquiring any lock.
+// Callers must hold at least a read lock.
+func (s *FileStore) load() ([]Task, error) {
 	data, err := os.ReadFile(s.Path)
 	if err != nil {
 		return nil, fmt.Errorf("reading tasks file: %w", err)
@@ -32,7 +38,9 @@ func (s *FileStore) Load() ([]Task, error) {
 	return tf.Tasks, nil
 }
 
-func (s *FileStore) Save(tasks []Task) error {
+// save writes tasks to disk without acquiring any lock.
+// Callers must hold the write lock.
+func (s *FileStore) save(tasks []Task) error {
 	tf := TaskFile{Tasks: tasks}
 
 	data, err := yaml.Marshal(&tf)
@@ -47,8 +55,28 @@ func (s *FileStore) Save(tasks []Task) error {
 	return nil
 }
 
+// Load reads all tasks from the YAML file. It acquires a read lock to
+// prevent reading a partially-written file.
+func (s *FileStore) Load() ([]Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.load()
+}
+
+// Save writes all tasks to the YAML file. It acquires a write lock to
+// prevent concurrent writes.
+func (s *FileStore) Save(tasks []Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.save(tasks)
+}
+
+// Get returns a single task by ID. It acquires a read lock.
 func (s *FileStore) Get(id string) (*Task, error) {
-	tasks, err := s.Load()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks, err := s.load()
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +92,14 @@ func (s *FileStore) Get(id string) (*Task, error) {
 
 // Archive removes a task from the main tasks file and appends it
 // to the archive file. The task is saved with its final state.
+// It acquires a write lock for the entire Load→Modify→Save cycle
+// so that concurrent Updates cannot be clobbered.
 func (s *FileStore) Archive(id string, archivePath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Load current tasks.
-	tasks, err := s.Load()
+	tasks, err := s.load()
 	if err != nil {
 		return fmt.Errorf("loading tasks for archive: %w", err)
 	}
@@ -107,11 +140,17 @@ func (s *FileStore) Archive(id string, archivePath string) error {
 	}
 
 	// Save remaining tasks back to the main file.
-	return s.Save(remaining)
+	return s.save(remaining)
 }
 
+// Update applies fn to the task with the given ID, then writes all
+// tasks back to disk. It acquires a write lock for the entire
+// Load→Modify→Save cycle.
 func (s *FileStore) Update(id string, fn func(*Task)) error {
-	tasks, err := s.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tasks, err := s.load()
 	if err != nil {
 		return err
 	}
@@ -119,7 +158,7 @@ func (s *FileStore) Update(id string, fn func(*Task)) error {
 	for i := range tasks {
 		if tasks[i].ID == id {
 			fn(&tasks[i])
-			return s.Save(tasks)
+			return s.save(tasks)
 		}
 	}
 

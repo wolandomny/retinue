@@ -1,9 +1,11 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -341,5 +343,192 @@ func TestSkipValidateField_YAML(t *testing.T) {
 
 	if !strings.Contains(string(fileContent), "skip_validate: true") {
 		t.Errorf("YAML file should contain 'skip_validate: true', got:\n%s", string(fileContent))
+	}
+}
+
+// TestConcurrentUpdates verifies that many goroutines can call Update
+// concurrently without any updates being lost.
+func TestConcurrentUpdates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.yaml")
+	store := NewFileStore(path)
+
+	const numTasks = 20
+
+	// Create tasks, all starting as pending.
+	tasks := make([]Task, numTasks)
+	for i := range tasks {
+		tasks[i] = Task{
+			ID:     fmt.Sprintf("task-%d", i),
+			Status: StatusPending,
+		}
+	}
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Concurrently update every task to in_progress.
+	var wg sync.WaitGroup
+	wg.Add(numTasks)
+	for i := 0; i < numTasks; i++ {
+		go func(id string) {
+			defer wg.Done()
+			if err := store.Update(id, func(tk *Task) {
+				tk.Status = StatusInProgress
+			}); err != nil {
+				t.Errorf("Update(%q) error = %v", id, err)
+			}
+		}(fmt.Sprintf("task-%d", i))
+	}
+	wg.Wait()
+
+	// Verify all tasks were updated — none should still be pending.
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != numTasks {
+		t.Fatalf("expected %d tasks, got %d (tasks lost!)", numTasks, len(loaded))
+	}
+	for _, tk := range loaded {
+		if tk.Status != StatusInProgress {
+			t.Errorf("task %q status = %q, want %q", tk.ID, tk.Status, StatusInProgress)
+		}
+	}
+}
+
+// TestConcurrentUpdateAndArchive verifies that concurrent Update and
+// Archive calls don't clobber each other. This is the exact race
+// condition described in the bug: Archive loads tasks, filters, and
+// writes back — if an Update happens in between, it gets lost.
+func TestConcurrentUpdateAndArchive(t *testing.T) {
+	dir := t.TempDir()
+	tasksPath := filepath.Join(dir, "tasks.yaml")
+	archivePath := filepath.Join(dir, "tasks-archive.yaml")
+	store := NewFileStore(tasksPath)
+
+	// Create 10 tasks: task-0 will be archived, the rest will be updated.
+	const numTasks = 10
+	tasks := make([]Task, numTasks)
+	for i := range tasks {
+		tasks[i] = Task{
+			ID:     fmt.Sprintf("task-%d", i),
+			Status: StatusPending,
+		}
+	}
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	var wg sync.WaitGroup
+
+	// Archive task-0 in one goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := store.Archive("task-0", archivePath); err != nil {
+			t.Errorf("Archive() error = %v", err)
+		}
+	}()
+
+	// Concurrently update all other tasks to done.
+	for i := 1; i < numTasks; i++ {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			if err := store.Update(id, func(tk *Task) {
+				tk.Status = StatusDone
+			}); err != nil {
+				t.Errorf("Update(%q) error = %v", id, err)
+			}
+		}(fmt.Sprintf("task-%d", i))
+	}
+
+	wg.Wait()
+
+	// Verify: task-0 should be gone from the main file.
+	remaining, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	expectedRemaining := numTasks - 1
+	if len(remaining) != expectedRemaining {
+		t.Fatalf("expected %d remaining tasks, got %d (tasks lost!)", expectedRemaining, len(remaining))
+	}
+
+	// All remaining tasks should have status done.
+	for _, tk := range remaining {
+		if tk.ID == "task-0" {
+			t.Errorf("task-0 should have been archived but is still in main file")
+		}
+		if tk.Status != StatusDone {
+			t.Errorf("task %q status = %q, want %q", tk.ID, tk.Status, StatusDone)
+		}
+	}
+
+	// Verify task-0 is in the archive.
+	archiveStore := NewFileStore(archivePath)
+	archived, err := archiveStore.Load()
+	if err != nil {
+		t.Fatalf("loading archive: %v", err)
+	}
+	if len(archived) != 1 || archived[0].ID != "task-0" {
+		t.Errorf("expected archive to contain only task-0, got %v", archived)
+	}
+}
+
+// TestConcurrentMultipleArchives verifies that archiving multiple tasks
+// concurrently doesn't lose any tasks or corrupt the file.
+func TestConcurrentMultipleArchives(t *testing.T) {
+	dir := t.TempDir()
+	tasksPath := filepath.Join(dir, "tasks.yaml")
+	archivePath := filepath.Join(dir, "tasks-archive.yaml")
+	store := NewFileStore(tasksPath)
+
+	// Create 5 tasks to archive and 5 tasks to keep.
+	const total = 10
+	const toArchive = 5
+	tasks := make([]Task, total)
+	for i := range tasks {
+		tasks[i] = Task{
+			ID:     fmt.Sprintf("task-%d", i),
+			Status: StatusDone,
+		}
+	}
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Archive the first 5 tasks concurrently.
+	var wg sync.WaitGroup
+	for i := 0; i < toArchive; i++ {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			if err := store.Archive(id, archivePath); err != nil {
+				t.Errorf("Archive(%q) error = %v", id, err)
+			}
+		}(fmt.Sprintf("task-%d", i))
+	}
+	wg.Wait()
+
+	// Verify remaining tasks.
+	remaining, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != total-toArchive {
+		t.Fatalf("expected %d remaining tasks, got %d", total-toArchive, len(remaining))
+	}
+
+	// Verify archived tasks.
+	archiveStore := NewFileStore(archivePath)
+	archived, err := archiveStore.Load()
+	if err != nil {
+		t.Fatalf("loading archive: %v", err)
+	}
+	if len(archived) != toArchive {
+		t.Fatalf("expected %d archived tasks, got %d", toArchive, len(archived))
 	}
 }
