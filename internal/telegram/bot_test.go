@@ -437,6 +437,130 @@ func TestSplitMessage(t *testing.T) {
 	}
 }
 
+func TestSendMessage_MarkdownFallback(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+
+		var body sendMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+
+		if callCount == 1 {
+			// First call: fail with Markdown parse error
+			if body.ParseMode != "Markdown" {
+				t.Errorf("expected first call to have parse_mode Markdown, got %s", body.ParseMode)
+			}
+
+			resp := APIResponse[Message]{
+				OK:          false,
+				Description: "Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 42",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		} else if callCount == 2 {
+			// Second call: succeed without parse mode
+			if body.ParseMode != "" {
+				t.Errorf("expected second call to have empty parse_mode, got %s", body.ParseMode)
+			}
+
+			resp := APIResponse[Message]{
+				OK: true,
+				Result: Message{
+					ID:   1,
+					Chat: Chat{ID: 42, Type: "private"},
+					Text: body.Text,
+					Date: 1700000000,
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		} else {
+			t.Errorf("unexpected third call to sendMessage")
+		}
+	}))
+	defer server.Close()
+
+	bot := newTestBot(t, server)
+	msg, err := bot.SendMessage(context.Background(), 42, "message with *bad* markdown")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls, got %d", callCount)
+	}
+
+	if msg.ID != 1 {
+		t.Errorf("expected message ID 1, got %d", msg.ID)
+	}
+	if msg.Text != "message with *bad* markdown" {
+		t.Errorf("expected text 'message with *bad* markdown', got %q", msg.Text)
+	}
+}
+
+func TestSendMessage_MarkdownFallback_NonParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Fail with a different error (not a parse error)
+		resp := APIResponse[Message]{
+			OK:          false,
+			Description: "Bad Request: chat not found",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	bot := newTestBot(t, server)
+	_, err := bot.SendMessage(context.Background(), 42, "test")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Should not attempt fallback for non-parse errors
+	if !strings.Contains(err.Error(), "chat not found") {
+		t.Errorf("expected error to contain 'chat not found', got: %v", err)
+	}
+}
+
+func TestIsMarkdownParseError(t *testing.T) {
+	tests := []struct {
+		description string
+		want        bool
+	}{
+		{
+			description: "Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 42",
+			want:        true,
+		},
+		{
+			description: "Bad Request: can't parse entities",
+			want:        true,
+		},
+		{
+			description: "Bad Request: chat not found",
+			want:        false,
+		},
+		{
+			description: "Forbidden: bot was blocked by the user",
+			want:        false,
+		},
+		{
+			description: "",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			got := isMarkdownParseError(tt.description)
+			if got != tt.want {
+				t.Errorf("isMarkdownParseError(%q) = %v, want %v", tt.description, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEndpoint(t *testing.T) {
 	bot := New("my-token")
 	got := bot.endpoint("sendMessage")

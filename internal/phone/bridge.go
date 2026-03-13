@@ -54,6 +54,21 @@ func isKillWord(msg string) bool {
 	return false
 }
 
+// is409Conflict returns true if the error indicates a 409 conflict from Telegram
+// (another client polling the same bot).
+func is409Conflict(err error) bool {
+	errStr := err.Error()
+	// Check for HTTP 409 status code
+	if strings.Contains(errStr, "unexpected HTTP status 409") {
+		return true
+	}
+	// Check for Telegram API error description indicating conflict
+	if strings.Contains(errStr, "terminated by other getUpdates request") {
+		return true
+	}
+	return false
+}
+
 // Run starts the bridge and blocks until the context is cancelled.
 func (b *Bridge) Run(ctx context.Context) error {
 	// Send startup message.
@@ -163,12 +178,29 @@ func (b *Bridge) listenTelegram(ctx context.Context, offset *int64, out chan<- s
 			if ctx.Err() != nil {
 				return nil
 			}
-			b.logger.Printf("telegram poll error (backoff %v): %v", backoff, err)
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(backoff):
+
+			// Check for 409 conflict (another client polling)
+			if is409Conflict(err) {
+				b.logger.Printf("another Telegram client is polling this bot — phone bridge may miss messages (backoff %v): %v", backoff, err)
+				// Use longer backoff for conflicts since rapid retries just cause more conflicts
+				conflictBackoff := 5 * time.Second
+				if backoff > conflictBackoff {
+					conflictBackoff = backoff
+				}
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(conflictBackoff):
+				}
+			} else {
+				b.logger.Printf("telegram poll error (backoff %v): %v", backoff, err)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(backoff):
+				}
 			}
+
 			// Exponential backoff.
 			backoff *= 2
 			if backoff > maxBackoff {

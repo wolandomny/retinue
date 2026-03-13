@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -94,10 +95,36 @@ func (b *Bot) sendSingleMessage(ctx context.Context, chatID int64, text string) 
 	}
 
 	if !resp.OK {
+		// Check if this is a Markdown parse error
+		if isMarkdownParseError(resp.Description) {
+			// Retry without parse_mode
+			bodyPlain := sendMessageRequest{
+				ChatID:    chatID,
+				Text:      text,
+				ParseMode: "",
+			}
+
+			var respPlain APIResponse[Message]
+			if err := b.postJSON(ctx, "sendMessage", bodyPlain, &respPlain); err != nil {
+				return nil, fmt.Errorf("executing sendMessage request (fallback): %w", err)
+			}
+
+			if !respPlain.OK {
+				return nil, fmt.Errorf("telegram API error on sendMessage (fallback): %s", respPlain.Description)
+			}
+
+			return &respPlain.Result, nil
+		}
+
 		return nil, fmt.Errorf("telegram API error on sendMessage: %s", resp.Description)
 	}
 
 	return &resp.Result, nil
+}
+
+// isMarkdownParseError returns true if the error description indicates a Markdown parsing failure.
+func isMarkdownParseError(description string) bool {
+	return strings.Contains(description, "can't parse entities")
 }
 
 // getUpdatesRequest is the JSON body for the getUpdates API call.
