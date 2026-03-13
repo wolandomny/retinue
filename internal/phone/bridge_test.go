@@ -4,6 +4,40 @@ import (
 	"testing"
 )
 
+func TestIsKillWord(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"back", true},
+		{"Back", true},
+		{"BACK", true},
+		{"/desk", true},
+		{"/Desk", true},
+		{"at my desk", true},
+		{"At My Desk", true},
+		{"i'm back", true},
+		{"I'm Back", true},
+		{"im back", true},
+		{"Im Back", true},
+		{"  back  ", true},  // whitespace trimmed
+		{"back!", false},     // not exact match
+		{"I'm back!", false}, // not exact match
+		{"going back", false},
+		{"hello", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isKillWord(tt.input)
+			if got != tt.want {
+				t.Errorf("isKillWord(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEscapeTmux(t *testing.T) {
 	tests := []struct {
 		name  string

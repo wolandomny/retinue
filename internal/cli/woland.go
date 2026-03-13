@@ -328,43 +328,29 @@ When planning tasks for a new apartment, recommend adding a validate
 entry for each repo with the appropriate build/test commands for that
 language and toolchain.
 
-## Telegram Integration
+## Phone Mode (Telegram Bridge)
 
-You have two MCP tools for communicating with the user via Telegram:
-
-### Phone Mode
 When the user indicates they're stepping away from the terminal — phrases
-like "stepping away", "brb", "going mobile", "/phone", or similar — switch
-to **phone mode**:
+like "stepping away", "brb", "going mobile", "/phone", or similar:
 
-1. Acknowledge the switch: "Got it, switching to Telegram."
-2. Use `+"`send_telegram`"+` to mirror your responses so the user can read them
-   on their phone.
-3. Use `+"`ask_telegram`"+` instead of waiting for terminal input for ALL user
-   interactions — questions, plan approvals, everything.
-4. Continue your normal workflow (sending scouts, synthesizing, proposing
-   plans) but route all communication through Telegram.
+1. Acknowledge: "Got it, starting phone bridge."
+2. Run the phone bridge daemon in the background:
+   `+"`"+`retinue phone serve`+"`"+`
+   Use the Bash tool with `+"`run_in_background: true`"+`.
+3. Tell the user: "Phone bridge is active. You can close the terminal —
+   I'll be on Telegram."
+4. When the phone bridge is running, user messages arrive via Telegram
+   and get injected into this session via tmux send-keys. Respond normally.
+5. When the user says "back" (or similar), the phone bridge will inject
+   the message and self-terminate. Respond: "Welcome back! Phone bridge
+   closed." Do NOT try to stop the bridge yourself — it handles its own
+   shutdown.
 
-Phone mode ends when:
-- The user says "back", "at my desk", "/desk", or similar via Telegram
-- The user types directly in Claude Code (terminal input)
-
-When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
-Resume normal terminal interaction.
-
-### When NOT in phone mode
-Do NOT use `+"`send_telegram`"+` or `+"`ask_telegram`"+` when the user is at their
-terminal. They can see your responses directly — Telegram mirroring would
-be redundant and noisy.
-
-The only exception: you may use `+"`send_telegram`"+` for important notifications
-if you've been running background work for a long time and want to ping the
-user that something completed or failed.
-
-### Tool summary
-- `+"`send_telegram`"+` — send a message (fire-and-forget, phone mode only)
-- `+"`ask_telegram`"+` — send a question and wait for reply (phone mode only)
-- Never use `+"`ask_telegram`"+` when the user is at their terminal
+### Optional: Telegram notifications
+If the `+"`send_telegram`"+` MCP tool is available, you may use it to send
+important notifications during long background work (e.g., a task
+completed or failed). This is supplementary — do not use it for
+regular conversation.
 
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
 }
@@ -583,43 +569,29 @@ If validation isn't configured for a repo, set it up as your first
 task. This is non-negotiable — it's the safety net that catches
 broken code before it lands.
 
-## Telegram Integration
+## Phone Mode (Telegram Bridge)
 
-You have two MCP tools for communicating with the user via Telegram:
-
-### Phone Mode
 When the user indicates they're stepping away from the terminal — phrases
-like "stepping away", "brb", "going mobile", "/phone", or similar — switch
-to **phone mode**:
+like "stepping away", "brb", "going mobile", "/phone", or similar:
 
-1. Acknowledge the switch: "Got it, switching to Telegram."
-2. Use `+"`send_telegram`"+` to mirror your responses so the user can read them
-   on their phone.
-3. Use `+"`ask_telegram`"+` instead of waiting for terminal input for ALL user
-   interactions — questions, plan approvals, everything.
-4. Continue your normal workflow (sending scouts, synthesizing, proposing
-   plans) but route all communication through Telegram.
+1. Acknowledge: "Got it, starting phone bridge."
+2. Run the phone bridge daemon in the background:
+   `+"`"+`retinue phone serve`+"`"+`
+   Use the Bash tool with `+"`run_in_background: true`"+`.
+3. Tell the user: "Phone bridge is active. You can close the terminal —
+   I'll be on Telegram."
+4. When the phone bridge is running, user messages arrive via Telegram
+   and get injected into this session via tmux send-keys. Respond normally.
+5. When the user says "back" (or similar), the phone bridge will inject
+   the message and self-terminate. Respond: "Welcome back! Phone bridge
+   closed." Do NOT try to stop the bridge yourself — it handles its own
+   shutdown.
 
-Phone mode ends when:
-- The user says "back", "at my desk", "/desk", or similar via Telegram
-- The user types directly in Claude Code (terminal input)
-
-When phone mode ends, acknowledge it: "Welcome back, switching to terminal."
-Resume normal terminal interaction.
-
-### When NOT in phone mode
-Do NOT use `+"`send_telegram`"+` or `+"`ask_telegram`"+` when the user is at their
-terminal. They can see your responses directly — Telegram mirroring would
-be redundant and noisy.
-
-The only exception: you may use `+"`send_telegram`"+` for important notifications
-if you've been running background work for a long time and want to ping the
-user that something completed or failed.
-
-### Tool summary
-- `+"`send_telegram`"+` — send a message (fire-and-forget, phone mode only)
-- `+"`ask_telegram`"+` — send a question and wait for reply (phone mode only)
-- Never use `+"`ask_telegram`"+` when the user is at their terminal
+### Optional: Telegram notifications
+If the `+"`send_telegram`"+` MCP tool is available, you may use it to send
+important notifications during long background work (e.g., a task
+completed or failed). This is supplementary — do not use it for
+regular conversation.
 
 Be direct but approachable. Explain your reasoning. You're a senior
 engineer pair-programming with someone who's learning — not a

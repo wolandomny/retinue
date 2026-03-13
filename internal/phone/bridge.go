@@ -19,17 +19,39 @@ type Bridge struct {
 	tmuxSocket string
 	watcher    *Watcher
 	logger     *log.Logger
+	cancelFunc context.CancelFunc // set by caller to trigger shutdown
 }
 
 // NewBridge creates a new Bridge.
-func NewBridge(bot *telegram.Bot, chatID int64, tmuxSocket string, watcher *Watcher, logger *log.Logger) *Bridge {
+func NewBridge(bot *telegram.Bot, chatID int64, tmuxSocket string, watcher *Watcher, logger *log.Logger, cancelFunc context.CancelFunc) *Bridge {
 	return &Bridge{
 		bot:        bot,
 		chatID:     chatID,
 		tmuxSocket: tmuxSocket,
 		watcher:    watcher,
 		logger:     logger,
+		cancelFunc: cancelFunc,
 	}
+}
+
+// killWords are messages that cause the bridge to self-terminate.
+var killWords = []string{
+	"back",
+	"/desk",
+	"at my desk",
+	"i'm back",
+	"im back",
+}
+
+// isKillWord returns true if the message matches a kill-word (case-insensitive).
+func isKillWord(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	for _, kw := range killWords {
+		if lower == kw {
+			return true
+		}
+	}
+	return false
 }
 
 // Run starts the bridge and blocks until the context is cancelled.
@@ -65,7 +87,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil
 
 		case text, ok := <-watchCh:
 			if !ok {
@@ -81,6 +103,22 @@ func (b *Bridge) Run(ctx context.Context) error {
 			}
 
 		case msg := <-telegramCh:
+			if isKillWord(msg) {
+				b.logger.Printf("kill-word received: %q, shutting down", msg)
+				// Inject the message so Woland sees it.
+				if err := b.sendToTmux(ctx, msg); err != nil {
+					b.logger.Printf("error sending kill-word to tmux: %v", err)
+				}
+				// Send confirmation to Telegram.
+				if _, err := b.bot.SendMessage(ctx, b.chatID, "📱 Phone bridge closing. Welcome back!"); err != nil {
+					b.logger.Printf("error sending shutdown confirmation: %v", err)
+				}
+				// Cancel the context to trigger graceful shutdown.
+				if b.cancelFunc != nil {
+					b.cancelFunc()
+				}
+				return nil
+			}
 			if err := b.sendToTmux(ctx, msg); err != nil {
 				b.logger.Printf("error sending to tmux: %v", err)
 			}

@@ -152,12 +152,14 @@ Requires:
 			// Create watcher.
 			watcher := phone.NewWatcher(ws.Path, logger)
 
-			// Create bridge.
-			bridge := phone.NewBridge(bot, chatID, tmuxSocket, watcher, logger)
+			// Create bridge (cancel func passed below after context setup).
 
 			// Set up context with signal handling.
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
+
+			// Create bridge with cancel func so it can self-terminate on kill-words.
+			bridge := phone.NewBridge(bot, chatID, tmuxSocket, watcher, logger, cancel)
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
