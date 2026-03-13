@@ -1063,3 +1063,138 @@ func TestSeekToLineStart(t *testing.T) {
 		})
 	}
 }
+
+// TestWatcher_StartupDrainDoesNotForward verifies that existing assistant
+// messages in a session file are NOT forwarded when the watcher first
+// attaches (draining mode). Their UUIDs should be recorded in the seen
+// map for deduplication, but the out channel should remain empty.
+func TestWatcher_StartupDrainDoesNotForward(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Pre-populate the session file with a system prompt and two assistant
+	// messages that exist BEFORE the watcher starts.
+	content := strings.Join([]string{
+		`{"type":"system","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}`,
+		`{"type":"assistant","uuid":"stale-1","message":{"content":[{"type":"text","text":"Old message 1"}]}}`,
+		`{"type":"assistant","uuid":"stale-2","message":{"content":[{"type":"text","text":"Old message 2"}]}}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+
+	// Simulate the startup drain: set draining=true, read, then clear it.
+	w.draining = true
+	w.readNewLines(ctx, sessionFile, 0, out)
+	w.draining = false
+
+	// The out channel should be empty — no stale messages forwarded.
+	select {
+	case msg := <-out:
+		t.Errorf("unexpected message during drain: %q", msg)
+	default:
+		// good — no messages forwarded
+	}
+
+	// But the UUIDs should be recorded in the seen map.
+	if !w.seen["stale-1"] {
+		t.Error("expected UUID 'stale-1' to be in seen map after drain")
+	}
+	if !w.seen["stale-2"] {
+		t.Error("expected UUID 'stale-2' to be in seen map after drain")
+	}
+}
+
+// TestWatcher_MessagesAfterStartupAreForwarded verifies that assistant
+// messages written AFTER the watcher has started (and finished draining)
+// are correctly forwarded to the out channel, and that stale messages
+// from before startup are not re-sent even if their UUIDs reappear.
+func TestWatcher_MessagesAfterStartupAreForwarded(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Pre-populate with a system prompt and one existing assistant message.
+	initial := strings.Join([]string{
+		`{"type":"system","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}`,
+		`{"type":"assistant","uuid":"pre-1","message":{"content":[{"type":"text","text":"Pre-existing message"}]}}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir:   dir,
+		logger:       log.New(os.Stderr, "test: ", 0),
+		seen:         make(map[string]bool),
+		sessionCache: make(map[string]bool),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch := w.Watch(ctx, nil)
+
+	// Give the watcher time to start, find the file, and drain.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify no stale message was forwarded during startup.
+	select {
+	case msg := <-ch:
+		t.Fatalf("unexpected stale message on startup: %q", msg)
+	default:
+		// good — startup drain suppressed stale messages
+	}
+
+	// Now append new messages AFTER the watcher has started.
+	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(f, `{"type":"assistant","uuid":"new-1","message":{"content":[{"type":"text","text":"Fresh message"}]}}`)
+	fmt.Fprintln(f, `{"type":"assistant","uuid":"pre-1","message":{"content":[{"type":"text","text":"Pre-existing message"}]}}`)
+	f.Close()
+
+	// Collect messages — should only get the new one, not the duplicate.
+	var received []string
+	timeout := time.After(4 * time.Second)
+	for len(received) < 1 {
+		select {
+		case msg := <-ch:
+			received = append(received, msg)
+		case <-timeout:
+			t.Fatalf("timed out waiting for new message, got %d: %v", len(received), received)
+		}
+	}
+
+	// Give a moment for any extra messages to arrive.
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain any additional messages.
+	for {
+		select {
+		case msg := <-ch:
+			received = append(received, msg)
+		default:
+			goto done
+		}
+	}
+done:
+
+	if len(received) != 1 {
+		t.Fatalf("expected 1 message (new only), got %d: %v", len(received), received)
+	}
+	if received[0] != "Fresh message" {
+		t.Errorf("got %q, want %q", received[0], "Fresh message")
+	}
+}

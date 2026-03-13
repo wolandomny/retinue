@@ -73,6 +73,7 @@ type Watcher struct {
 	seen         map[string]bool // track seen UUIDs to avoid duplicates
 	partialLine  string          // buffered incomplete line from previous read
 	sessionCache map[string]bool // caches per-file Woland session check results
+	draining     bool            // when true, parse lines for dedup but don't forward
 }
 
 // NewWatcher creates a Watcher that monitors the given Claude Code projects
@@ -186,6 +187,12 @@ func (w *Watcher) watchLoop(ctx context.Context, out chan<- string, sessionSwitc
 					w.logger.Printf("startup: seeking to offset %d (file size %d)", offset, info.Size())
 				}
 			}
+
+			// Drain the startup window: parse lines to populate the seen
+			// UUID map for deduplication, but don't forward stale messages.
+			w.draining = true
+			offset = w.readNewLines(ctx, currentFile, offset, out)
+			w.draining = false
 		}
 
 		offset = w.readNewLines(ctx, currentFile, offset, out)
@@ -420,7 +427,7 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 			w.seen[uuid] = true
 		}
 
-		if text != "" {
+		if text != "" && !w.draining {
 			preview := text
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."

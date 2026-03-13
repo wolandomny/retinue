@@ -253,14 +253,12 @@ func TestBridge_Run_ForwardsWatcherToTelegram(t *testing.T) {
 		t.Fatalf("creating project dir: %v", err)
 	}
 
-	// Write a session file with Woland keyword in the first 256 bytes.
+	// Write a session file with only the Woland system prompt initially.
+	// Assistant messages will be appended AFTER the bridge starts so they
+	// are forwarded (startup drain suppresses pre-existing messages).
 	sessionFile := filepath.Join(projectDir, "test-session.jsonl")
-	lines := strings.Join([]string{
-		`{"type":"system","uuid":"sys-1","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}`,
-		`{"type":"assistant","uuid":"test-1","message":{"content":[{"type":"text","text":"Hello from the bridge test"}]}}`,
-		`{"type":"assistant","uuid":"test-2","message":{"content":[{"type":"text","text":"Second message from bridge"}]}}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(sessionFile, []byte(lines), 0o644); err != nil {
+	systemLine := `{"type":"system","uuid":"sys-1","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}` + "\n"
+	if err := os.WriteFile(sessionFile, []byte(systemLine), 0o644); err != nil {
 		t.Fatalf("writing session file: %v", err)
 	}
 
@@ -274,6 +272,18 @@ func TestBridge_Run_ForwardsWatcherToTelegram(t *testing.T) {
 	go func() {
 		errCh <- bridge.Run(ctx)
 	}()
+
+	// Wait for the bridge to start and the watcher to discover the file.
+	time.Sleep(500 * time.Millisecond)
+
+	// Now append assistant messages after the watcher has started.
+	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("opening session file for append: %v", err)
+	}
+	fmt.Fprintln(f, `{"type":"assistant","uuid":"test-1","message":{"content":[{"type":"text","text":"Hello from the bridge test"}]}}`)
+	fmt.Fprintln(f, `{"type":"assistant","uuid":"test-2","message":{"content":[{"type":"text","text":"Second message from bridge"}]}}`)
+	f.Close()
 
 	// Wait for messages to arrive at the test server.
 	deadline := time.After(4 * time.Second)
