@@ -34,6 +34,15 @@ func New(token string) *Bot {
 	}
 }
 
+// NewWithBaseURL creates a Bot client with a custom base URL (for testing).
+func NewWithBaseURL(token, baseURL string) *Bot {
+	return &Bot{
+		token:   token,
+		client:  &http.Client{},
+		baseURL: baseURL,
+	}
+}
+
 // GetMe returns information about the bot. It can be used to verify
 // that the bot token is valid.
 func (b *Bot) GetMe(ctx context.Context) (*User, error) {
