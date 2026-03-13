@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,11 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 		ghEnv = append(ghEnv, "GH_TOKEN="+token)
 	}
 
+	// Capture initial HEAD for each repo before merges start.
+	// This is the "known good" baseline for end-of-run validation bisect.
+	initialHeads := captureRepoHeads(ctx, ws)
+	var mergeRecords []mergeRecord
+
 	sem := make(chan struct{}, maxWorkers)
 	done := make(chan string, maxWorkers)
 	inFlight := make(map[string]bool)
@@ -124,6 +130,15 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 				})
 				if result.Merged {
 					fmt.Fprintf(mergeOut, "[run] Merged task %q\n", t.ID)
+					// Record merge point for end-of-run validation bisect.
+					if repoCfg, ok := ws.Config.Repos[t.Repo]; ok {
+						rp := filepath.Join(ws.Path, repoCfg.Path)
+						if head, headErr := runGit(ctx, rp, "rev-parse", "HEAD"); headErr == nil {
+							mu.Lock()
+							mergeRecords = append(mergeRecords, mergeRecord{taskID: t.ID, repo: t.Repo, commit: head})
+							mu.Unlock()
+						}
+					}
 				} else if result.Rejected {
 					fmt.Fprintf(mergeOut, "[run] Task %q rejected by review, will re-dispatch\n", t.ID)
 				} else if result.Err != nil {
@@ -354,6 +369,10 @@ drainDone:
 	close(mergeCh)
 	mergeWg.Wait()
 
+	// Run end-of-run validation on each repo's main branch.
+	// This catches breakage caused by the combination of merged tasks.
+	runEndValidation(ctx, ws, store, initialHeads, mergeRecords, out)
+
 	// Archive all merged tasks.
 	tasks, err = store.Load()
 	if err != nil {
@@ -463,7 +482,7 @@ func runAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *task.F
 // printRunSummary prints a summary of the run including counts
 // of merged, failed, and pending tasks plus total cost.
 func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writer) {
-	var merged, failed, pending int
+	var merged, failed, pending, reverted int
 	var totalCost float64
 
 	// Count active tasks.
@@ -474,6 +493,9 @@ func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writ
 			merged++
 		case task.StatusFailed:
 			failed++
+			if strings.Contains(t.Error, "end-of-run validation failed") {
+				reverted++
+			}
 		case task.StatusPending:
 			pending++
 		}
@@ -502,4 +524,181 @@ func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writ
 	}
 
 	fmt.Fprintf(out, "\nRun complete. %d merged, %d failed, %d pending. Total cost: $%.2f\n", merged, failed, pending, totalCost)
+	if reverted > 0 {
+		fmt.Fprintf(out, "  (%d task(s) reverted by end-of-run validation)\n", reverted)
+	}
+}
+
+// mergeRecord tracks which commit became HEAD after merging a specific
+// task. Used by end-of-run validation to map bisect results to tasks.
+type mergeRecord struct {
+	taskID string
+	repo   string
+	commit string
+}
+
+// captureRepoHeads records the current HEAD commit for each configured
+// repo, providing a "known good" baseline for end-of-run bisect.
+func captureRepoHeads(ctx context.Context, ws *workspace.Workspace) map[string]string {
+	heads := make(map[string]string)
+	for name, repoCfg := range ws.Config.Repos {
+		repoPath := filepath.Join(ws.Path, repoCfg.Path)
+		head, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
+		if err != nil {
+			continue
+		}
+		heads[name] = head
+	}
+	return heads
+}
+
+// runEndValidation runs the validation command for each repo on the
+// main branch after all merges complete. If validation fails, it uses
+// git bisect to find the breaking merge and reverts it.
+func runEndValidation(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, initialHeads map[string]string, records []mergeRecord, out io.Writer) {
+	for repo, cmdStr := range ws.Config.Validate {
+		if cmdStr == "" {
+			continue
+		}
+		repoCfg, ok := ws.Config.Repos[repo]
+		if !ok {
+			continue
+		}
+		repoPath := filepath.Join(ws.Path, repoCfg.Path)
+
+		// Filter merge records for this repo.
+		var repoRecords []mergeRecord
+		for _, r := range records {
+			if r.repo == repo {
+				repoRecords = append(repoRecords, r)
+			}
+		}
+		if len(repoRecords) == 0 {
+			continue // no tasks merged for this repo in this run
+		}
+
+		log.Printf("run: validating %s on main...", repo)
+
+		if err := runValidation(ctx, repoPath, repo, ws.Config.Validate); err == nil {
+			log.Printf("run: validation passed for %s", repo)
+			continue
+		}
+
+		log.Printf("run: validation failed for %s, bisecting...", repo)
+
+		initialHead, ok := initialHeads[repo]
+		if !ok {
+			fmt.Fprintf(out, "[run] End validation failed for %s but no initial HEAD recorded\n", repo)
+			continue
+		}
+
+		if err := bisectAndRevert(ctx, ws, store, repo, repoPath, cmdStr, initialHead, repoRecords, out); err != nil {
+			fmt.Fprintf(out, "[run] Bisect/revert failed for %s: %v\n", repo, err)
+		}
+	}
+}
+
+// bisectAndRevert uses git bisect to find which merge broke validation,
+// reverts that task's commits, and marks the task as failed.
+func bisectAndRevert(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, repo, repoPath, validateCmd, initialHead string, records []mergeRecord, out io.Writer) error {
+	// Run git bisect to find the first bad commit.
+	badCommit, err := runBisect(ctx, repoPath, validateCmd, initialHead)
+	if err != nil {
+		return fmt.Errorf("bisect: %w", err)
+	}
+
+	// Match the bad commit to a task.
+	taskID, taskIdx := matchCommitToTask(ctx, repoPath, badCommit, records)
+	if taskID == "" {
+		return fmt.Errorf("could not match bad commit %s to any task", badCommit)
+	}
+
+	log.Printf("run: bisect identified task %q as the breaker", taskID)
+
+	// Find the commit range for this task.
+	var fromCommit string
+	if taskIdx == 0 {
+		fromCommit = initialHead
+	} else {
+		fromCommit = records[taskIdx-1].commit
+	}
+	toCommit := records[taskIdx].commit
+
+	// Revert all commits from this task.
+	if _, err := runGit(ctx, repoPath, "revert", "--no-edit", fromCommit+".."+toCommit); err != nil {
+		// Abort the failed revert attempt.
+		_, _ = runGit(ctx, repoPath, "revert", "--abort")
+		return fmt.Errorf("revert failed: %w", err)
+	}
+
+	log.Printf("run: reverted task %q merge commit(s)", taskID)
+
+	// Mark the task as failed.
+	markTaskFailed(store, taskID, "end-of-run validation failed: this task's merge broke validation on the combined main branch")
+
+	// Re-run validation to confirm the revert fixed things.
+	if err := runValidation(ctx, repoPath, repo, ws.Config.Validate); err != nil {
+		fmt.Fprintf(out, "[run] WARNING: validation still fails after reverting task %q; multiple breakers may exist\n", taskID)
+	} else {
+		fmt.Fprintf(out, "[run] Validation passes after reverting task %q\n", taskID)
+	}
+
+	return nil
+}
+
+// runBisect executes git bisect to find the first bad commit between
+// goodCommit and HEAD. Cleans up bisect state before returning.
+func runBisect(ctx context.Context, repoPath, validateCmd, goodCommit string) (string, error) {
+	if _, err := runGit(ctx, repoPath, "bisect", "start"); err != nil {
+		return "", fmt.Errorf("bisect start: %w", err)
+	}
+	defer func() { _, _ = runGit(ctx, repoPath, "bisect", "reset") }()
+
+	if _, err := runGit(ctx, repoPath, "bisect", "bad", "HEAD"); err != nil {
+		return "", fmt.Errorf("bisect bad: %w", err)
+	}
+
+	if _, err := runGit(ctx, repoPath, "bisect", "good", goodCommit); err != nil {
+		return "", fmt.Errorf("bisect good: %w", err)
+	}
+
+	// git bisect run returns 0 on success (bad commit identified).
+	// On failure the output may still contain useful info.
+	output, bisectErr := runGit(ctx, repoPath, "bisect", "run", "sh", "-c", validateCmd)
+	badCommit := parseBisectOutput(output)
+	if badCommit == "" {
+		if bisectErr != nil {
+			return "", fmt.Errorf("bisect run: %w", bisectErr)
+		}
+		return "", fmt.Errorf("bisect completed but could not identify bad commit")
+	}
+
+	return badCommit, nil
+}
+
+// parseBisectOutput extracts the first bad commit hash from git bisect
+// output by looking for "<hash> is the first bad commit".
+func parseBisectOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "is the first bad commit") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
+// matchCommitToTask finds which task introduced the given commit by
+// checking merge records in chronological order. Returns the task ID
+// and index, or empty string and -1 if no match.
+func matchCommitToTask(ctx context.Context, repoPath, commit string, records []mergeRecord) (string, int) {
+	for i, rec := range records {
+		// Check if commit is an ancestor-or-equal of this merge point.
+		if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", commit, rec.commit); err == nil {
+			return rec.taskID, i
+		}
+	}
+	return "", -1
 }
