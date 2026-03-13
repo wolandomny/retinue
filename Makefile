@@ -29,4 +29,5 @@ clean:
 
 install: build
 	mkdir -p $(shell go env GOPATH)/bin
+	rm -f $(shell go env GOPATH)/bin/$(BINARY)
 	cp $(BINDIR)/$(BINARY) $(shell go env GOPATH)/bin/$(BINARY)
