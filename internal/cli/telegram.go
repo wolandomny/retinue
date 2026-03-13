@@ -128,12 +128,13 @@ func runTelegramSetup(ctx context.Context) error {
 	}
 
 	ws.Config.Telegram = &workspace.TelegramConfig{
+		Token:  token,
 		ChatID: chatID,
 	}
 	if err := ws.SaveConfig(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
-	fmt.Println("Chat ID saved to retinue.yaml.")
+	fmt.Println("Token and chat ID saved to retinue.yaml.")
 
 	// Write .mcp.json with the retinue-telegram server config.
 	mcpPath := filepath.Join(ws.Path, ".mcp.json")
@@ -167,16 +168,6 @@ func runTelegramSetup(ctx context.Context) error {
 		return fmt.Errorf("writing .mcp.json: %w", err)
 	}
 	fmt.Printf("MCP config written to %s\n", mcpPath)
-
-	// Step 3: Shell profile configuration.
-	fmt.Println()
-	fmt.Println("Step 3: Configure your environment")
-	fmt.Println()
-	fmt.Println("  Add this to your shell profile (~/.zshrc or ~/.bashrc):")
-	fmt.Println()
-	fmt.Printf("    export RETINUE_TELEGRAM_TOKEN=\"%s\"\n", token)
-	fmt.Println()
-	fmt.Println("  Then reload: source ~/.zshrc")
 
 	fmt.Println()
 	fmt.Println("Setup complete! Start a Woland session to test:")

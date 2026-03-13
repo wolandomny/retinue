@@ -30,19 +30,36 @@ func newMCPTelegramCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := log.New(os.Stderr, "mcp-telegram: ", log.LstdFlags)
 
-			token := os.Getenv("RETINUE_TELEGRAM_TOKEN")
-			if token == "" {
-				return fmt.Errorf("RETINUE_TELEGRAM_TOKEN environment variable is required")
-			}
-
-			chatIDStr := os.Getenv("RETINUE_TELEGRAM_CHAT_ID")
-			if chatIDStr == "" {
-				return fmt.Errorf("RETINUE_TELEGRAM_CHAT_ID environment variable is required")
-			}
-
-			chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+			// Load workspace.
+			ws, err := loadWorkspace()
 			if err != nil {
-				return fmt.Errorf("RETINUE_TELEGRAM_CHAT_ID must be a numeric chat ID: %w", err)
+				return fmt.Errorf("loading workspace: %w", err)
+			}
+
+			// Get Telegram token from workspace config or env var.
+			var token string
+			if ws.Config.Telegram != nil && ws.Config.Telegram.Token != "" {
+				token = ws.Config.Telegram.Token
+			} else if envToken := os.Getenv("RETINUE_TELEGRAM_TOKEN"); envToken != "" {
+				token = envToken
+			} else {
+				return fmt.Errorf("telegram token is required: set telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable")
+			}
+
+			// Get chat ID from config or env var.
+			var chatID int64
+			if ws.Config.Telegram != nil && ws.Config.Telegram.ChatID != 0 {
+				chatID = ws.Config.Telegram.ChatID
+			}
+			if chatIDStr := os.Getenv("RETINUE_TELEGRAM_CHAT_ID"); chatIDStr != "" {
+				parsed, err := strconv.ParseInt(chatIDStr, 10, 64)
+				if err != nil {
+					return fmt.Errorf("RETINUE_TELEGRAM_CHAT_ID must be a numeric chat ID: %w", err)
+				}
+				chatID = parsed
+			}
+			if chatID == 0 {
+				return fmt.Errorf("telegram chat ID is required: set RETINUE_TELEGRAM_CHAT_ID or configure telegram.chat_id in retinue.yaml")
 			}
 
 			bot := telegram.New(token)

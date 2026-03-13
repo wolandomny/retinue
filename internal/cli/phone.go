@@ -99,7 +99,7 @@ Woland's assistant messages are forwarded to Telegram, and Telegram messages
 are injected into the Woland tmux pane as user input.
 
 Requires:
-  - RETINUE_TELEGRAM_TOKEN environment variable (bot token)
+  - telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable (bot token)
   - RETINUE_TELEGRAM_CHAT_ID env var or telegram.chat_id in retinue.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := log.New(os.Stderr, "phone: ", log.LstdFlags)
@@ -110,10 +110,14 @@ Requires:
 				return fmt.Errorf("loading workspace: %w", err)
 			}
 
-			// Get Telegram token.
-			token := os.Getenv("RETINUE_TELEGRAM_TOKEN")
-			if token == "" {
-				return fmt.Errorf("RETINUE_TELEGRAM_TOKEN environment variable is required")
+			// Get Telegram token from workspace config or env var.
+			var token string
+			if ws.Config.Telegram != nil && ws.Config.Telegram.Token != "" {
+				token = ws.Config.Telegram.Token
+			} else if envToken := os.Getenv("RETINUE_TELEGRAM_TOKEN"); envToken != "" {
+				token = envToken
+			} else {
+				return fmt.Errorf("telegram token is required: set telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable")
 			}
 
 			// Get chat ID from config or env var.
@@ -248,9 +252,13 @@ func runPhoneInstall() error {
 	}
 
 	// Get Telegram configuration
-	token := os.Getenv("RETINUE_TELEGRAM_TOKEN")
-	if token == "" {
-		return fmt.Errorf("RETINUE_TELEGRAM_TOKEN environment variable is required")
+	var token string
+	if ws.Config.Telegram != nil && ws.Config.Telegram.Token != "" {
+		token = ws.Config.Telegram.Token
+	} else if envToken := os.Getenv("RETINUE_TELEGRAM_TOKEN"); envToken != "" {
+		token = envToken
+	} else {
+		return fmt.Errorf("telegram token is required: set telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable")
 	}
 
 	var chatID string

@@ -3,9 +3,9 @@ package workspace
 import "gopkg.in/yaml.v3"
 
 // TelegramConfig holds Telegram integration settings.
-// The bot token is stored separately as an environment variable (RETINUE_TELEGRAM_TOKEN).
 type TelegramConfig struct {
-	ChatID int64 `yaml:"chat_id"`
+	Token  string `yaml:"token,omitempty"`
+	ChatID int64  `yaml:"chat_id,omitempty"`
 }
 
 // Config holds the workspace configuration persisted in retinue.yaml.
