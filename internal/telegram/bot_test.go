@@ -448,7 +448,8 @@ func TestSendMessage_MarkdownFallback(t *testing.T) {
 		}
 
 		if callCount == 1 {
-			// First call: fail with Markdown parse error
+			// First call: Telegram returns HTTP 400 with Markdown parse error,
+			// which is what happens in production.
 			if body.ParseMode != "Markdown" {
 				t.Errorf("expected first call to have parse_mode Markdown, got %s", body.ParseMode)
 			}
@@ -458,6 +459,7 @@ func TestSendMessage_MarkdownFallback(t *testing.T) {
 				Description: "Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 42",
 			}
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(resp)
 		} else if callCount == 2 {
 			// Second call: succeed without parse mode
@@ -501,13 +503,16 @@ func TestSendMessage_MarkdownFallback(t *testing.T) {
 }
 
 func TestSendMessage_MarkdownFallback_NonParseError(t *testing.T) {
+	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Fail with a different error (not a parse error)
+		callCount++
+		// Fail with a different error (not a parse error) at HTTP 400.
 		resp := APIResponse[Message]{
 			OK:          false,
 			Description: "Bad Request: chat not found",
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
@@ -518,7 +523,10 @@ func TestSendMessage_MarkdownFallback_NonParseError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	// Should not attempt fallback for non-parse errors
+	// Should not attempt fallback for non-parse errors.
+	if callCount != 1 {
+		t.Errorf("expected 1 API call (no retry), got %d", callCount)
+	}
 	if !strings.Contains(err.Error(), "chat not found") {
 		t.Errorf("expected error to contain 'chat not found', got: %v", err)
 	}

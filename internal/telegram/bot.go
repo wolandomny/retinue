@@ -193,6 +193,14 @@ func (b *Bot) doRequest(req *http.Request, dest any) error {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Attempt to parse the response as JSON even on non-2xx status codes.
+		// Telegram returns structured API responses (with ok, description, etc.)
+		// for client errors like 400. Callers need these fields to decide
+		// whether to retry (e.g., falling back to plain text on markdown
+		// parse errors).
+		if json.Unmarshal(respBody, dest) == nil {
+			return nil
+		}
 		return fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, string(respBody))
 	}
 
