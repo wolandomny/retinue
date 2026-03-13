@@ -38,7 +38,7 @@ func newDispatchCmd() *cobra.Command {
 				return err
 			}
 
-			// Resolve GitHub token early so it's cached before any workers start.
+			// Resolve GitHub token early so it's cached for worktree creation before any workers start.
 			if _, err := ws.ResolveGitHubToken(); err != nil {
 				log.Printf("warning: failed to resolve GitHub token: %v", err)
 			}
@@ -472,7 +472,11 @@ func resolveWorkDir(ctx context.Context, ws *workspace.Workspace, t *task.Task) 
 	// Resolve which branch to create the worktree from.
 	baseBranch := task.ResolveBaseBranch(*t, ws.Config.Repos)
 
-	wtMgr := worktree.NewManager(&worktree.RealGit{}, worktreeDir)
+	var gitEnv []string
+	if token := ws.GitHubToken(); token != "" {
+		gitEnv = append(gitEnv, "GH_TOKEN="+token)
+	}
+	wtMgr := worktree.NewManager(&worktree.RealGit{Env: gitEnv}, worktreeDir)
 	createdPath, err := wtMgr.Create(ctx, repoAbsPath, t.ID, "", baseBranch)
 	if err != nil {
 		return "", err

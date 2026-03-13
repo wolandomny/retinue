@@ -94,7 +94,7 @@ func TestRebaseAndMerge(t *testing.T) {
 	}
 
 	// Run RebaseAndMerge.
-	if err := RebaseAndMerge(ctx, repoPath, worktreePath, branch, "main", "", ""); err != nil {
+	if err := RebaseAndMerge(ctx, repoPath, worktreePath, branch, "main", "", "", ""); err != nil {
 		t.Fatalf("RebaseAndMerge failed: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestRebaseAndMerge_Conflict(t *testing.T) {
 	// Run RebaseAndMerge — may fail with a conflict error or succeed
 	// if a Claude agent is available and resolves the conflict.
 	logsDir := t.TempDir()
-	err := RebaseAndMerge(ctx, repoPath, worktreePath, branch, "main", "", logsDir)
+	err := RebaseAndMerge(ctx, repoPath, worktreePath, branch, "main", "", logsDir, "")
 	if err != nil {
 		// When Claude is not available, we expect a rebase conflict error.
 		if !strings.Contains(err.Error(), "rebase conflict") && !strings.Contains(err.Error(), "resolution failed") {

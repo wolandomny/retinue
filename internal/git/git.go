@@ -40,30 +40,36 @@ func RunWithEnv(ctx context.Context, dir string, env []string, args ...string) (
 // worktree, then fast-forward merges into the main repo checkout.
 // On success it removes the worktree and deletes the branch.
 // If the rebase encounters conflicts, it spawns a Claude agent to
-// resolve them before continuing.
-func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath string) error {
+// resolve them before continuing. ghToken, if non-empty, is injected
+// as GH_TOKEN into all git subprocess environments.
+func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath, ghToken string) error {
+	var ghEnv []string
+	if ghToken != "" {
+		ghEnv = append(ghEnv, "GH_TOKEN="+ghToken)
+	}
+
 	// Rebase in the worktree.
-	if _, rebaseErr := Run(ctx, worktreePath, "rebase", baseBranch); rebaseErr != nil {
+	if _, rebaseErr := RunWithEnv(ctx, worktreePath, ghEnv, "rebase", baseBranch); rebaseErr != nil {
 		// Rebase failed — attempt to resolve conflicts.
 		fmt.Printf("Rebase conflict detected for branch %q, attempting resolution...\n", branch)
 
-		if err := attemptRebaseWithResolution(ctx, worktreePath, branch, model, logsPath, rebaseErr); err != nil {
+		if err := attemptRebaseWithResolution(ctx, worktreePath, branch, model, logsPath, rebaseErr, ghEnv); err != nil {
 			return err
 		}
 	}
 
 	// Checkout base branch in the repo.
-	if _, err := Run(ctx, repoPath, "checkout", baseBranch); err != nil {
+	if _, err := RunWithEnv(ctx, repoPath, ghEnv, "checkout", baseBranch); err != nil {
 		return fmt.Errorf("checkout %s: %w", baseBranch, err)
 	}
 
 	// Fast-forward merge.
-	if _, err := Run(ctx, repoPath, "merge", "--ff-only", branch); err != nil {
+	if _, err := RunWithEnv(ctx, repoPath, ghEnv, "merge", "--ff-only", branch); err != nil {
 		return fmt.Errorf("ff-merge: %w", err)
 	}
 
 	// Verify the merge was truly a fast-forward (HEAD should have exactly one parent).
-	parents, err := Run(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	parents, err := RunWithEnv(ctx, repoPath, ghEnv, "rev-list", "--parents", "-1", "HEAD")
 	if err != nil {
 		return fmt.Errorf("verifying merge: %w", err)
 	}
@@ -71,47 +77,47 @@ func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 	// A fast-forward results in exactly one parent. Two or more means a merge commit.
 	if parts := strings.Fields(parents); len(parts) > 2 {
 		// This should never happen with --ff-only, but roll back if it does.
-		if _, resetErr := Run(ctx, repoPath, "reset", "--hard", "HEAD~1"); resetErr != nil {
+		if _, resetErr := RunWithEnv(ctx, repoPath, ghEnv, "reset", "--hard", "HEAD~1"); resetErr != nil {
 			return fmt.Errorf("merge created merge commit and rollback failed: %w", resetErr)
 		}
 		return fmt.Errorf("merge of %s created a merge commit (expected fast-forward); rolled back", branch)
 	}
 
 	// Clean up worktree and branch (best-effort).
-	_, _ = Run(ctx, repoPath, "worktree", "remove", worktreePath)
-	_, _ = Run(ctx, repoPath, "branch", "-d", branch)
+	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "worktree", "remove", worktreePath)
+	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "branch", "-d", branch)
 
 	return nil
 }
 
 // attemptRebaseWithResolution tries to resolve rebase conflicts using Claude,
 // handling multiple conflicting commits in a loop. Returns nil on success.
-func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, model, logsPath string, originalErr error) error {
+func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, model, logsPath string, originalErr error, ghEnv []string) error {
 	const maxResolveAttempts = 5
 
 	for attempt := range maxResolveAttempts {
-		if resolveErr := resolveConflicts(ctx, worktreePath, model, logsPath, branch); resolveErr != nil {
-			_, _ = Run(ctx, worktreePath, "rebase", "--abort")
+		if resolveErr := resolveConflicts(ctx, worktreePath, model, logsPath, branch, ghEnv); resolveErr != nil {
+			_, _ = RunWithEnv(ctx, worktreePath, ghEnv, "rebase", "--abort")
 			return fmt.Errorf("rebase conflict (resolution failed on attempt %d: %v): %w", attempt+1, resolveErr, originalErr)
 		}
 
-		_, continueErr := RunWithEnv(ctx, worktreePath, []string{"GIT_EDITOR=true"}, "rebase", "--continue")
+		_, continueErr := RunWithEnv(ctx, worktreePath, append(ghEnv, "GIT_EDITOR=true"), "rebase", "--continue")
 		if continueErr == nil {
 			// Rebase completed successfully.
 			return nil
 		}
 
 		// Check if the continue resulted in another conflict.
-		conflictCheck, _ := Run(ctx, worktreePath, "diff", "--name-only", "--diff-filter=U")
+		conflictCheck, _ := RunWithEnv(ctx, worktreePath, ghEnv, "diff", "--name-only", "--diff-filter=U")
 		if strings.TrimSpace(conflictCheck) == "" {
 			// No more conflicts, but continue failed for another reason.
-			_, _ = Run(ctx, worktreePath, "rebase", "--abort")
+			_, _ = RunWithEnv(ctx, worktreePath, ghEnv, "rebase", "--abort")
 			return fmt.Errorf("rebase --continue failed (no conflicts): %w", continueErr)
 		}
 		fmt.Printf("Additional conflict on attempt %d, resolving...\n", attempt+1)
 	}
 
-	_, _ = Run(ctx, worktreePath, "rebase", "--abort")
+	_, _ = RunWithEnv(ctx, worktreePath, ghEnv, "rebase", "--abort")
 	return fmt.Errorf("rebase conflict: exceeded %d resolution attempts", maxResolveAttempts)
 }
 
@@ -119,10 +125,11 @@ func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, mode
 // conflicts in the given directory. It finds all conflicted files,
 // builds a prompt with the conflict markers, and asks Claude to
 // produce resolved versions. Returns nil if all conflicts were
-// resolved and staged.
-func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) error {
+// resolved and staged. ghEnv provides extra environment variables
+// (e.g., GH_TOKEN) for git subprocesses and the Claude runner.
+func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string, ghEnv []string) error {
 	// 1. Get the list of conflicted files.
-	out, _ := Run(ctx, dir, "diff", "--name-only", "--diff-filter=U")
+	out, _ := RunWithEnv(ctx, dir, ghEnv, "diff", "--name-only", "--diff-filter=U")
 	conflictedFiles := strings.Split(strings.TrimSpace(out), "\n")
 	if len(conflictedFiles) == 0 || (len(conflictedFiles) == 1 && conflictedFiles[0] == "") {
 		return fmt.Errorf("no conflicted files found")
@@ -161,6 +168,7 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 		WorkDir: dir,
 		Model:   model,
 		LogFile: filepath.Join(logsPath, taskID+"-conflict.log"),
+		Env:     ghEnv,
 	})
 	if err != nil {
 		return fmt.Errorf("claude conflict resolution failed: %w", err)
@@ -182,7 +190,7 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string) 
 
 	// 5. Stage all resolved files.
 	for _, f := range conflictedFiles {
-		if _, err := Run(ctx, dir, "add", f); err != nil {
+		if _, err := RunWithEnv(ctx, dir, ghEnv, "add", f); err != nil {
 			return fmt.Errorf("staging resolved file %s: %w", f, err)
 		}
 	}

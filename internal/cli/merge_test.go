@@ -120,7 +120,7 @@ func TestRebaseAndMerge_FastForwardOnly(t *testing.T) {
 	}
 
 	// Merge via rebaseAndMerge.
-	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "main", "", ""); err != nil {
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "main", "", "", nil); err != nil {
 		t.Fatalf("rebaseAndMerge failed: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestRebaseAndMerge_CustomBaseBranch(t *testing.T) {
 	}
 
 	// Merge feature into develop (not main).
-	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "develop", "", ""); err != nil {
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "develop", "", "", nil); err != nil {
 		t.Fatalf("rebaseAndMerge to develop failed: %v", err)
 	}
 

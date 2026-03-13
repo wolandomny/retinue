@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +33,11 @@ func newRunCmd() *cobra.Command {
 			ws, err := loadWorkspace()
 			if err != nil {
 				return err
+			}
+
+			// Resolve GitHub token early so it's cached for dispatch and merge.
+			if _, err := ws.ResolveGitHubToken(); err != nil {
+				log.Printf("warning: failed to resolve GitHub token: %v", err)
 			}
 
 			store := task.NewFileStore(ws.TasksPath())
@@ -74,6 +80,12 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 		maxWorkers = workspace.DefaultMaxWorkers
 	}
 
+	// Build GH_TOKEN env for git operations in merge.
+	var ghEnv []string
+	if token := ws.GitHubToken(); token != "" {
+		ghEnv = append(ghEnv, "GH_TOKEN="+token)
+	}
+
 	sem := make(chan struct{}, maxWorkers)
 	done := make(chan string, maxWorkers)
 	inFlight := make(map[string]bool)
@@ -108,6 +120,7 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 					review:  review,
 					archive: false,
 					out:     mergeOut,
+					ghEnv:   ghEnv,
 				})
 				if result.Merged {
 					fmt.Fprintf(mergeOut, "[run] Merged task %q\n", t.ID)

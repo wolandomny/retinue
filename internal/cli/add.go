@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -51,6 +53,11 @@ func newAddRepoCmd() *cobra.Command {
 				return err
 			}
 
+			// Resolve GitHub token early so clone uses the correct credentials.
+			if _, err := ws.ResolveGitHubToken(); err != nil {
+				log.Printf("warning: failed to resolve GitHub token: %v", err)
+			}
+
 			dest := filepath.Join(ws.Path, workspace.ReposDir, name)
 
 			var cloneCmd *exec.Cmd
@@ -59,6 +66,9 @@ func newAddRepoCmd() *cobra.Command {
 				cloneCmd = exec.Command("gh", "repo", "clone", ownerRepo, dest)
 			} else {
 				cloneCmd = exec.Command("git", "clone", gitURL, dest)
+			}
+			if token := ws.GitHubToken(); token != "" {
+				cloneCmd.Env = append(os.Environ(), "GH_TOKEN="+token)
 			}
 			cloneCmd.Stdout = cmd.OutOrStdout()
 			cloneCmd.Stderr = cmd.ErrOrStderr()

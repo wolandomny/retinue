@@ -9,9 +9,9 @@ type RunOpts struct {
 	WorkDir          string
 	Model            string
 	LogFile          string
-	WindowName       string // tmux window name within the apartment session
-	ApartmentSession string // tmux session name (e.g. "retinue")
-	Socket           string // tmux socket name (-L flag); if empty, uses default socket
+	WindowName       string   // tmux window name within the apartment session
+	ApartmentSession string   // tmux session name (e.g. "retinue")
+	Socket           string   // tmux socket name (-L flag); if empty, uses default socket
 	Env              []string // extra env vars to inject (e.g. "GH_TOKEN=xxx")
 }
 

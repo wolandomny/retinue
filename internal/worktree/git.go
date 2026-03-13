@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -14,11 +15,16 @@ type GitExecutor interface {
 }
 
 // RealGit executes actual git commands.
-type RealGit struct{}
+type RealGit struct {
+	Env []string // extra env vars to inject (e.g., "GH_TOKEN=xxx")
+}
 
 func (g *RealGit) Exec(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	if len(g.Env) > 0 {
+		cmd.Env = append(os.Environ(), g.Env...)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
