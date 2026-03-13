@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +24,10 @@ const (
 type Workspace struct {
 	Path   string
 	Config Config
+
+	ghToken string
+	ghOnce  sync.Once
+	ghErr   error
 }
 
 // Create initializes a new workspace at the given path.
