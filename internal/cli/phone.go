@@ -19,8 +19,29 @@ import (
 	"github.com/wolandomny/retinue/internal/telegram"
 )
 
+// launchdLabelBase is the base label for phone daemon services.
+const launchdLabelBase = "com.retinue.phone"
+
+// phoneLaunchdLabel returns the per-apartment launchd label.
+func phoneLaunchdLabel(workspaceName string) string {
+	return launchdLabelBase + "." + workspaceName
+}
+
+// phonePlistPath returns the plist file path for the given label.
+func phonePlistPath(label string) string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, "Library", "LaunchAgents", label+".plist")
+}
+
+// phoneLogPaths returns stdout and stderr log paths for the workspace.
+func phoneLogPaths(workspaceName string) (string, string) {
+	homeDir, _ := os.UserHomeDir()
+	logDir := filepath.Join(homeDir, "Library", "Logs")
+	return filepath.Join(logDir, "retinue-phone-"+workspaceName+".log"),
+		filepath.Join(logDir, "retinue-phone-"+workspaceName+".err.log")
+}
+
 const (
-	launchdLabel  = "com.retinue.phone"
 	plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -280,25 +301,24 @@ func runPhoneInstall() error {
 		return fmt.Errorf("getting executable path: %w", err)
 	}
 
-	// Set up log paths
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
-	}
+	// Set up per-apartment label and log paths
+	label := phoneLaunchdLabel(ws.Config.Name)
+	logPath, errLogPath := phoneLogPaths(ws.Config.Name)
 
-	logDir := filepath.Join(homeDir, "Library", "Logs")
+	// Ensure log directory exists
+	logDir := filepath.Dir(logPath)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
 	data := plistData{
-		Label:          launchdLabel,
+		Label:          label,
 		BinaryPath:     binaryPath,
 		WorkspacePath:  ws.Path,
 		TelegramToken:  token,
 		TelegramChatID: chatID,
-		LogPath:        filepath.Join(logDir, "retinue-phone.log"),
-		ErrorLogPath:   filepath.Join(logDir, "retinue-phone.err.log"),
+		LogPath:        logPath,
+		ErrorLogPath:   errLogPath,
 	}
 
 	// Generate plist content
@@ -313,12 +333,11 @@ func runPhoneInstall() error {
 	}
 
 	// Write plist file
-	launchAgentsDir := filepath.Join(homeDir, "Library", "LaunchAgents")
+	plistPath := phonePlistPath(label)
+	launchAgentsDir := filepath.Dir(plistPath)
 	if err := os.MkdirAll(launchAgentsDir, 0o755); err != nil {
 		return fmt.Errorf("creating LaunchAgents directory: %w", err)
 	}
-
-	plistPath := filepath.Join(launchAgentsDir, launchdLabel+".plist")
 	if err := os.WriteFile(plistPath, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("writing plist file: %w", err)
 	}
@@ -343,12 +362,22 @@ func runPhoneInstall() error {
 }
 
 func runPhoneUninstall() error {
-	homeDir, err := os.UserHomeDir()
+	ws, err := loadWorkspace()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return fmt.Errorf("loading workspace: %w", err)
 	}
 
-	plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", launchdLabel+".plist")
+	label := phoneLaunchdLabel(ws.Config.Name)
+	plistPath := phonePlistPath(label)
+
+	// Try per-apartment plist first; fall back to legacy global label
+	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
+		legacyPath := phonePlistPath(launchdLabelBase)
+		if _, err := os.Stat(legacyPath); err == nil {
+			fmt.Println("Found legacy global plist, uninstalling...")
+			plistPath = legacyPath
+		}
+	}
 
 	// Unload the service
 	cmd := exec.Command("launchctl", "unload", plistPath)
@@ -380,7 +409,13 @@ func runPhoneUninstall() error {
 }
 
 func runPhoneStart() error {
-	cmd := exec.Command("launchctl", "start", launchdLabel)
+	ws, err := loadWorkspace()
+	if err != nil {
+		return fmt.Errorf("loading workspace: %w", err)
+	}
+
+	label := phoneLaunchdLabel(ws.Config.Name)
+	cmd := exec.Command("launchctl", "start", label)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("starting service: %w\nOutput: %s", err, string(out))
 	}
@@ -390,7 +425,13 @@ func runPhoneStart() error {
 }
 
 func runPhoneStop() error {
-	cmd := exec.Command("launchctl", "stop", launchdLabel)
+	ws, err := loadWorkspace()
+	if err != nil {
+		return fmt.Errorf("loading workspace: %w", err)
+	}
+
+	label := phoneLaunchdLabel(ws.Config.Name)
+	cmd := exec.Command("launchctl", "stop", label)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("stopping service: %w\nOutput: %s", err, string(out))
 	}
@@ -400,7 +441,13 @@ func runPhoneStop() error {
 }
 
 func runPhoneStatus() error {
-	cmd := exec.Command("launchctl", "list", launchdLabel)
+	ws, err := loadWorkspace()
+	if err != nil {
+		return fmt.Errorf("loading workspace: %w", err)
+	}
+
+	label := phoneLaunchdLabel(ws.Config.Name)
+	cmd := exec.Command("launchctl", "list", label)
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -417,26 +464,21 @@ func runPhoneStatus() error {
 	fmt.Println(string(out))
 
 	// Show log file paths
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		logPath := filepath.Join(homeDir, "Library", "Logs", "retinue-phone.log")
-		errLogPath := filepath.Join(homeDir, "Library", "Logs", "retinue-phone.err.log")
-		fmt.Printf("\nLog files:\n")
-		fmt.Printf("  stdout: %s\n", logPath)
-		fmt.Printf("  stderr: %s\n", errLogPath)
-	}
+	logPath, errLogPath := phoneLogPaths(ws.Config.Name)
+	fmt.Printf("\nLog files:\n")
+	fmt.Printf("  stdout: %s\n", logPath)
+	fmt.Printf("  stderr: %s\n", errLogPath)
 
 	return nil
 }
 
 func runPhoneLogs() error {
-	homeDir, err := os.UserHomeDir()
+	ws, err := loadWorkspace()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return fmt.Errorf("loading workspace: %w", err)
 	}
 
-	logPath := filepath.Join(homeDir, "Library", "Logs", "retinue-phone.log")
-	errLogPath := filepath.Join(homeDir, "Library", "Logs", "retinue-phone.err.log")
+	logPath, errLogPath := phoneLogPaths(ws.Config.Name)
 
 	// Check if log files exist
 	var files []string
