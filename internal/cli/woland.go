@@ -236,6 +236,7 @@ tasks:
     model: claude-sonnet-4-20250514  # optional: override workspace model
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
+    skip_validate: false       # optional: skip per-task validation
     prompt: |                  # detailed instructions for the worker agent
       Multi-line prompt that tells the worker exactly what to do.
       Be specific: mention files, functions, expected behavior.
@@ -262,6 +263,23 @@ tasks:
   complex, ambiguous, or requiring deep reasoning.
 - When in doubt, don't set it. Always err on the side of using the
   default (Opus).
+
+### Per-Task Validation Override
+- The `+"`skip_validate`"+` field is optional (default: false).
+- When `+"`true`"+`, the task skips per-task build/test validation before merge.
+- Use `+"`skip_validate: true`"+` for tasks that cannot break build or tests:
+  - Documentation-only changes (README, comments, docs/)
+  - Configuration file changes (YAML, JSON, TOML configs)
+  - Simple renames or moves with no logic changes
+  - Adding new files that aren't imported by existing code yet
+- Do NOT skip validation for:
+  - Any change to source code (.go, .ts, .py, etc.)
+  - Changes to build configuration (Makefile, go.mod, package.json)
+  - Changes that modify interfaces, types, or function signatures
+  - Refactoring of any kind
+- When in doubt, don't set it. Validation is cheap insurance.
+- Note: even with skip_validate, end-of-run validation always
+  runs on the combined state after all merges complete.
 
 ## Workflow
 
@@ -493,6 +511,7 @@ tasks:
     model: claude-sonnet-4-20250514  # optional: override workspace model
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
+    skip_validate: false       # optional: skip per-task validation
     prompt: |                  # detailed instructions for the worker agent
       Multi-line prompt that tells the worker exactly what to do.
       Be specific: mention files, functions, expected behavior.
@@ -519,6 +538,12 @@ tasks:
   complex, ambiguous, or requiring deep reasoning.
 - When in doubt, don't set it. Always err on the side of using the
   default (Opus).
+
+### Skipping Validation
+- Set `+"`skip_validate: true`"+` on tasks that only change docs,
+  config files, or add new files that nothing else uses yet.
+- Leave it off (or set to false) for any code changes.
+- When in doubt, don't skip it.
 
 ## Workflow
 

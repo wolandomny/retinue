@@ -24,6 +24,7 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 		{"tasks.yaml path", "/tmp/test-apartment/tasks.yaml"},
 		{"schema id field", "id: short-kebab-id"},
 		{"schema depends_on", "depends_on:"},
+		{"schema skip_validate", "skip_validate: false"},
 		{"schema prompt field", "prompt: |"},
 		{"dispatch instruction", "retinue dispatch"},
 		{"help config hint", "retinue help config"},
@@ -69,6 +70,8 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		{"linting check", "eslint"},
 		{"explain decisions", "Explaining Decisions"},
 		{"validation emphasis", "non-negotiable"},
+		{"skip validation section", "Skipping Validation"},
+		{"skip_validate field", "skip_validate: false"},
 		{"help config hint", "retinue help config"},
 	}
 
