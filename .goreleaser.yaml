@@ -1,0 +1,65 @@
+# GoReleaser configuration for retinue
+# https://goreleaser.com
+
+before:
+  hooks:
+    # You may remove this if you don't use go modules.
+    - go mod tidy
+
+builds:
+  - id: retinue
+    main: ./cmd/retinue
+    binary: retinue
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/wolandomny/retinue/internal/cli.version={{.Version}} -X github.com/wolandomny/retinue/internal/cli.commit={{.ShortCommit}} -X github.com/wolandomny/retinue/internal/cli.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: retinue
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^build:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: retinue
+    tap:
+      owner: wolandomny
+      name: homebrew-retinue
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/wolandomny/retinue"
+    description: "AI-powered parallel task orchestration for codebases"
+    install: |
+      bin.install "retinue"
+    test: |
+      system "#{bin}/retinue", "version"
+
+# GitHub release configuration
+release:
+  github:
+    owner: wolandomny
+    name: retinue
+  draft: false
+  prerelease: auto
