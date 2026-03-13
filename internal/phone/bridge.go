@@ -110,11 +110,19 @@ func (b *Bridge) Run(ctx context.Context) error {
 			}
 			if _, err := b.bot.SendMessage(ctx, b.chatID, text); err != nil {
 				b.logger.Printf("error sending to telegram: %v", err)
+			} else {
+				preview := text
+				if len(preview) > 50 {
+					preview = preview[:50] + "..."
+				}
+				b.logger.Printf("sent to telegram: %q", preview)
 			}
 
 		case <-sessionSwitch:
 			if _, err := b.bot.SendMessage(ctx, b.chatID, "🔄 New Woland session detected, switching."); err != nil {
 				b.logger.Printf("error sending session switch notification: %v", err)
+			} else {
+				b.logger.Printf("sent session switch notification to telegram")
 			}
 
 		case msg := <-telegramCh:
