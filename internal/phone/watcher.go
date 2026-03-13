@@ -4,6 +4,7 @@ package phone
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,10 @@ const (
 
 	// dirPollInterval is how often we check for new session files.
 	dirPollInterval = 3 * time.Second
+
+	// startupWindow is how far back from end-of-file we seek when first
+	// discovering a session file, so we can catch recently-written messages.
+	startupWindow = 4096
 )
 
 // sessionMessage represents the top-level structure of a JSONL line from
@@ -45,9 +50,10 @@ type contentBlock struct {
 // Watcher monitors a Claude Code session JSONL file for new assistant messages
 // and emits their text content on a channel.
 type Watcher struct {
-	projectDir string
-	logger     *log.Logger
-	seen       map[string]bool // track seen UUIDs to avoid duplicates
+	projectDir  string
+	logger      *log.Logger
+	seen        map[string]bool // track seen UUIDs to avoid duplicates
+	partialLine string          // buffered incomplete line from previous read
 }
 
 // NewWatcher creates a Watcher that monitors the given Claude Code projects
@@ -135,13 +141,31 @@ func (w *Watcher) watchLoop(ctx context.Context, out chan<- string, sessionSwitc
 				w.logger.Printf("watching session file: %s", filepath.Base(activeFile))
 			}
 			currentFile = activeFile
-			// Start from end of new file to avoid replaying old messages.
+			w.partialLine = "" // Clear partial line from previous file.
+
 			info, err := os.Stat(currentFile)
 			if err != nil {
 				w.logger.Printf("error stating session file: %v", err)
 				continue
 			}
-			offset = info.Size()
+
+			// Seek to the last startupWindow bytes to catch recent messages
+			// instead of seeking to the exact end (which would miss them).
+			offset = info.Size() - startupWindow
+			if offset < 0 {
+				offset = 0
+			}
+			if offset > 0 {
+				// Find the first complete line boundary after the offset.
+				adjusted, err := seekToLineStart(currentFile, offset)
+				if err != nil {
+					w.logger.Printf("error finding line boundary: %v", err)
+					offset = info.Size()
+				} else {
+					offset = adjusted
+					w.logger.Printf("startup: seeking to offset %d (file size %d)", offset, info.Size())
+				}
+			}
 		}
 
 		offset = w.readNewLines(ctx, currentFile, offset, out)
@@ -190,9 +214,42 @@ func (w *Watcher) findActiveSession() (string, error) {
 	return newest, nil
 }
 
+// seekToLineStart finds the first complete line boundary at or after the
+// given offset by scanning forward for the first newline. Returns the
+// position immediately after the newline.
+func seekToLineStart(path string, offset int64) (int64, error) {
+	if offset <= 0 {
+		return 0, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return offset, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return offset, err
+	}
+
+	// Skip past the first (likely partial) line to find a clean boundary.
+	r := bufio.NewReader(f)
+	skipped, err := r.ReadBytes('\n')
+	if err != nil {
+		// EOF without newline — return end of what we read.
+		return offset + int64(len(skipped)), nil
+	}
+	return offset + int64(len(skipped)), nil
+}
+
 // readNewLines reads any new lines appended to the file since the given offset,
 // parses them, and sends extracted text to the output channel. Returns the
 // new offset.
+//
+// Partial lines (data without a trailing newline) are buffered in w.partialLine
+// and prepended to the first line on the next call. The file offset advances
+// past all bytes read; the partial content is reconstructed from the saved
+// buffer so nothing is lost.
 func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, out chan<- string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -204,6 +261,7 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 	if info.Size() < offset {
 		w.logger.Printf("file truncated, resetting position")
 		offset = 0
+		w.partialLine = ""
 	}
 
 	if info.Size() == offset {
@@ -222,35 +280,54 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 		return offset
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // up to 10MB lines
-	var partialLine string
+	// Read all new data from the file.
+	newData, err := io.ReadAll(f)
+	if err != nil {
+		w.logger.Printf("error reading file: %v", err)
+		return offset
+	}
 
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return offset
-		default:
+	bytesRead := int64(len(newData))
+
+	// Prepend any buffered partial line from the previous read.
+	var data []byte
+	if w.partialLine != "" {
+		data = make([]byte, len(w.partialLine)+len(newData))
+		copy(data, w.partialLine)
+		copy(data[len(w.partialLine):], newData)
+		w.partialLine = ""
+	} else {
+		data = newData
+	}
+
+	// Process complete lines (terminated by \n). Any trailing data without
+	// a newline is saved as a partial line for the next read.
+	pos := 0
+	for pos < len(data) {
+		nlIdx := bytes.IndexByte(data[pos:], '\n')
+		if nlIdx == -1 {
+			// No more complete lines — buffer the remainder.
+			w.partialLine = string(data[pos:])
+			w.logger.Printf("buffering partial line (%d bytes)", len(w.partialLine))
+			break
 		}
 
-		line := scanner.Text()
-		if partialLine != "" {
-			line = partialLine + line
-			partialLine = ""
+		line := string(data[pos : pos+nlIdx])
+		pos += nlIdx + 1
+
+		select {
+		case <-ctx.Done():
+			return offset + bytesRead
+		default:
 		}
 
 		text, uuid, ok := w.parseLine(line)
 		if !ok {
-			// Might be a partial write — buffer for next poll.
-			// But only if it looks like it could be incomplete JSON.
-			if len(line) > 0 && line[len(line)-1] != '}' {
-				partialLine = line
-				continue
-			}
 			continue
 		}
 
 		if uuid != "" && w.seen[uuid] {
+			w.logger.Printf("skipping duplicate (uuid=%s)", uuid)
 			continue
 		}
 		if uuid != "" {
@@ -258,22 +335,21 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 		}
 
 		if text != "" {
+			preview := text
+			if len(preview) > 50 {
+				preview = preview[:50] + "..."
+			}
+			w.logger.Printf("new assistant message: %q", preview)
+
 			select {
 			case out <- text:
 			case <-ctx.Done():
-				return offset
+				return offset + bytesRead
 			}
 		}
 	}
 
-	// Get the new offset from current file position.
-	newOffset, err := f.Seek(0, io.SeekCurrent)
-	if err != nil {
-		w.logger.Printf("error getting position: %v", err)
-		return offset
-	}
-
-	return newOffset
+	return offset + bytesRead
 }
 
 // parseLine parses a single JSONL line and extracts text from assistant messages.
@@ -316,4 +392,9 @@ func ParseLine(line string) (text string, uuid string, ok bool) {
 // ClaudeProjectDir is an exported version of claudeProjectDir for testing.
 func ClaudeProjectDir(aptPath string) string {
 	return claudeProjectDir(aptPath)
+}
+
+// SeekToLineStart is an exported version of seekToLineStart for testing.
+func SeekToLineStart(path string, offset int64) (int64, error) {
+	return seekToLineStart(path, offset)
 }

@@ -335,3 +335,369 @@ func TestWatcher_HandlesTruncation(t *testing.T) {
 		t.Error("expected offset to change after truncation detection")
 	}
 }
+
+// TestWatcher_PartialLineAcrossReads verifies that a JSONL line split across
+// two filesystem flushes (and thus two poll cycles) is correctly reassembled.
+func TestWatcher_PartialLineAcrossReads(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Write first half of a JSONL line (no trailing newline).
+	firstHalf := `{"type":"assistant","uuid":"partial-1","message":{"content":[{"type":"text",`
+	if err := os.WriteFile(sessionFile, []byte(firstHalf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+
+	// First read — should buffer the partial line, emit nothing.
+	offset := w.readNewLines(ctx, sessionFile, 0, out)
+
+	select {
+	case msg := <-out:
+		t.Fatalf("unexpected message from partial read: %q", msg)
+	default:
+	}
+
+	if w.partialLine == "" {
+		t.Fatal("expected partialLine to be non-empty after reading incomplete data")
+	}
+
+	// Append the second half with a trailing newline.
+	secondHalf := `"text":"Complete message!"}]}}` + "\n"
+	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(f, secondHalf)
+	f.Close()
+
+	// Second read — should reassemble the line and emit the message.
+	w.readNewLines(ctx, sessionFile, offset, out)
+
+	select {
+	case msg := <-out:
+		if msg != "Complete message!" {
+			t.Errorf("got %q, want %q", msg, "Complete message!")
+		}
+	default:
+		t.Fatal("expected message after completing partial line")
+	}
+}
+
+// TestWatcher_PartialLineThenMoreLines verifies partial line handling when
+// more complete lines follow the completed partial.
+func TestWatcher_PartialLineThenMoreLines(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Write a partial line.
+	firstHalf := `{"type":"assistant","uuid":"p1","message":{"content":[{"type":"text",`
+	if err := os.WriteFile(sessionFile, []byte(firstHalf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+
+	// First read — buffers partial line.
+	offset := w.readNewLines(ctx, sessionFile, 0, out)
+
+	// Append: rest of line + newline + another complete message + newline.
+	rest := `"text":"Reassembled"}]}}` + "\n" +
+		`{"type":"assistant","uuid":"p2","message":{"content":[{"type":"text","text":"Second msg"}]}}` + "\n"
+	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(f, rest)
+	f.Close()
+
+	// Second read.
+	w.readNewLines(ctx, sessionFile, offset, out)
+
+	var received []string
+	for {
+		select {
+		case msg := <-out:
+			received = append(received, msg)
+		default:
+			goto done
+		}
+	}
+done:
+	if len(received) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %v", len(received), received)
+	}
+	if received[0] != "Reassembled" {
+		t.Errorf("first message = %q, want %q", received[0], "Reassembled")
+	}
+	if received[1] != "Second msg" {
+		t.Errorf("second message = %q, want %q", received[1], "Second msg")
+	}
+}
+
+// TestWatcher_StartupReadsRecentMessages verifies that when the watcher
+// discovers a session file with existing content, it reads the last 4KB
+// window instead of seeking to the exact end.
+func TestWatcher_StartupReadsRecentMessages(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Create a large old message so the 4KB startup window only captures
+	// the most recent message (old message body > 4KB).
+	oldText := strings.Repeat("x", 5000)
+	oldLine := fmt.Sprintf(
+		`{"type":"assistant","uuid":"old-1","message":{"content":[{"type":"text","text":"%s"}]}}`,
+		oldText,
+	) + "\n"
+	recentLine := `{"type":"assistant","uuid":"recent-1","message":{"content":[{"type":"text","text":"Recent message"}]}}` + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(oldLine+recentLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate what watchLoop does on startup: compute offset with the
+	// 4KB window and seekToLineStart.
+	info, err := os.Stat(sessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startOffset := info.Size() - startupWindow
+	if startOffset < 0 {
+		startOffset = 0
+	}
+
+	adjusted, err := SeekToLineStart(sessionFile, startOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+	w.readNewLines(ctx, sessionFile, adjusted, out)
+
+	// Should have received the recent message.
+	select {
+	case msg := <-out:
+		if msg != "Recent message" {
+			t.Errorf("got %q, want %q", msg, "Recent message")
+		}
+	default:
+		t.Fatal("expected to receive recent message from startup window")
+	}
+
+	// Should NOT have received the old message (it's before the window).
+	select {
+	case msg := <-out:
+		t.Errorf("unexpected extra message: %q (len=%d)", msg[:min(50, len(msg))], len(msg))
+	default:
+		// good — only the recent message was captured
+	}
+}
+
+// TestWatcher_StartupSmallFile verifies that a file smaller than the
+// startup window is read from the beginning.
+func TestWatcher_StartupSmallFile(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	line := `{"type":"assistant","uuid":"s1","message":{"content":[{"type":"text","text":"Small file"}]}}` + "\n"
+	if err := os.WriteFile(sessionFile, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(sessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startOffset := info.Size() - startupWindow
+	if startOffset < 0 {
+		startOffset = 0
+	}
+	// startOffset should be 0 for a small file.
+	if startOffset != 0 {
+		t.Fatalf("expected startOffset=0 for small file, got %d", startOffset)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+	w.readNewLines(ctx, sessionFile, startOffset, out)
+
+	select {
+	case msg := <-out:
+		if msg != "Small file" {
+			t.Errorf("got %q, want %q", msg, "Small file")
+		}
+	default:
+		t.Fatal("expected to receive message from small file")
+	}
+}
+
+// TestWatcher_LargeMessage verifies that JSONL lines larger than 64KB
+// (the default bufio.Scanner limit) are handled correctly.
+func TestWatcher_LargeMessage(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	// Create a message larger than 64KB.
+	largeText := strings.Repeat("A", 100*1024) // 100KB of text
+	line := fmt.Sprintf(
+		`{"type":"assistant","uuid":"large-1","message":{"content":[{"type":"text","text":"%s"}]}}`,
+		largeText,
+	) + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+	w.readNewLines(ctx, sessionFile, 0, out)
+
+	select {
+	case msg := <-out:
+		if msg != largeText {
+			t.Errorf("large message length = %d, want %d", len(msg), len(largeText))
+		}
+	default:
+		t.Fatal("expected large message to be read successfully")
+	}
+}
+
+// TestWatcher_UUIDDeduplicationAcrossReads verifies that the UUID dedup
+// map persists across multiple readNewLines calls, preventing re-sends
+// when the startup window overlaps with previously seen messages.
+func TestWatcher_UUIDDeduplicationAcrossReads(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	line1 := `{"type":"assistant","uuid":"dedup-1","message":{"content":[{"type":"text","text":"First"}]}}` + "\n"
+	if err := os.WriteFile(sessionFile, []byte(line1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+
+	// First read — message is new.
+	offset := w.readNewLines(ctx, sessionFile, 0, out)
+
+	select {
+	case msg := <-out:
+		if msg != "First" {
+			t.Errorf("got %q, want %q", msg, "First")
+		}
+	default:
+		t.Fatal("expected message on first read")
+	}
+
+	// Append a duplicate UUID and a new message.
+	more := `{"type":"assistant","uuid":"dedup-1","message":{"content":[{"type":"text","text":"Duplicate"}]}}` + "\n" +
+		`{"type":"assistant","uuid":"dedup-2","message":{"content":[{"type":"text","text":"New"}]}}` + "\n"
+	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(f, more)
+	f.Close()
+
+	// Second read — duplicate should be skipped, new one emitted.
+	w.readNewLines(ctx, sessionFile, offset, out)
+
+	var received []string
+	for {
+		select {
+		case msg := <-out:
+			received = append(received, msg)
+		default:
+			goto done
+		}
+	}
+done:
+	if len(received) != 1 {
+		t.Fatalf("expected 1 message (dedup should skip duplicate), got %d: %v", len(received), received)
+	}
+	if received[0] != "New" {
+		t.Errorf("got %q, want %q", received[0], "New")
+	}
+}
+
+// TestSeekToLineStart verifies that seekToLineStart correctly finds the
+// first complete line boundary after a given offset.
+func TestSeekToLineStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.jsonl")
+
+	// File content: "aaaa\nbbbb\ncccc\n"
+	//                01234 56789 ...
+	content := "aaaa\nbbbb\ncccc\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// seekToLineStart skips forward from offset to the byte after the first
+	// newline it finds. offset=0 is a special case that returns 0 immediately.
+	tests := []struct {
+		name       string
+		offset     int64
+		wantOffset int64
+	}{
+		{"at zero", 0, 0},                         // special case, no skip
+		{"mid first line", 1, 5},                   // reads "aaa\n" (4 bytes) → 1+4=5
+		{"start of second line", 5, 10},            // reads "bbbb\n" → 5+5=10
+		{"mid second line", 7, 10},                 // reads "bb\n" → 7+3=10
+		{"start of third line", 10, 15},            // reads "cccc\n" → 10+5=15
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SeekToLineStart(path, tt.offset)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantOffset {
+				t.Errorf("SeekToLineStart(offset=%d) = %d, want %d", tt.offset, got, tt.wantOffset)
+			}
+		})
+	}
+}
