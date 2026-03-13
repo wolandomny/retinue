@@ -26,25 +26,7 @@ const (
 	// startupWindow is how far back from end-of-file we seek when first
 	// discovering a session file, so we can catch recently-written messages.
 	startupWindow = 4096
-
-	// maxSessionCheckBytes is the maximum number of bytes to read from the
-	// start of a session file when checking if it belongs to a Woland
-	// planning session.
-	maxSessionCheckBytes = 32 * 1024
-
-	// minBytesForConclusive is the minimum amount of file content required
-	// before we conclusively determine a file is NOT a Woland session.
-	// Files smaller than this may not yet have their system prompt written.
-	minBytesForConclusive = 256
 )
-
-// wolandKeywords are substrings (lowercase) that identify a Woland planning
-// session's content. Worker agent sessions use a different system prompt
-// ("You are a worker agent...") that does not contain these terms.
-var wolandKeywords = []string{
-	"woland",
-	"koroviev",
-}
 
 // sessionMessage represents the top-level structure of a JSONL line from
 // Claude Code's session file. We only parse the fields we need.
@@ -68,22 +50,20 @@ type contentBlock struct {
 // Watcher monitors a Claude Code session JSONL file for new assistant messages
 // and emits their text content on a channel.
 type Watcher struct {
-	projectDir   string
-	logger       *log.Logger
-	seen         map[string]bool // track seen UUIDs to avoid duplicates
-	partialLine  string          // buffered incomplete line from previous read
-	sessionCache map[string]bool // caches per-file Woland session check results
-	draining     bool            // when true, parse lines for dedup but don't forward
+	projectDir  string
+	logger      *log.Logger
+	seen        map[string]bool // track seen UUIDs to avoid duplicates
+	partialLine string          // buffered incomplete line from previous read
+	draining    bool            // when true, parse lines for dedup but don't forward
 }
 
 // NewWatcher creates a Watcher that monitors the given Claude Code projects
 // directory for session JSONL files.
 func NewWatcher(apartmentPath string, logger *log.Logger) *Watcher {
 	return &Watcher{
-		projectDir:   claudeProjectDir(apartmentPath),
-		logger:       logger,
-		seen:         make(map[string]bool),
-		sessionCache: make(map[string]bool),
+		projectDir: claudeProjectDir(apartmentPath),
+		logger:     logger,
+		seen:       make(map[string]bool),
 	}
 }
 
@@ -206,8 +186,9 @@ func (w *Watcher) watchLoop(ctx context.Context, out chan<- string, sessionSwitc
 }
 
 // findActiveSession finds the most recently modified .jsonl file in the
-// project directory that belongs to a Woland planning session. Worker agent
-// session files are filtered out based on their content.
+// project directory. The project directory is already scoped to the apartment
+// path, so the most recently modified file is the active session. File
+// content is not inspected — recency is the sole signal.
 func (w *Watcher) findActiveSession() (string, error) {
 	entries, err := os.ReadDir(w.projectDir)
 	if err != nil {
@@ -228,13 +209,6 @@ func (w *Watcher) findActiveSession() (string, error) {
 			continue
 		}
 
-		path := filepath.Join(w.projectDir, entry.Name())
-
-		// Skip files conclusively identified as non-Woland sessions.
-		if !w.mayBeWolandSession(path) {
-			continue
-		}
-
 		info, err := entry.Info()
 		if err != nil {
 			continue
@@ -242,69 +216,11 @@ func (w *Watcher) findActiveSession() (string, error) {
 
 		if info.ModTime().After(newestTime) {
 			newestTime = info.ModTime()
-			newest = path
+			newest = filepath.Join(w.projectDir, entry.Name())
 		}
 	}
 
 	return newest, nil
-}
-
-// mayBeWolandSession returns true if the file at path could be a Woland
-// planning session. Returns false only when the file has been conclusively
-// identified as a non-Woland session (e.g., a worker agent). Results are
-// cached so each file is only inspected once.
-func (w *Watcher) mayBeWolandSession(path string) bool {
-	if w.sessionCache == nil {
-		w.sessionCache = make(map[string]bool)
-	}
-
-	if result, cached := w.sessionCache[path]; cached {
-		return result
-	}
-
-	isWoland, conclusive := checkWolandSession(path)
-	if conclusive {
-		w.sessionCache[path] = isWoland
-		return isWoland
-	}
-
-	// Inconclusive — file may be too new/small to have its system prompt
-	// written yet. Don't cache; allow it as a candidate so new Woland
-	// sessions aren't missed during startup.
-	return true
-}
-
-// checkWolandSession reads the first maxSessionCheckBytes bytes of a JSONL
-// session file and checks whether the content contains Woland-identifying
-// keywords. Returns (isWoland, conclusive) where conclusive indicates whether
-// the file had enough content to make a reliable determination.
-func checkWolandSession(path string) (isWoland bool, conclusive bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, false
-	}
-	defer f.Close()
-
-	buf := make([]byte, maxSessionCheckBytes)
-	n, err := f.Read(buf)
-	if n == 0 {
-		return false, false // Empty file — inconclusive.
-	}
-
-	content := strings.ToLower(string(buf[:n]))
-	for _, kw := range wolandKeywords {
-		if strings.Contains(content, kw) {
-			return true, true
-		}
-	}
-
-	// If we read enough content without finding keywords, this is
-	// conclusively not a Woland session.
-	if n >= minBytesForConclusive {
-		return false, true
-	}
-
-	return false, false
 }
 
 // seekToLineStart finds the first complete line boundary at or after the
@@ -492,7 +408,3 @@ func SeekToLineStart(path string, offset int64) (int64, error) {
 	return seekToLineStart(path, offset)
 }
 
-// CheckWolandSession is an exported version of checkWolandSession for testing.
-func CheckWolandSession(path string) (isWoland bool, conclusive bool) {
-	return checkWolandSession(path)
-}

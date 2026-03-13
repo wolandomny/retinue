@@ -253,11 +253,12 @@ func TestBridge_Run_ForwardsWatcherToTelegram(t *testing.T) {
 		t.Fatalf("creating project dir: %v", err)
 	}
 
-	// Write a session file with only the Woland system prompt initially.
-	// Assistant messages will be appended AFTER the bridge starts so they
-	// are forwarded (startup drain suppresses pre-existing messages).
+	// Write a session file with only the system prompt initially (no keyword
+	// filtering — recency is used for session detection). Assistant messages
+	// will be appended AFTER the bridge starts so they are forwarded
+	// (startup drain suppresses pre-existing messages).
 	sessionFile := filepath.Join(projectDir, "test-session.jsonl")
-	systemLine := `{"type":"system","uuid":"sys-1","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}` + "\n"
+	systemLine := `{"type":"system","uuid":"sys-1","message":{"content":[{"type":"text","text":"System prompt."}]}}` + "\n"
 	if err := os.WriteFile(sessionFile, []byte(systemLine), 0o644); err != nil {
 		t.Fatalf("writing session file: %v", err)
 	}

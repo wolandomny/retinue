@@ -212,10 +212,9 @@ func TestFindActiveSession_NonexistentDir(t *testing.T) {
 func TestWatcher_RealFile(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create an initial session file with a Woland system prompt so the
-	// session filter recognises it as a Woland planning session.
+	// Create an initial session file.
 	sessionFile := filepath.Join(dir, "test-session.jsonl")
-	systemLine := `{"type":"system","message":{"content":[{"type":"text","text":"You are Woland, the planning agent."}]}}` + "\n"
+	systemLine := `{"type":"system","message":{"content":[{"type":"text","text":"System prompt goes here."}]}}` + "\n"
 	if err := os.WriteFile(sessionFile, []byte(systemLine), 0o644); err != nil {
 		t.Fatalf("creating session file: %v", err)
 	}
@@ -664,152 +663,30 @@ done:
 	}
 }
 
-// --- Woland session filtering tests ---
+// --- Recency-based session detection tests ---
 
-// wolandSessionContent returns realistic JSONL content for a Woland planning session.
-func wolandSessionContent() string {
-	return strings.Join([]string{
-		`{"type":"system","message":{"content":[{"type":"text","text":"You are Woland, the master planning agent of the Retinue system. You coordinate with Koroviev and other agents to manage the apartment."}]}}`,
-		`{"type":"human","uuid":"h1","message":{"content":[{"type":"text","text":"Hello Woland, what's the status?"}]}}`,
-		`{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"I'll check on things for you."}]}}`,
+// TestFindActiveSession_ReturnsNewestRegardlessOfContent verifies that
+// findActiveSession returns the most recently modified .jsonl file even
+// when it doesn't contain any Woland-identifying keywords.
+func TestFindActiveSession_ReturnsNewestRegardlessOfContent(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an older file that mentions "Woland".
+	olderPath := filepath.Join(dir, "older-session.jsonl")
+	olderContent := `{"type":"system","message":{"content":[{"type":"text","text":"You are Woland."}]}}` + "\n"
+	if err := os.WriteFile(olderPath, []byte(olderContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Create a newer file with NO Woland keywords — just ordinary messages.
+	newerPath := filepath.Join(dir, "newer-session.jsonl")
+	newerContent := strings.Join([]string{
+		`{"type":"human","uuid":"h1","message":{"content":[{"type":"text","text":"stepping away"}]}}`,
+		`{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"phone bridge active"}]}}`,
 	}, "\n") + "\n"
-}
-
-// workerAgentContent returns realistic JSONL content for a worker agent session.
-func workerAgentContent() string {
-	return strings.Join([]string{
-		`{"type":"system","message":{"content":[{"type":"text","text":"You are a worker agent in the Retinue system. Your task ID is \"fix-bug-123\". Complete the following task thoroughly and report your results."}]}}`,
-		`{"type":"human","uuid":"h2","message":{"content":[{"type":"text","text":"Fix the bug in watcher.go"}]}}`,
-		`{"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"I'll fix the bug now."}]}}`,
-	}, "\n") + "\n"
-}
-
-func TestCheckWolandSession_WolandFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "woland.jsonl")
-	if err := os.WriteFile(path, []byte(wolandSessionContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if !isWoland {
-		t.Error("expected isWoland=true for Woland session file")
-	}
-	if !conclusive {
-		t.Error("expected conclusive=true for Woland session file")
-	}
-}
-
-func TestCheckWolandSession_WorkerFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.jsonl")
-	if err := os.WriteFile(path, []byte(workerAgentContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if isWoland {
-		t.Error("expected isWoland=false for worker agent session file")
-	}
-	if !conclusive {
-		t.Error("expected conclusive=true for worker agent file (has enough content)")
-	}
-}
-
-func TestCheckWolandSession_EmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.jsonl")
-	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if isWoland {
-		t.Error("expected isWoland=false for empty file")
-	}
-	if conclusive {
-		t.Error("expected conclusive=false for empty file")
-	}
-}
-
-func TestCheckWolandSession_SmallFileInconclusive(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "small.jsonl")
-	// Content smaller than minBytesForConclusive without Woland keywords.
-	if err := os.WriteFile(path, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if isWoland {
-		t.Error("expected isWoland=false for file without Woland keywords")
-	}
-	if conclusive {
-		t.Error("expected conclusive=false for small file (below minBytesForConclusive)")
-	}
-}
-
-func TestCheckWolandSession_NonexistentFile(t *testing.T) {
-	isWoland, conclusive := CheckWolandSession("/nonexistent/path/file.jsonl")
-	if isWoland {
-		t.Error("expected isWoland=false for nonexistent file")
-	}
-	if conclusive {
-		t.Error("expected conclusive=false for nonexistent file")
-	}
-}
-
-func TestCheckWolandSession_CaseInsensitive(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mixed-case.jsonl")
-	// Use mixed case to verify case-insensitive matching.
-	content := strings.Repeat("x", 300) + "\n" + `{"type":"system","message":{"content":[{"type":"text","text":"You are WOLAND the planning agent."}]}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if !isWoland {
-		t.Error("expected isWoland=true for file containing 'WOLAND' (case-insensitive)")
-	}
-	if !conclusive {
-		t.Error("expected conclusive=true")
-	}
-}
-
-func TestCheckWolandSession_KorovievKeyword(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "koroviev.jsonl")
-	content := `{"type":"system","message":{"content":[{"type":"text","text":"Coordinate with Koroviev to dispatch tasks to worker agents."}]}}` + "\n"
-	content += `{"type":"human","uuid":"h1","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	isWoland, conclusive := CheckWolandSession(path)
-	if !isWoland {
-		t.Error("expected isWoland=true for file containing 'Koroviev'")
-	}
-	if !conclusive {
-		t.Error("expected conclusive=true")
-	}
-}
-
-func TestFindActiveSession_FiltersWorkerAgents(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a Woland session file (older).
-	wolandPath := filepath.Join(dir, "woland-session.jsonl")
-	if err := os.WriteFile(wolandPath, []byte(wolandSessionContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait so the worker file gets a newer modification time.
-	time.Sleep(50 * time.Millisecond)
-
-	// Create a worker agent session file (newer).
-	workerPath := filepath.Join(dir, "worker-session.jsonl")
-	if err := os.WriteFile(workerPath, []byte(workerAgentContent()), 0o644); err != nil {
+	if err := os.WriteFile(newerPath, []byte(newerContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -824,62 +701,21 @@ func TestFindActiveSession_FiltersWorkerAgents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should pick the Woland file even though the worker file is newer.
-	if got != wolandPath {
-		t.Errorf("expected %q (Woland session), got %q", wolandPath, got)
+	// Should pick the newer file regardless of keyword content.
+	if got != newerPath {
+		t.Errorf("expected %q (newest file), got %q", newerPath, got)
 	}
 }
 
-func TestFindActiveSession_WorkerOnlyReturnsEmpty(t *testing.T) {
+// TestWatcher_SessionSwitchOnNewFile verifies that the watcher switches
+// to a newly created session file when it becomes the most recently modified.
+func TestWatcher_SessionSwitchOnNewFile(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create only worker agent session files.
-	for i := 0; i < 3; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("worker-%d.jsonl", i))
-		if err := os.WriteFile(path, []byte(workerAgentContent()), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	w := &Watcher{
-		projectDir: dir,
-		logger:     log.New(os.Stderr, "test: ", 0),
-		seen:       make(map[string]bool),
-	}
-
-	got, err := w.findActiveSession()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got != "" {
-		t.Errorf("expected empty string when only worker sessions exist, got %q", got)
-	}
-}
-
-func TestFindActiveSession_MultipleWolandPicksNewest(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create an older Woland session.
-	oldWoland := filepath.Join(dir, "old-woland.jsonl")
-	if err := os.WriteFile(oldWoland, []byte(wolandSessionContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Create a worker session (should be filtered out).
-	workerPath := filepath.Join(dir, "worker.jsonl")
-	if err := os.WriteFile(workerPath, []byte(workerAgentContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Create a newer Woland session.
-	newWoland := filepath.Join(dir, "new-woland.jsonl")
-	if err := os.WriteFile(newWoland, []byte(wolandSessionContent()), 0o644); err != nil {
+	// Create an initial session file (file A).
+	fileA := filepath.Join(dir, "session-a.jsonl")
+	contentA := `{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Message from A"}]}}` + "\n"
+	if err := os.WriteFile(fileA, []byte(contentA), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -889,138 +725,51 @@ func TestFindActiveSession_MultipleWolandPicksNewest(t *testing.T) {
 		seen:       make(map[string]bool),
 	}
 
-	got, err := w.findActiveSession()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got != newWoland {
-		t.Errorf("expected %q (newest Woland session), got %q", newWoland, got)
-	}
-}
-
-func TestFindActiveSession_InconclusiveFilesStillConsidered(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a file with very little content (inconclusive — could be a
-	// brand-new Woland session that hasn't had its prompt written yet).
-	newFile := filepath.Join(dir, "new-session.jsonl")
-	if err := os.WriteFile(newFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	w := &Watcher{
-		projectDir: dir,
-		logger:     log.New(os.Stderr, "test: ", 0),
-		seen:       make(map[string]bool),
-	}
-
-	got, err := w.findActiveSession()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Inconclusive files should still be considered as candidates.
-	if got != newFile {
-		t.Errorf("expected %q (inconclusive file should be allowed), got %q", newFile, got)
-	}
-}
-
-func TestWatcher_SessionCachePreventsRecheck(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a worker agent file.
-	workerPath := filepath.Join(dir, "worker.jsonl")
-	if err := os.WriteFile(workerPath, []byte(workerAgentContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	w := &Watcher{
-		projectDir:   dir,
-		logger:       log.New(os.Stderr, "test: ", 0),
-		seen:         make(map[string]bool),
-		sessionCache: make(map[string]bool),
-	}
-
-	// First call should check and cache the result.
-	got1, _ := w.findActiveSession()
-	if got1 != "" {
-		t.Errorf("first call: expected empty, got %q", got1)
-	}
-
-	// Verify the result was cached.
-	if _, cached := w.sessionCache[workerPath]; !cached {
-		t.Fatal("expected worker file to be cached after first check")
-	}
-	if w.sessionCache[workerPath] {
-		t.Fatal("expected cached value to be false for worker file")
-	}
-
-	// Second call should use the cache (file won't be re-read).
-	got2, _ := w.findActiveSession()
-	if got2 != "" {
-		t.Errorf("second call: expected empty, got %q", got2)
-	}
-}
-
-func TestWatcher_NoSessionSwitchForWorkerAgent(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a Woland session file.
-	wolandPath := filepath.Join(dir, "woland.jsonl")
-	if err := os.WriteFile(wolandPath, []byte(wolandSessionContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	w := &Watcher{
-		projectDir:   dir,
-		logger:       log.New(os.Stderr, "test: ", 0),
-		seen:         make(map[string]bool),
-		sessionCache: make(map[string]bool),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	sessionSwitch := make(chan struct{}, 4)
 	ch := w.Watch(ctx, sessionSwitch)
 
-	// Wait for the watcher to discover the Woland file.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the watcher to discover file A and read its message.
+	select {
+	case msg := <-ch:
+		if msg != "Message from A" {
+			t.Errorf("expected %q from file A, got %q", "Message from A", msg)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for message from file A")
+	}
 
-	// Now create a worker agent file that is newer.
-	workerPath := filepath.Join(dir, "worker.jsonl")
-	if err := os.WriteFile(workerPath, []byte(workerAgentContent()), 0o644); err != nil {
+	// Create file B — a new session file that is more recently modified.
+	time.Sleep(100 * time.Millisecond) // Ensure distinct mod time.
+	fileB := filepath.Join(dir, "session-b.jsonl")
+	contentB := `{"type":"assistant","uuid":"b1","message":{"content":[{"type":"text","text":"Message from B"}]}}` + "\n"
+	if err := os.WriteFile(fileB, []byte(contentB), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Keep updating the worker file to simulate an active worker.
-	go func() {
-		for i := 0; i < 5; i++ {
-			time.Sleep(200 * time.Millisecond)
-			f, err := os.OpenFile(workerPath, os.O_APPEND|os.O_WRONLY, 0o644)
-			if err != nil {
-				return
-			}
-			fmt.Fprintf(f, `{"type":"assistant","uuid":"w%d","message":{"content":[{"type":"text","text":"worker msg %d"}]}}`+"\n", i, i)
-			f.Close()
-		}
-	}()
-
-	// Wait enough time for the watcher to poll multiple times.
-	time.Sleep(2 * time.Second)
-	cancel()
-
-	// Drain the watch channel.
-	for range ch {
-	}
-
-	// No session switch should have occurred.
+	// Wait for the session switch notification.
 	select {
 	case <-sessionSwitch:
-		t.Error("unexpected session switch — watcher should not switch to worker agent file")
-	default:
-		// Good — no switch happened.
+		// Good — session switch detected.
+	case <-time.After(6 * time.Second):
+		t.Fatal("timed out waiting for session switch notification")
+	}
+
+	// Should receive the message from file B.
+	select {
+	case msg := <-ch:
+		if msg != "Message from B" {
+			t.Errorf("expected %q from file B, got %q", "Message from B", msg)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for message from file B")
+	}
+
+	cancel()
+	// Drain remaining messages.
+	for range ch {
 	}
 }
 
