@@ -205,6 +205,68 @@ func TestTmuxRunnerWaitForOmitsSocketFlagWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestTmuxRunnerEnvVarsInCommand(t *testing.T) {
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:           "test",
+		WindowName:       "env-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		Env:              []string{"GH_TOKEN=ghp_abc123", "FOO=bar"},
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := fake.WindowCommand("retinue", "env-test")
+	if cmd == "" {
+		t.Fatal("expected a command to be recorded for window 'env-test'")
+	}
+
+	// The env command should include the extra env vars.
+	if !strings.Contains(cmd, "GH_TOKEN=ghp_abc123") {
+		t.Errorf("expected command to contain GH_TOKEN env var, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "FOO=bar") {
+		t.Errorf("expected command to contain FOO env var, got: %s", cmd)
+	}
+	// env -u CLAUDECODE should still be present.
+	if !strings.Contains(cmd, "env -u CLAUDECODE") {
+		t.Errorf("expected command to contain 'env -u CLAUDECODE', got: %s", cmd)
+	}
+	// The claude command should follow the env vars.
+	if !strings.Contains(cmd, "claude") {
+		t.Errorf("expected command to contain 'claude', got: %s", cmd)
+	}
+}
+
+func TestTmuxRunnerEmptyEnvVarsNoChange(t *testing.T) {
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:           "test",
+		WindowName:       "no-env-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := fake.WindowCommand("retinue", "no-env-test")
+	// With no extra env vars, the command should start with "env -u CLAUDECODE claude".
+	if !strings.Contains(cmd, "env -u CLAUDECODE claude") {
+		t.Errorf("expected command to contain 'env -u CLAUDECODE claude', got: %s", cmd)
+	}
+}
+
 func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}

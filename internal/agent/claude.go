@@ -70,7 +70,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 			filtered = append(filtered, e)
 		}
 	}
-	cmd.Env = filtered
+	cmd.Env = append(filtered, opts.Env...)
 
 	var output strings.Builder
 	cmd.Stdout = &output

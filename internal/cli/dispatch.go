@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,11 @@ func newDispatchCmd() *cobra.Command {
 			ws, err := loadWorkspace()
 			if err != nil {
 				return err
+			}
+
+			// Resolve GitHub token early so it's cached before any workers start.
+			if _, err := ws.ResolveGitHubToken(); err != nil {
+				log.Printf("warning: failed to resolve GitHub token: %v", err)
 			}
 
 			store := task.NewFileStore(ws.TasksPath())
@@ -162,6 +168,12 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		model = target.Model
 	}
 
+	// Inject GitHub token into the agent's environment if available.
+	var extraEnv []string
+	if token := ws.GitHubToken(); token != "" {
+		extraEnv = append(extraEnv, "GH_TOKEN="+token)
+	}
+
 	result, err := runner.Run(ctx, agent.RunOpts{
 		Prompt:           target.Prompt,
 		SystemPrompt:     systemPrompt,
@@ -171,6 +183,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		WindowName:       windowName,
 		ApartmentSession: aptSession,
 		Socket:           socket,
+		Env:              extraEnv,
 	})
 
 	finishedAt := time.Now()

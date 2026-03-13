@@ -64,7 +64,12 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	args = append(args, opts.Prompt)
 
 	// Unset CLAUDECODE so claude doesn't refuse to run inside a retinue session.
-	claudeCmd := "env -u " + claudeCodeEnvVar + " claude " + shell.Join(args)
+	// Also inject any extra environment variables (e.g. GH_TOKEN).
+	envParts := []string{"env", "-u", claudeCodeEnvVar}
+	for _, e := range opts.Env {
+		envParts = append(envParts, shell.Quote(e))
+	}
+	claudeCmd := strings.Join(envParts, " ") + " claude " + shell.Join(args)
 
 	// 3. Wrap command to tee output and signal tmux on exit.
 	// Use windowName as the wait-for channel (unique per task).

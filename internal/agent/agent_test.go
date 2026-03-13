@@ -43,6 +43,32 @@ func TestFakeRunnerRecordsCalls(t *testing.T) {
 	}
 }
 
+func TestFakeRunnerRecordsEnv(t *testing.T) {
+	fake := &FakeRunner{}
+
+	opts := RunOpts{
+		Prompt: "test prompt",
+		Env:    []string{"GH_TOKEN=ghp_abc123", "FOO=bar"},
+	}
+
+	_, err := fake.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(fake.Calls))
+	}
+	if len(fake.Calls[0].Env) != 2 {
+		t.Fatalf("expected 2 env vars, got %d", len(fake.Calls[0].Env))
+	}
+	if fake.Calls[0].Env[0] != "GH_TOKEN=ghp_abc123" {
+		t.Errorf("env[0] = %q, want %q", fake.Calls[0].Env[0], "GH_TOKEN=ghp_abc123")
+	}
+	if fake.Calls[0].Env[1] != "FOO=bar" {
+		t.Errorf("env[1] = %q, want %q", fake.Calls[0].Env[1], "FOO=bar")
+	}
+}
+
 func TestClaudeRunnerBuildsArgs(t *testing.T) {
 	// We can't run the actual claude CLI in tests, but we can verify
 	// the runner struct exists and implements the interface.
