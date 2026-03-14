@@ -46,7 +46,7 @@ changelog:
 
 brews:
   - name: retinue
-    tap:
+    repository:
       owner: wolandomny
       name: homebrew-retinue
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
