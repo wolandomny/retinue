@@ -6,7 +6,24 @@ Retinue manages task dependencies as a DAG, dispatches ready tasks to Claude Cod
 
 ## Installation
 
-Requires [Go 1.25+](https://go.dev/dl/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [tmux](https://github.com/tmux/tmux).
+Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [tmux](https://github.com/tmux/tmux).
+
+### Homebrew (recommended)
+
+```bash
+brew tap wolandomny/retinue
+brew install retinue
+```
+
+Upgrade to the latest version:
+
+```bash
+brew upgrade retinue
+```
+
+### From source
+
+Requires [Go 1.25+](https://go.dev/dl/).
 
 ```bash
 make install    # builds the binary and installs to $(go env GOPATH)/bin
@@ -18,7 +35,9 @@ Make sure `$(go env GOPATH)/bin` is in your `PATH`. If you haven't already, add 
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-Then reload your shell (`source ~/.zshrc`) or open a new terminal. Verify with:
+Then reload your shell (`source ~/.zshrc`) or open a new terminal.
+
+### Verify
 
 ```bash
 retinue --help
