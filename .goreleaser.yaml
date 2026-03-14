@@ -1,5 +1,6 @@
 # GoReleaser configuration for retinue
 # https://goreleaser.com
+version: 2
 
 before:
   hooks:
