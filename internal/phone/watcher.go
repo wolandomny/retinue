@@ -26,6 +26,11 @@ const (
 	// startupWindow is how far back from end-of-file we seek when first
 	// discovering a session file, so we can catch recently-written messages.
 	startupWindow = 4096
+
+	// wolandSessionMarker is the name of the marker file that locks the
+	// watcher onto a specific Woland session. This prevents worker agent
+	// session files from causing false "session switch" notifications.
+	wolandSessionMarker = ".woland-session"
 )
 
 // sessionMessage represents the top-level structure of a JSONL line from
@@ -51,6 +56,7 @@ type contentBlock struct {
 // and emits their text content on a channel.
 type Watcher struct {
 	projectDir  string
+	aptPath     string          // apartment root directory (for marker file)
 	logger      *log.Logger
 	seen        map[string]bool // track seen UUIDs to avoid duplicates
 	partialLine string          // buffered incomplete line from previous read
@@ -62,6 +68,7 @@ type Watcher struct {
 func NewWatcher(apartmentPath string, logger *log.Logger) *Watcher {
 	return &Watcher{
 		projectDir: claudeProjectDir(apartmentPath),
+		aptPath:    apartmentPath,
 		logger:     logger,
 		seen:       make(map[string]bool),
 	}
@@ -185,11 +192,32 @@ func (w *Watcher) watchLoop(ctx context.Context, out chan<- string, sessionSwitc
 	}
 }
 
-// findActiveSession finds the most recently modified .jsonl file in the
-// project directory. The project directory is already scoped to the apartment
-// path, so the most recently modified file is the active session. File
-// content is not inspected — recency is the sole signal.
+// findActiveSession returns the current Woland session file. It first checks
+// for a marker file (.woland-session) in the apartment directory. If the
+// marker exists and points to a valid file, that file is returned without
+// scanning the directory — this prevents worker agent session files from
+// causing false session switches. If no marker exists (or it points to a
+// missing file), we fall back to finding the most recently modified .jsonl
+// file and write the marker to lock onto it.
 func (w *Watcher) findActiveSession() (string, error) {
+	// If we have an apartment path, check for a marker file that locks
+	// onto the current Woland session.
+	if w.aptPath != "" {
+		markerPath := filepath.Join(w.aptPath, wolandSessionMarker)
+		if data, err := os.ReadFile(markerPath); err == nil {
+			sessionPath := strings.TrimSpace(string(data))
+			if sessionPath != "" {
+				if _, err := os.Stat(sessionPath); err == nil {
+					return sessionPath, nil
+				}
+				// Marker points to a missing file — remove it and re-scan.
+				w.logger.Printf("marker file points to missing session: %s", sessionPath)
+				os.Remove(markerPath)
+			}
+		}
+	}
+
+	// Fall back to scanning for the newest .jsonl file.
 	entries, err := os.ReadDir(w.projectDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -217,6 +245,14 @@ func (w *Watcher) findActiveSession() (string, error) {
 		if info.ModTime().After(newestTime) {
 			newestTime = info.ModTime()
 			newest = filepath.Join(w.projectDir, entry.Name())
+		}
+	}
+
+	// Write the marker file so subsequent polls lock onto this session.
+	if newest != "" && w.aptPath != "" {
+		markerPath := filepath.Join(w.aptPath, wolandSessionMarker)
+		if err := os.WriteFile(markerPath, []byte(newest), 0o644); err != nil {
+			w.logger.Printf("warning: failed to write session marker: %v", err)
 		}
 	}
 

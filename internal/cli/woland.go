@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -40,6 +41,10 @@ type promptBuilder func(apartmentPath, configYAML, tasksYAML string) string
 // wolandSession starts or attaches to a Woland planning session
 // in the given tmux window with the given system prompt.
 func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) error {
+	// Clear the Woland session marker so the phone bridge watcher
+	// re-discovers the new session file on its next poll.
+	os.Remove(filepath.Join(ws.Path, ".woland-session"))
+
 	socket := "retinue-" + ws.Config.Name
 	mgr := session.NewTmuxManager(socket)
 	ctx := context.Background()

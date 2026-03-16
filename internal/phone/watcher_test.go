@@ -707,31 +707,48 @@ func TestFindActiveSession_ReturnsNewestRegardlessOfContent(t *testing.T) {
 	}
 }
 
-// TestWatcher_SessionSwitchOnNewFile verifies that the watcher switches
-// to a newly created session file when it becomes the most recently modified.
+// TestWatcher_SessionSwitchOnNewFile verifies that when aptPath is set, the
+// watcher locks onto the first session via a marker file and does NOT switch
+// when a newer file appears. A switch only happens after the marker is deleted.
 func TestWatcher_SessionSwitchOnNewFile(t *testing.T) {
-	dir := t.TempDir()
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	// Create an initial session file (file A).
-	fileA := filepath.Join(dir, "session-a.jsonl")
-	contentA := `{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Message from A"}]}}` + "\n"
-	if err := os.WriteFile(fileA, []byte(contentA), 0o644); err != nil {
+	// Create an initial session file (file A) with a system line only.
+	fileA := filepath.Join(projDir, "session-a.jsonl")
+	systemLine := `{"type":"system","message":{"content":[{"type":"text","text":"System prompt."}]}}` + "\n"
+	if err := os.WriteFile(fileA, []byte(systemLine), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	w := &Watcher{
-		projectDir: dir,
+		projectDir: projDir,
+		aptPath:    aptDir,
 		logger:     log.New(os.Stderr, "test: ", 0),
 		seen:       make(map[string]bool),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	sessionSwitch := make(chan struct{}, 4)
 	ch := w.Watch(ctx, sessionSwitch)
 
-	// Wait for the watcher to discover file A and read its message.
+	// Give the watcher time to discover file A and drain the startup window.
+	time.Sleep(500 * time.Millisecond)
+
+	// Append an assistant message to file A AFTER the watcher has started.
+	f, err := os.OpenFile(fileA, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(f, `{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Message from A"}]}}`)
+	f.Close()
+
+	// Wait for the watcher to forward the message from file A.
 	select {
 	case msg := <-ch:
 		if msg != "Message from A" {
@@ -741,21 +758,52 @@ func TestWatcher_SessionSwitchOnNewFile(t *testing.T) {
 		t.Fatal("timed out waiting for message from file A")
 	}
 
-	// Create file B — a new session file that is more recently modified.
-	time.Sleep(100 * time.Millisecond) // Ensure distinct mod time.
-	fileB := filepath.Join(dir, "session-b.jsonl")
-	contentB := `{"type":"assistant","uuid":"b1","message":{"content":[{"type":"text","text":"Message from B"}]}}` + "\n"
-	if err := os.WriteFile(fileB, []byte(contentB), 0o644); err != nil {
+	// Verify the marker file was written.
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("expected marker file to exist: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != fileA {
+		t.Errorf("marker contains %q, want %q", string(data), fileA)
+	}
+
+	// Create file B — a newer session file (simulates a worker agent).
+	// Only write a system line initially so the content isn't drained.
+	time.Sleep(100 * time.Millisecond)
+	fileB := filepath.Join(projDir, "session-b.jsonl")
+	if err := os.WriteFile(fileB, []byte(systemLine), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for the session switch notification.
+	// Wait long enough for several poll cycles — no switch should happen.
 	select {
 	case <-sessionSwitch:
-		// Good — session switch detected.
-	case <-time.After(6 * time.Second):
-		t.Fatal("timed out waiting for session switch notification")
+		t.Fatal("unexpected session switch — marker should prevent switching to newer file")
+	case <-time.After(5 * time.Second):
+		// Good — no switch.
 	}
+
+	// Now delete the marker (simulates Woland restart) to trigger re-scan.
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatalf("removing marker: %v", err)
+	}
+
+	// The watcher should re-scan, find file B (newest), and switch.
+	select {
+	case <-sessionSwitch:
+		// Good — session switch detected after marker deletion.
+	case <-time.After(6 * time.Second):
+		t.Fatal("timed out waiting for session switch after marker deletion")
+	}
+
+	// Append an assistant message to file B AFTER the watcher has switched.
+	fb, err := os.OpenFile(fileB, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(fb, `{"type":"assistant","uuid":"b1","message":{"content":[{"type":"text","text":"Message from B"}]}}`)
+	fb.Close()
 
 	// Should receive the message from file B.
 	select {
@@ -768,7 +816,6 @@ func TestWatcher_SessionSwitchOnNewFile(t *testing.T) {
 	}
 
 	cancel()
-	// Drain remaining messages.
 	for range ch {
 	}
 }
@@ -944,5 +991,262 @@ done:
 	}
 	if received[0] != "Fresh message" {
 		t.Errorf("got %q, want %q", received[0], "Fresh message")
+	}
+}
+
+// --- Marker file (.woland-session) tests ---
+
+// TestFindActiveSession_WritesMarkerOnDiscovery verifies that findActiveSession
+// writes a .woland-session marker file containing the discovered session path.
+func TestFindActiveSession_WritesMarkerOnDiscovery(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionFile := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != sessionFile {
+		t.Errorf("findActiveSession() = %q, want %q", got, sessionFile)
+	}
+
+	// Verify marker was written.
+	markerPath := filepath.Join(aptDir, wolandSessionMarker)
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("expected marker file at %s: %v", markerPath, err)
+	}
+	if string(data) != sessionFile {
+		t.Errorf("marker contains %q, want %q", string(data), sessionFile)
+	}
+}
+
+// TestFindActiveSession_ReadsMarkerOnSubsequentPolls verifies that when a
+// marker file exists and points to a valid session, findActiveSession returns
+// the marker's path even when a newer .jsonl file exists.
+func TestFindActiveSession_ReadsMarkerOnSubsequentPolls(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the Woland session file.
+	wolandFile := filepath.Join(projDir, "woland-session.jsonl")
+	if err := os.WriteFile(wolandFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write the marker pointing to the Woland session.
+	markerPath := filepath.Join(aptDir, wolandSessionMarker)
+	if err := os.WriteFile(markerPath, []byte(wolandFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a newer file (simulates a worker agent session).
+	time.Sleep(50 * time.Millisecond)
+	workerFile := filepath.Join(projDir, "worker-session.jsonl")
+	if err := os.WriteFile(workerFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should return the marker's file, NOT the newer worker file.
+	if got != wolandFile {
+		t.Errorf("findActiveSession() = %q, want %q (marker file should take precedence)", got, wolandFile)
+	}
+}
+
+// TestFindActiveSession_MarkerDeleteCausesRescan verifies that deleting the
+// marker file causes findActiveSession to re-scan the directory, find the
+// newest file, and write a new marker.
+func TestFindActiveSession_MarkerDeleteCausesRescan(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an older file.
+	olderFile := filepath.Join(projDir, "older.jsonl")
+	if err := os.WriteFile(olderFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Create a newer file.
+	newerFile := filepath.Join(projDir, "newer.jsonl")
+	if err := os.WriteFile(newerFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	// No marker exists — should scan, find newest, and write marker.
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != newerFile {
+		t.Errorf("first call: got %q, want %q", got, newerFile)
+	}
+
+	// Verify marker was written.
+	markerPath := filepath.Join(aptDir, wolandSessionMarker)
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("marker should exist: %v", err)
+	}
+	if string(data) != newerFile {
+		t.Errorf("marker = %q, want %q", string(data), newerFile)
+	}
+
+	// Delete the marker (simulates Woland restart).
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an even newer file.
+	time.Sleep(50 * time.Millisecond)
+	newestFile := filepath.Join(projDir, "newest.jsonl")
+	if err := os.WriteFile(newestFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should re-scan and find the newest file.
+	got, err = w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error after marker delete: %v", err)
+	}
+	if got != newestFile {
+		t.Errorf("after marker delete: got %q, want %q", got, newestFile)
+	}
+
+	// Verify new marker was written.
+	data, err = os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("new marker should exist: %v", err)
+	}
+	if string(data) != newestFile {
+		t.Errorf("new marker = %q, want %q", string(data), newestFile)
+	}
+}
+
+// TestFindActiveSession_StaleMarkerRemovedAndRescans verifies that if the
+// marker points to a file that no longer exists, it is removed and a
+// re-scan occurs.
+func TestFindActiveSession_StaleMarkerRemovedAndRescans(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a marker pointing to a nonexistent file.
+	markerPath := filepath.Join(aptDir, wolandSessionMarker)
+	if err := os.WriteFile(markerPath, []byte("/nonexistent/session.jsonl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a real session file.
+	realFile := filepath.Join(projDir, "real-session.jsonl")
+	if err := os.WriteFile(realFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != realFile {
+		t.Errorf("got %q, want %q (should fall back to scan)", got, realFile)
+	}
+
+	// Verify the stale marker was replaced.
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("marker should still exist: %v", err)
+	}
+	if string(data) != realFile {
+		t.Errorf("updated marker = %q, want %q", string(data), realFile)
+	}
+}
+
+// TestFindActiveSession_NoMarkerWithoutAptPath verifies that when aptPath
+// is empty (e.g., in tests that construct Watcher directly), the marker
+// file logic is skipped entirely and the watcher falls back to scanning.
+func TestFindActiveSession_NoMarkerWithoutAptPath(t *testing.T) {
+	dir := t.TempDir()
+
+	file1 := filepath.Join(dir, "a.jsonl")
+	if err := os.WriteFile(file1, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	file2 := filepath.Join(dir, "b.jsonl")
+	if err := os.WriteFile(file2, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		// aptPath intentionally empty — no marker logic.
+		logger: log.New(os.Stderr, "test: ", 0),
+		seen:   make(map[string]bool),
+	}
+
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != file2 {
+		t.Errorf("got %q, want %q (newest file)", got, file2)
+	}
+
+	// No marker file should have been created.
+	markerPath := filepath.Join(dir, wolandSessionMarker)
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Error("marker file should NOT be created when aptPath is empty")
 	}
 }
