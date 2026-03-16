@@ -883,10 +883,9 @@ func TestWatcher_MessagesAfterStartupAreForwarded(t *testing.T) {
 	}
 
 	w := &Watcher{
-		projectDir:   dir,
-		logger:       log.New(os.Stderr, "test: ", 0),
-		seen:         make(map[string]bool),
-		sessionCache: make(map[string]bool),
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

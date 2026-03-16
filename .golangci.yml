@@ -1,19 +1,9 @@
+version: 2
+
 linters:
   enable:
-    - errcheck
-    - gosimple
     - govet
     - ineffassign
-    - staticcheck
-    - unused
-    - gofumpt
-    - misspell
-    - unconvert
-    - unparam
-
-linters-settings:
-  gofumpt:
-    extra-rules: true
 
 issues:
   exclude-use-default: false

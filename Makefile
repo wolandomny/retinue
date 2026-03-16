@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet coverage clean install
+.PHONY: build test lint fmt vet coverage clean install verify
 
 BINARY := retinue
 BINDIR := bin
@@ -39,3 +39,5 @@ install: build
 	mkdir -p $(shell go env GOPATH)/bin
 	rm -f $(shell go env GOPATH)/bin/$(BINARY)
 	cp $(BINDIR)/$(BINARY) $(shell go env GOPATH)/bin/$(BINARY)
+
+verify: build vet test
