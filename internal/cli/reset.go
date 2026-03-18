@@ -172,8 +172,12 @@ func RecoverStuckTasks(ctx context.Context, ws *workspace.Workspace, store *task
 	return results, nil
 }
 
+// assessBranchWorkFunc is the function used to assess branch work.
+// It is a variable so tests can replace it with a mock.
+var assessBranchWorkFunc = assessBranchWork
+
 // recoverInProgressTask handles recovery logic for a single in_progress task.
-func recoverInProgressTask(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, tmuxMgr *session.TmuxManager, t task.Task, w io.Writer, opts RecoverOpts) (RecoverResult, error) {
+func recoverInProgressTask(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, tmuxMgr session.Manager, t task.Task, w io.Writer, opts RecoverOpts) (RecoverResult, error) {
 	windowName := t.Meta["session"]
 	if windowName == "" {
 		windowName = t.ID
@@ -258,7 +262,7 @@ func recoverInProgressTask(ctx context.Context, ws *workspace.Workspace, store *
 		return RecoverResult{TaskID: t.ID, Action: "skipped", Detail: detail}, nil
 	}
 
-	verdict, explanation, err := assessBranchWork(ctx, ws, repoPath, branch, baseBranch, t)
+	verdict, explanation, err := assessBranchWorkFunc(ctx, ws, repoPath, branch, baseBranch, t)
 	if err != nil {
 		// On assessment failure, mark as failed so the user can decide.
 		fmt.Fprintf(w, " ERROR (%v) → marked failed\n", err)
