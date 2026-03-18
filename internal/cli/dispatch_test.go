@@ -52,23 +52,16 @@ func TestResolveWorkDir_CreatesWorktree(t *testing.T) {
 	// Create a temporary "apartment" directory.
 	aptDir := t.TempDir()
 
-	// Create a bare-ish git repo to act as the source repo.
+	// Create a git repo to act as the source repo using the test helper.
 	repoDir := filepath.Join(aptDir, "repos", "myrepo")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Initialize a git repo with an initial commit so worktree add works.
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test"},
-		{"commit", "--allow-empty", "-m", "initial"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v failed: %v\n%s", args, err, out)
-		}
+
+	// Create the actual repo using the helper (which properly sets up 'main' branch).
+	tempRepo := initTestRepo(t)
+	if err := os.Rename(tempRepo, repoDir); err != nil {
+		t.Fatal(err)
 	}
 
 	ws := &workspace.Workspace{
@@ -120,22 +113,16 @@ func TestDispatch_SetsBranchAfterWorktreeCreation(t *testing.T) {
 	// Create a temporary workspace directory.
 	aptDir := t.TempDir()
 
-	// Create a git repo to act as the source repo.
+	// Create a git repo to act as the source repo using the test helper.
 	repoDir := filepath.Join(aptDir, "repos", "myrepo")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test"},
-		{"commit", "--allow-empty", "-m", "initial"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v failed: %v\n%s", args, err, out)
-		}
+
+	// Create the actual repo using the helper (which properly sets up 'main' branch).
+	tempRepo := initTestRepo(t)
+	if err := os.Rename(tempRepo, repoDir); err != nil {
+		t.Fatal(err)
 	}
 
 	ws := &workspace.Workspace{
