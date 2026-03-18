@@ -196,6 +196,8 @@ For each done task, Hella:
 
 If validation or merge fails, the task is marked "failed" with the error output.
 
+Merges happen sequentially (one at a time) to avoid rebase races.
+
 Flags:
 
 - `--task <id>` — merge a single task by ID.
@@ -214,6 +216,27 @@ This is typically what Woland calls under the hood. Flags:
 - `--retry` — automatically retry failed tasks. Each retry spawns a Claude call to analyze the failure and rewrite the task prompt before re-dispatching.
 - `--max-retries N` — maximum retry rounds (default: 2). Used with `--retry`.
 - `--review` — run an AI review of each task's diff before merging. If the review rejects the work, the task goes back to pending with feedback appended to its prompt.
+
+At the end of a run, retinue runs the validation command on each repo against the combined state of all merged work. If validation fails, it uses git bisect to identify which task's merge broke things, reverts that task's commits, and marks it as failed. This means a single bad task doesn't poison the entire run.
+
+On startup, `retinue run` also auto-recovers stuck tasks from a previous crashed run. If the orchestrator died (laptop sleep, terminal closed), tasks that were `in_progress` with dead workers are detected and recovered — either marked done if the work was complete, or reset for re-dispatch.
+
+### Recovering stuck tasks
+
+If the orchestrator process dies mid-run (laptop sleeps, terminal closes, OOM), tasks can get stuck in `in_progress` with no live worker. The `reset` command detects and recovers these:
+
+```bash
+retinue reset           # dry run — show stuck tasks and what would happen
+retinue reset --all     # recover all stuck in_progress tasks
+retinue reset --task <id>  # recover a specific task
+retinue reset --failed  # also reset failed tasks to pending
+retinue reset --stale 1h  # only touch tasks stuck longer than 1 hour
+retinue reset --force   # reset even if the tmux window is still alive
+```
+
+For stuck tasks with work on their branch, retinue uses an AI assessment to determine if the task actually completed before the orchestrator died. Complete work gets marked done (ready for merge), incomplete work gets marked failed (with context for retry), and broken work gets fully reset.
+
+You don't usually need to run this manually — `retinue run` does it automatically at startup.
 
 ### Task lifecycle
 
