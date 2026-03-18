@@ -81,6 +81,29 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 		maxWorkers = workspace.DefaultMaxWorkers
 	}
 
+	// --- Recovery pass: recover orphaned tasks from a previous run ---
+	// Check if any tasks are stuck before printing output.
+	if preloadTasks, preloadErr := store.Load(); preloadErr == nil {
+		hasStuck := false
+		for _, t := range preloadTasks {
+			if t.Status == task.StatusInProgress {
+				hasStuck = true
+				break
+			}
+		}
+		if hasStuck {
+			fmt.Fprintln(out, "Recovering stuck tasks from previous run...")
+			results, recoverErr := RecoverStuckTasks(ctx, ws, store, out, RecoverOpts{
+				DryRun: false,
+			})
+			if recoverErr != nil {
+				fmt.Fprintf(out, "[run] Warning: stuck task recovery failed: %v\n", recoverErr)
+			} else if len(results) > 0 {
+				fmt.Fprintf(out, "Recovery complete. %d task(s) recovered.\n\n", len(results))
+			}
+		}
+	}
+
 	// Build GH_TOKEN env for git operations in merge.
 	var ghEnv []string
 	if token := ws.GitHubToken(); token != "" {
