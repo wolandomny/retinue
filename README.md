@@ -94,25 +94,32 @@ gh auth login    # login to your first account
 gh auth login    # login to your second account
 ```
 
-Then configure each repo to use a specific account via the git credential helper:
+Then create a credential helper script in each repo's `.git/` directory. For example, for a repo owned by `myorg`:
 
 ```bash
-# In an apartment owned by org-account:
-git -C repos/my-repo config credential.https://github.com.helper \
-  '!gh auth git-credential --account org-account'
-
-# In another apartment owned by personal-account:
-git -C repos/other-repo config credential.https://github.com.helper \
-  '!gh auth git-credential --account personal-account'
+cat > repos/my-repo/.git/credential-helper.sh << 'EOF'
+#!/bin/sh
+if [ "$1" = "get" ]; then
+    echo "protocol=https"
+    echo "host=github.com"
+    echo "username=myorg"
+    echo "password=$(gh auth token --user myorg)"
+fi
+EOF
+chmod +x repos/my-repo/.git/credential-helper.sh
 ```
 
-This is a per-repo git config setting, so it persists and works regardless of which `gh auth` account is currently active. Without this, git falls back to whichever account `gh auth switch` was last set to, which breaks when you're running multiple apartments concurrently.
-
-You can verify the config with:
+Then configure git to use it, with an empty `helper =` line first to clear any global credential helpers:
 
 ```bash
-git -C repos/my-repo config --get credential.https://github.com.helper
+git -C repos/my-repo config credential.https://github.com.helper ''
+git -C repos/my-repo config --add credential.https://github.com.helper \
+  '!repos/my-repo/.git/credential-helper.sh'
 ```
+
+This persists in the repo's `.git/config` and works regardless of which `gh auth` account is currently active. Without this, git falls back to whichever account `gh auth switch` was last set to, which breaks when you're running multiple apartments concurrently.
+
+The script lives inside `.git/` so it's not tracked by version control.
 
 ## Talking to Woland
 
