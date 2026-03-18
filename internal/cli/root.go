@@ -28,6 +28,7 @@ func newRootCmd() *cobra.Command {
 		newMCPCmd(),
 		newMergeCmd(),
 		newPhoneCmd(),
+		newResetCmd(),
 		newRunCmd(),
 		newStatusCmd(),
 		newTelegramCmd(),
