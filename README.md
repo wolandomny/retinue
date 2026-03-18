@@ -83,6 +83,37 @@ The `github_account` field tells retinue which GitHub account to use for git ope
 
 The `validate` field is optional but recommended. It maps repo names to shell commands that Hella runs before merging each task branch. If validation fails, the task is marked "failed" and the branch is not merged.
 
+### Multiple GitHub accounts
+
+If you have multiple apartments that push to repos under different GitHub accounts, you'll want per-repo credential configuration so git uses the right account automatically.
+
+First, make sure both accounts are authenticated with the GitHub CLI:
+
+```bash
+gh auth login    # login to your first account
+gh auth login    # login to your second account
+```
+
+Then configure each repo to use a specific account via the git credential helper:
+
+```bash
+# In an apartment owned by org-account:
+git -C repos/my-repo config credential.https://github.com.helper \
+  '!gh auth git-credential --account org-account'
+
+# In another apartment owned by personal-account:
+git -C repos/other-repo config credential.https://github.com.helper \
+  '!gh auth git-credential --account personal-account'
+```
+
+This is a per-repo git config setting, so it persists and works regardless of which `gh auth` account is currently active. Without this, git falls back to whichever account `gh auth switch` was last set to, which breaks when you're running multiple apartments concurrently.
+
+You can verify the config with:
+
+```bash
+git -C repos/my-repo config --get credential.https://github.com.helper
+```
+
 ## Talking to Woland
 
 Woland is the planning agent — your interface for describing what you want built. He breaks work into tasks, dispatches them, and monitors progress.
