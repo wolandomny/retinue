@@ -18,6 +18,7 @@ Top-level fields:
   github_account    string    GitHub account for git operations
   model             string    Claude model for agents (e.g. "claude-opus-4-6")
   max_workers       int       Maximum concurrent worker agents
+  track_costs       bool      Track token usage and costs per task (default: false)
 
   repos             map       Repository configurations (see below)
   validate          map       Repo name → shell command run before merge

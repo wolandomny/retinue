@@ -475,7 +475,7 @@ func runAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *task.F
 					tk.Meta = make(map[string]string)
 				}
 				// Record re-plan usage in metadata.
-				if replanErr == nil {
+				if ws.Config.TrackCosts && replanErr == nil {
 					if replanRes.Usage.InputTokens > 0 {
 						tk.Meta["replan_input_tokens"] = fmt.Sprintf("%d", replanRes.Usage.InputTokens)
 						tk.Meta["replan_output_tokens"] = fmt.Sprintf("%d", replanRes.Usage.OutputTokens)
@@ -507,6 +507,7 @@ func runAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *task.F
 func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writer) {
 	var merged, failed, pending, reverted int
 	var totalCost float64
+	trackCosts := ws.Config.TrackCosts
 
 	// Count active tasks.
 	tasks, _ := store.Load()
@@ -522,9 +523,11 @@ func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writ
 		case task.StatusPending:
 			pending++
 		}
-		if costStr, ok := t.Meta["cost_usd"]; ok {
-			if c, err := strconv.ParseFloat(costStr, 64); err == nil {
-				totalCost += c
+		if trackCosts {
+			if costStr, ok := t.Meta["cost_usd"]; ok {
+				if c, err := strconv.ParseFloat(costStr, 64); err == nil {
+					totalCost += c
+				}
 			}
 		}
 	}
@@ -538,15 +541,21 @@ func printRunSummary(ws *workspace.Workspace, store *task.FileStore, out io.Writ
 			if t.Status == task.StatusMerged {
 				merged++
 			}
-			if costStr, ok := t.Meta["cost_usd"]; ok {
-				if c, err := strconv.ParseFloat(costStr, 64); err == nil {
-					totalCost += c
+			if trackCosts {
+				if costStr, ok := t.Meta["cost_usd"]; ok {
+					if c, err := strconv.ParseFloat(costStr, 64); err == nil {
+						totalCost += c
+					}
 				}
 			}
 		}
 	}
 
-	fmt.Fprintf(out, "\nRun complete. %d merged, %d failed, %d pending. Total cost: $%.2f\n", merged, failed, pending, totalCost)
+	if trackCosts {
+		fmt.Fprintf(out, "\nRun complete. %d merged, %d failed, %d pending. Total cost: $%.2f\n", merged, failed, pending, totalCost)
+	} else {
+		fmt.Fprintf(out, "\nRun complete. %d merged, %d failed, %d pending.\n", merged, failed, pending)
+	}
 	if reverted > 0 {
 		fmt.Fprintf(out, "  (%d task(s) reverted by end-of-run validation)\n", reverted)
 	}

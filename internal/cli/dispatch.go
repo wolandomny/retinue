@@ -201,12 +201,14 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				t.Meta = make(map[string]string)
 			}
 			t.Meta["session"] = ""
-			if usage.InputTokens > 0 {
-				t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
-				t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
-			}
-			if usage.TotalCostUSD > 0 {
-				t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+			if ws.Config.TrackCosts {
+				if usage.InputTokens > 0 {
+					t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+					t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+				}
+				if usage.TotalCostUSD > 0 {
+					t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+				}
 			}
 		}); updateErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
@@ -227,12 +229,14 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			t.Meta = make(map[string]string)
 		}
 		t.Meta["session"] = ""
-		if usage.InputTokens > 0 {
-			t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
-			t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
-		}
-		if usage.TotalCostUSD > 0 {
-			t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+		if ws.Config.TrackCosts {
+			if usage.InputTokens > 0 {
+				t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+				t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+			}
+			if usage.TotalCostUSD > 0 {
+				t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+			}
 		}
 	}); err != nil {
 		return fmt.Errorf("updating task result: %w", err)
@@ -543,7 +547,7 @@ func dispatchAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *t
 					tk.Meta = make(map[string]string)
 				}
 				// Record re-plan usage in metadata.
-				if replanErr == nil {
+				if ws.Config.TrackCosts && replanErr == nil {
 					if replanRes.Usage.InputTokens > 0 {
 						tk.Meta["replan_input_tokens"] = fmt.Sprintf("%d", replanRes.Usage.InputTokens)
 						tk.Meta["replan_output_tokens"] = fmt.Sprintf("%d", replanRes.Usage.OutputTokens)

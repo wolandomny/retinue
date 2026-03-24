@@ -90,7 +90,7 @@ func TestPrintRunSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := &workspace.Workspace{Path: dir}
+	ws := &workspace.Workspace{Path: dir, Config: workspace.Config{TrackCosts: true}}
 
 	var buf bytes.Buffer
 	printRunSummary(ws, store, &buf)
@@ -113,6 +113,38 @@ func TestPrintRunSummary(t *testing.T) {
 	}
 }
 
+func TestPrintRunSummary_TrackCostsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	tasksPath := filepath.Join(dir, "tasks.yaml")
+
+	store := task.NewFileStore(tasksPath)
+	if err := store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusFailed, Meta: map[string]string{"cost_usd": "1.5000"}},
+		{ID: "t2", Status: task.StatusMerged},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &workspace.Workspace{Path: dir} // TrackCosts defaults to false
+
+	var buf bytes.Buffer
+	printRunSummary(ws, store, &buf)
+
+	output := buf.String()
+	if !strings.Contains(output, "1 merged") {
+		t.Errorf("expected '1 merged' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "1 failed") {
+		t.Errorf("expected '1 failed' in output, got: %s", output)
+	}
+	if strings.Contains(output, "Total cost") {
+		t.Errorf("expected no 'Total cost' in output when track_costs is off, got: %s", output)
+	}
+	if strings.Contains(output, "$") {
+		t.Errorf("expected no dollar sign in output when track_costs is off, got: %s", output)
+	}
+}
+
 func TestPrintRunSummary_NoArchive(t *testing.T) {
 	dir := t.TempDir()
 	tasksPath := filepath.Join(dir, "tasks.yaml")
@@ -124,7 +156,7 @@ func TestPrintRunSummary_NoArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := &workspace.Workspace{Path: dir}
+	ws := &workspace.Workspace{Path: dir, Config: workspace.Config{TrackCosts: true}}
 
 	var buf bytes.Buffer
 	printRunSummary(ws, store, &buf)

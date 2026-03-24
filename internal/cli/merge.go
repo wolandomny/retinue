@@ -75,7 +75,7 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 				tk.Status = task.StatusPending
 				tk.Error = ""
 				tk.Prompt = tk.Prompt + "\n\n## Review Feedback (from previous attempt)\n" + verdict.Feedback
-				if verdict.Usage.InputTokens > 0 {
+				if opts.ws.Config.TrackCosts && verdict.Usage.InputTokens > 0 {
 					tk.Meta["review_tokens"] = fmt.Sprintf("%d/%d", verdict.Usage.InputTokens, verdict.Usage.OutputTokens)
 				}
 			}); err != nil {

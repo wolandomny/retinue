@@ -45,42 +45,55 @@ func newStatusCmd() *cobra.Command {
 				return nil
 			}
 
+			trackCosts := ws.Config.TrackCosts
+
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tSTATUS\tREPO\tTOKENS\tDESCRIPTION")
-			fmt.Fprintln(w, "--\t------\t----\t------\t-----------")
+			if trackCosts {
+				fmt.Fprintln(w, "ID\tSTATUS\tREPO\tTOKENS\tDESCRIPTION")
+				fmt.Fprintln(w, "--\t------\t----\t------\t-----------")
+			} else {
+				fmt.Fprintln(w, "ID\tSTATUS\tREPO\tDESCRIPTION")
+				fmt.Fprintln(w, "--\t------\t----\t-----------")
+			}
 
 			for _, t := range tasks {
 				desc := t.Description
 				if len(desc) > maxDescriptionLen {
 					desc = desc[:maxDescriptionLen-3] + "..."
 				}
-				tokens := formatTokens(t.Meta)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Status, t.Repo, tokens, desc)
+				if trackCosts {
+					tokens := formatTokens(t.Meta)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Status, t.Repo, tokens, desc)
+				} else {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.ID, t.Status, t.Repo, desc)
+				}
 			}
 
 			if err := w.Flush(); err != nil {
 				return err
 			}
 
-			// Aggregate cost totals across all tasks.
-			var totalIn, totalOut int
-			var totalCost float64
-			for _, t := range tasks {
-				if t.Meta == nil {
-					continue
+			if trackCosts {
+				// Aggregate cost totals across all tasks.
+				var totalIn, totalOut int
+				var totalCost float64
+				for _, t := range tasks {
+					if t.Meta == nil {
+						continue
+					}
+					totalIn += atoi(t.Meta["input_tokens"])
+					totalOut += atoi(t.Meta["output_tokens"])
+					totalCost += parseFloat(t.Meta["cost_usd"])
 				}
-				totalIn += atoi(t.Meta["input_tokens"])
-				totalOut += atoi(t.Meta["output_tokens"])
-				totalCost += parseFloat(t.Meta["cost_usd"])
-			}
 
-			if totalIn > 0 || totalOut > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "\nTotal: %dk input / %dk output",
-					totalIn/1000, totalOut/1000)
-				if totalCost > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), " ($%.2f)", totalCost)
+				if totalIn > 0 || totalOut > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "\nTotal: %dk input / %dk output",
+						totalIn/1000, totalOut/1000)
+					if totalCost > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(), " ($%.2f)", totalCost)
+					}
+					fmt.Fprintln(cmd.OutOrStdout())
 				}
-				fmt.Fprintln(cmd.OutOrStdout())
 			}
 
 			return nil
