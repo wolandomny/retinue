@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
 	"github.com/wolandomny/retinue/internal/standing"
@@ -148,6 +149,13 @@ func newAgentStartCmd() *cobra.Command {
 				return fmt.Errorf("creating tmux window: %w", err)
 			}
 
+			// Write a system message to the bus announcing the agent joined.
+			b := bus.New(ws.BusPath())
+			if err := b.Append(bus.NewMessage("system", bus.TypeSystem, agent.Name+" has joined")); err != nil {
+				// Non-fatal: log but don't fail the start.
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write bus message: %v\n", err)
+			}
+
 			fmt.Fprintf(cmd.OutOrStdout(), "Agent %q (%s) started.\n", agentID, agent.Name)
 			return nil
 		},
@@ -189,6 +197,12 @@ func newAgentStopCmd() *cobra.Command {
 				return fmt.Errorf("agent %q is not running", agentID)
 			}
 
+			// Write a system message to the bus before killing the window.
+			b := bus.New(ws.BusPath())
+			if err := b.Append(bus.NewMessage("system", bus.TypeSystem, agent.Name+" has left")); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write bus message: %v\n", err)
+			}
+
 			if err := mgr.KillWindow(ctx, session.ApartmentSession, windowName); err != nil {
 				return fmt.Errorf("stopping agent: %w", err)
 			}
@@ -202,7 +216,7 @@ func newAgentStopCmd() *cobra.Command {
 }
 
 // buildAgentSystemPrompt constructs a system prompt for a standing agent
-// that includes its identity, mandate, and workspace context.
+// that includes its identity, mandate, workspace context, and bus awareness.
 func buildAgentSystemPrompt(ws *workspace.Workspace, agent *standing.Agent) string {
 	var b strings.Builder
 
@@ -227,7 +241,29 @@ func buildAgentSystemPrompt(ws *workspace.Workspace, agent *standing.Agent) stri
 	fmt.Fprintf(&b, "You are a standing agent — a long-lived Claude session with a specific mandate. ")
 	fmt.Fprintf(&b, "Unlike ephemeral task workers that complete a single task and exit, you persist ")
 	fmt.Fprintf(&b, "and continuously fulfill your role. You run as a tmux window alongside other ")
-	fmt.Fprintf(&b, "agents in the Retinue apartment at: %s\n", ws.Path)
+	fmt.Fprintf(&b, "agents in the Retinue apartment at: %s\n\n", ws.Path)
+
+	fmt.Fprintf(&b, "## Group Chat\n")
+	fmt.Fprintf(&b, "You are part of a group chat with other agents and the user. Messages from\n")
+	fmt.Fprintf(&b, "others will be injected into your session in this format:\n\n")
+	fmt.Fprintf(&b, "    [AgentName] message text\n")
+	fmt.Fprintf(&b, "    [User] message text\n\n")
+	fmt.Fprintf(&b, "When you see these messages, you can respond naturally. Your responses will\n")
+	fmt.Fprintf(&b, "be relayed to the group. Key guidelines:\n")
+	fmt.Fprintf(&b, "- Only respond when the message is relevant to your role\n")
+	fmt.Fprintf(&b, "- If another agent is handling something, don't duplicate their work\n")
+	fmt.Fprintf(&b, "- Declare your intent before taking action: \"I'm going to fix the CI failure\"\n")
+	fmt.Fprintf(&b, "- Report results after acting: \"Fixed — PR #42 opened\"\n")
+
+	// Include recent bus history if available.
+	msgBus := bus.New(ws.BusPath())
+	messages, err := msgBus.ReadRecent(20)
+	if err == nil && len(messages) > 0 {
+		fmt.Fprintf(&b, "\n## Recent Group Chat History\n")
+		for _, msg := range messages {
+			fmt.Fprintln(&b, bus.FormatMessage(msg))
+		}
+	}
 
 	return b.String()
 }

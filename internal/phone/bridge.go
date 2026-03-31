@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wolandomny/retinue/internal/shell"
 	"github.com/wolandomny/retinue/internal/telegram"
 )
 
@@ -250,7 +251,7 @@ func (b *Bridge) listenTelegram(ctx context.Context, offset *int64, out chan<- s
 
 // sendToTmux injects a message into the Woland tmux pane via send-keys.
 func (b *Bridge) sendToTmux(ctx context.Context, message string) error {
-	escaped := EscapeTmux(message)
+	escaped := shell.EscapeTmux(message)
 	target := "retinue:woland"
 
 	args := []string{}
@@ -269,24 +270,8 @@ func (b *Bridge) sendToTmux(ctx context.Context, message string) error {
 }
 
 // EscapeTmux escapes a message string for use with tmux send-keys.
-// It handles special characters that tmux might interpret.
+// Deprecated: Use shell.EscapeTmux instead. This wrapper exists for
+// backward compatibility with existing callers.
 func EscapeTmux(s string) string {
-	// Replace newlines with spaces — send-keys treats Enter as a key literal,
-	// so we collapse multi-line input into a single line.
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", "")
-
-	// Escape backslashes first (before adding more).
-	s = strings.ReplaceAll(s, `\`, `\\`)
-
-	// Escape semicolons — tmux uses ; as a command separator.
-	s = strings.ReplaceAll(s, ";", `\;`)
-
-	// Escape dollar signs to prevent shell variable expansion.
-	s = strings.ReplaceAll(s, "$", `\$`)
-
-	// Escape backticks.
-	s = strings.ReplaceAll(s, "`", "\\`")
-
-	return s
+	return shell.EscapeTmux(s)
 }
