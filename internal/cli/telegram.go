@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/telegram"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -20,6 +25,7 @@ func newTelegramCmd() *cobra.Command {
 		Short: "Telegram integration",
 	}
 	cmd.AddCommand(newTelegramSetupCmd())
+	cmd.AddCommand(newTelegramBridgeCmd())
 	return cmd
 }
 
@@ -175,4 +181,92 @@ func runTelegramSetup(ctx context.Context) error {
 	fmt.Println("  retinue woland talk")
 
 	return nil
+}
+
+func newTelegramBridgeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "bridge",
+		Short: "Bridge Telegram to the multi-agent message bus",
+		Long: `Runs a daemon that bridges a Telegram chat to the retinue message bus,
+allowing the user to participate in the group chat from their phone.
+
+Agent messages on the bus are forwarded to Telegram, and Telegram messages
+are written to the bus as user messages.
+
+Requires:
+  - telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable
+  - telegram.chat_id in retinue.yaml or RETINUE_TELEGRAM_CHAT_ID environment variable`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := log.New(os.Stderr, "telegram-bridge: ", log.LstdFlags)
+
+			// Load workspace.
+			ws, err := loadWorkspace()
+			if err != nil {
+				return fmt.Errorf("loading workspace: %w", err)
+			}
+
+			// Get Telegram token from workspace config or env var.
+			var token string
+			if ws.Config.Telegram != nil && ws.Config.Telegram.Token != "" {
+				token = ws.Config.Telegram.Token
+			} else if envToken := os.Getenv("RETINUE_TELEGRAM_TOKEN"); envToken != "" {
+				token = envToken
+			} else {
+				return fmt.Errorf("telegram token is required: set telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable")
+			}
+
+			// Get chat ID from config or env var.
+			var chatID int64
+			if ws.Config.Telegram != nil && ws.Config.Telegram.ChatID != 0 {
+				chatID = ws.Config.Telegram.ChatID
+			}
+			if chatIDStr := os.Getenv("RETINUE_TELEGRAM_CHAT_ID"); chatIDStr != "" {
+				parsed, err := strconv.ParseInt(chatIDStr, 10, 64)
+				if err != nil {
+					return fmt.Errorf("RETINUE_TELEGRAM_CHAT_ID must be a numeric chat ID: %w", err)
+				}
+				chatID = parsed
+			}
+			if chatID == 0 {
+				return fmt.Errorf("telegram chat ID is required: set RETINUE_TELEGRAM_CHAT_ID or configure telegram.chat_id in retinue.yaml")
+			}
+
+			// Create Telegram bot.
+			bot := telegram.New(token)
+
+			// Verify bot token.
+			me, err := bot.GetMe(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("verifying telegram token: %w", err)
+			}
+			logger.Printf("connected as @%s", me.Username)
+
+			// Create the bus.
+			b := bus.New(ws.BusPath())
+
+			// Set up context with signal handling.
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+
+			// Create the adapter with cancel func so it can self-terminate on kill-words.
+			adapter := bus.NewTelegramAdapter(b, bot, chatID, logger, cancel)
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				select {
+				case sig := <-sigCh:
+					logger.Printf("received signal %v, shutting down", sig)
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+
+			logger.Printf("starting telegram bus bridge (workspace=%s, chat_id=%d)",
+				ws.Config.Name, chatID)
+			logger.Printf("bus file: %s", ws.BusPath())
+
+			return adapter.Run(ctx)
+		},
+	}
 }
