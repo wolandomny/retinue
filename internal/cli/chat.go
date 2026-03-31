@@ -145,6 +145,7 @@ Usage:
 
 	cmd.Flags().BoolVar(&tail, "tail", false, "stream messages in real-time")
 	cmd.Flags().IntVar(&history, "history", 0, "show last N messages (default 50 if no number given)")
+	cmd.Flags().Lookup("history").NoOptDefVal = "50"
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "interactive chat mode (use with --tail)")
 
 	return cmd

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -104,7 +105,7 @@ func TestChatCmd_History(t *testing.T) {
 	cmd := newChatCmd()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetArgs([]string{"--history", "2"})
+	cmd.SetArgs([]string{"--history=2"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -129,6 +130,54 @@ func TestChatCmd_History(t *testing.T) {
 	}
 }
 
+func TestChatCmd_HistoryDefaultValue(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	// Add more than 50 messages so we can verify the default cap.
+	busInstance := bus.New(ws.BusPath())
+	for i := 0; i < 60; i++ {
+		msg := bus.NewMessage("agent1", bus.TypeChat, fmt.Sprintf("msg-%d", i))
+		if err := busInstance.Append(msg); err != nil {
+			t.Fatalf("Failed to append message: %v", err)
+		}
+	}
+
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	// Pass --history with no number — NoOptDefVal should default to 50.
+	cmd.SetArgs([]string{"--history"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	outputStr := output.String()
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+
+	// Default is 50, and we wrote 60 messages — should show exactly 50.
+	if len(lines) != 50 {
+		t.Errorf("Expected 50 lines of output (default history), got %d", len(lines))
+	}
+
+	// The last message should be msg-59 (the most recent).
+	lastLine := lines[len(lines)-1]
+	if !strings.Contains(lastLine, "msg-59") {
+		t.Errorf("Last line should contain 'msg-59', got: %q", lastLine)
+	}
+
+	// The first message should be msg-10 (60 - 50 = 10).
+	firstLine := lines[0]
+	if !strings.Contains(firstLine, "msg-10") {
+		t.Errorf("First line should contain 'msg-10', got: %q", firstLine)
+	}
+}
+
 func TestChatCmd_HistoryEmpty(t *testing.T) {
 	ws := setupTestWorkspace(t)
 
@@ -140,7 +189,7 @@ func TestChatCmd_HistoryEmpty(t *testing.T) {
 	cmd := newChatCmd()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetArgs([]string{"--history", "10"})
+	cmd.SetArgs([]string{"--history=10"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -170,7 +219,7 @@ func TestChatCmd_BusFileNotExists(t *testing.T) {
 	cmd := newChatCmd()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetArgs([]string{"--history", "10"})
+	cmd.SetArgs([]string{"--history=10"})
 
 	err := cmd.Execute()
 	if err != nil {
