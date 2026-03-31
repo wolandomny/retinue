@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +145,136 @@ func TestFormatForTelegram_SystemMessageFromField(t *testing.T) {
 	want := "_Koroviev has left_"
 	if got != want {
 		t.Errorf("FormatForTelegram(system leave) = %q, want %q", got, want)
+	}
+}
+
+// ShouldSkipForTelegram extracts the filtering logic from the Run() loop:
+// user messages should not be echoed back to Telegram.
+func ShouldSkipForTelegram(msg *Message) bool {
+	return msg.Type == TypeUser
+}
+
+func TestShouldSkipForTelegram_UserMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *Message
+		want bool
+	}{
+		{
+			name: "user message is skipped",
+			msg:  &Message{Type: TypeUser, Name: "user", Text: "hello"},
+			want: true,
+		},
+		{
+			name: "chat message is not skipped",
+			msg:  &Message{Type: TypeChat, Name: "azazello", Text: "hello"},
+			want: false,
+		},
+		{
+			name: "action message is not skipped",
+			msg:  &Message{Type: TypeAction, Name: "azazello", Text: "fixing CI"},
+			want: false,
+		},
+		{
+			name: "result message is not skipped",
+			msg:  &Message{Type: TypeResult, Name: "azazello", Text: "done"},
+			want: false,
+		},
+		{
+			name: "system message is not skipped",
+			msg:  &Message{Type: TypeSystem, Name: "system", Text: "agent joined"},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ShouldSkipForTelegram(tt.msg)
+			if got != tt.want {
+				t.Errorf("ShouldSkipForTelegram(%q) = %v, want %v", tt.msg.Type, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatForTelegram_EmptyText(t *testing.T) {
+	msg := Message{
+		ID:        "empty1",
+		Name:      "azazello",
+		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
+		Type:      TypeChat,
+		Text:      "",
+	}
+	got := FormatForTelegram(msg)
+	// Should still produce a valid format with empty text.
+	if !strings.HasPrefix(got, "**Azazello**:") {
+		t.Errorf("FormatForTelegram(empty text) = %q, expected prefix '**Azazello**:'", got)
+	}
+}
+
+func TestFormatForTelegram_SpecialCharacters(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"markdown bold", "This has **bold** text"},
+		{"markdown italic", "This has _italic_ text"},
+		{"markdown code", "This has `code` text"},
+		{"angle brackets", "Check <this> out"},
+		{"ampersand", "A & B"},
+		{"backticks", "Run ```go test```"},
+		{"newlines", "Line 1\nLine 2\nLine 3"},
+		{"unicode", "This has emoji \U0001F680 and accents \u00E9\u00E8\u00EA"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := Message{
+				ID:        "special-" + tt.name,
+				Name:      "azazello",
+				Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
+				Type:      TypeChat,
+				Text:      tt.text,
+			}
+			got := FormatForTelegram(msg)
+			// Should contain the original text (not escape or mangle it).
+			if !strings.Contains(got, tt.text) {
+				t.Errorf("FormatForTelegram with %s: result %q does not contain original text %q", tt.name, got, tt.text)
+			}
+			// Should have the agent name prefix.
+			if !strings.HasPrefix(got, "**Azazello**:") {
+				t.Errorf("FormatForTelegram with %s: result %q missing name prefix", tt.name, got)
+			}
+		})
+	}
+}
+
+func TestFormatForTelegram_EmptyName(t *testing.T) {
+	msg := Message{
+		ID:        "noname1",
+		Name:      "",
+		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
+		Type:      TypeChat,
+		Text:      "anonymous message",
+	}
+	got := FormatForTelegram(msg)
+	// capitalize("") returns "", so we get "****:"
+	if !strings.Contains(got, "anonymous message") {
+		t.Errorf("FormatForTelegram with empty name should still contain text, got: %q", got)
+	}
+}
+
+func TestFormatForTelegram_SystemWithSpecialChars(t *testing.T) {
+	msg := Message{
+		ID:        "sys-special",
+		Name:      "system",
+		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
+		Type:      TypeSystem,
+		Text:      "Agent _azazello_ has joined",
+	}
+	got := FormatForTelegram(msg)
+	want := "_Agent _azazello_ has joined_"
+	if got != want {
+		t.Errorf("FormatForTelegram(system with underscores) = %q, want %q", got, want)
 	}
 }

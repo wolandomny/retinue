@@ -91,8 +91,9 @@ Usage:
 					fmt.Fprintln(cmd.OutOrStdout(), "=== Live messages ===")
 				}
 
-				// Set up context for graceful shutdown
-				ctx, cancel := context.WithCancel(context.Background())
+				// Set up context for graceful shutdown. Use the command's context
+				// as parent so callers (including tests) can cancel externally.
+				ctx, cancel := context.WithCancel(cmd.Context())
 				defer cancel()
 
 				// Handle Ctrl+C

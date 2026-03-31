@@ -2,9 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/workspace"
@@ -178,5 +180,214 @@ func TestChatCmd_BusFileNotExists(t *testing.T) {
 	outputStr := output.String()
 	if !strings.Contains(outputStr, "No messages yet") {
 		t.Errorf("Output should contain helpful message for missing file, got: %q", outputStr)
+	}
+}
+
+func TestChatCmd_TailShowsRecentMessages(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	// Pre-populate bus with messages so tail's initial output shows them.
+	busInstance := bus.New(ws.BusPath())
+	msgs := []*bus.Message{
+		bus.NewMessage("azazello", bus.TypeChat, "I see a CI failure"),
+		bus.NewMessage("user", bus.TypeUser, "Please fix it"),
+	}
+	for _, msg := range msgs {
+		if err := busInstance.Append(msg); err != nil {
+			t.Fatalf("Failed to append message: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--tail"})
+
+	// Run the tail command in a goroutine with a cancellable context.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.ExecuteContext(ctx)
+	}()
+
+	// Give the tailer time to start and print its initial output.
+	time.Sleep(800 * time.Millisecond)
+
+	// Write a new message while tailing.
+	newMsg := bus.NewMessage("behemoth", bus.TypeChat, "Live message from behemoth")
+	if err := busInstance.Append(newMsg); err != nil {
+		t.Fatalf("Failed to append live message: %v", err)
+	}
+
+	// Wait for the tailer to pick up the new message.
+	time.Sleep(1200 * time.Millisecond)
+
+	// Cancel context to stop the tail loop.
+	cancel()
+
+	// Wait for the command to finish.
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("tail command returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tail command did not exit after cancel")
+	}
+
+	// Verify that the initial recent messages are shown.
+	outputStr := output.String()
+	if !strings.Contains(outputStr, "=== Recent messages ===") {
+		t.Errorf("expected '=== Recent messages ===' header, got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "Azazello: I see a CI failure") {
+		t.Errorf("output should contain Azazello's message, got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "You: Please fix it") {
+		t.Errorf("output should contain user's message, got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "Behemoth: Live message from behemoth") {
+		t.Errorf("output should contain live message from Behemoth, got:\n%s", outputStr)
+	}
+}
+
+func TestChatCmd_TailExitsCleanlyOnCancel(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--tail"})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.ExecuteContext(ctx)
+	}()
+
+	// Let the tailer start.
+	time.Sleep(300 * time.Millisecond)
+
+	// Immediately cancel — should exit without error.
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected clean exit, got error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tail command did not exit within timeout")
+	}
+}
+
+func TestChatCmd_TailEmptyBusShowsWaiting(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--tail"})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.ExecuteContext(ctx)
+	}()
+
+	// Give time for initial output.
+	time.Sleep(800 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("tail command returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tail command did not exit after cancel")
+	}
+
+	outputStr := output.String()
+	if !strings.Contains(outputStr, "No messages yet") {
+		t.Errorf("expected 'No messages yet' for empty bus, got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "Waiting for new messages") {
+		t.Errorf("expected 'Waiting for new messages' message, got:\n%s", outputStr)
+	}
+}
+
+func TestChatCmd_NoArgsShowsHelp(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	// No args, no flags — should show help.
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected no error when showing help, got: %v", err)
+	}
+
+	outputStr := output.String()
+	// The help output should contain usage information.
+	if !strings.Contains(outputStr, "chat") {
+		t.Errorf("expected help output to contain 'chat', got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "--tail") {
+		t.Errorf("expected help output to mention --tail flag, got:\n%s", outputStr)
+	}
+	if !strings.Contains(outputStr, "--history") {
+		t.Errorf("expected help output to mention --history flag, got:\n%s", outputStr)
+	}
+}
+
+func TestChatCmd_SendAndFlagsConflict(t *testing.T) {
+	ws := setupTestWorkspace(t)
+
+	originalWorkspaceFlag := workspaceFlag
+	workspaceFlag = ws.Path
+	defer func() { workspaceFlag = originalWorkspaceFlag }()
+
+	// Sending a message with --tail should fail.
+	cmd := newChatCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--tail", "hello"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when combining message with --tail")
+	}
+	if !strings.Contains(err.Error(), "cannot combine") {
+		t.Errorf("expected 'cannot combine' error, got: %v", err)
 	}
 }

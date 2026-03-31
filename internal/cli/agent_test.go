@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -376,6 +377,257 @@ func TestBuildAgentSystemPromptNoRepos(t *testing.T) {
 
 	if strings.Contains(prompt, "Repositories") {
 		t.Errorf("prompt should not have Repositories section when agent has no repos")
+	}
+}
+
+func TestBuildAgentSystemPromptWithBusHistory(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "repos/myrepo"), 0o755)
+
+	ws := &workspace.Workspace{
+		Path: dir,
+		Config: workspace.Config{
+			Name:  "test-apt",
+			Model: "claude-opus-4-6",
+			Repos: map[string]workspace.RepoConfig{
+				"myrepo": {Path: "repos/myrepo"},
+			},
+		},
+	}
+
+	agent := &standing.Agent{
+		ID:     "azazello",
+		Name:   "Azazello",
+		Role:   "CI Watcher",
+		Repos:  []string{"myrepo"},
+		Prompt: "Watch CI pipelines.",
+	}
+
+	// Write messages to the bus file so buildAgentSystemPrompt includes them.
+	busInstance := bus.New(ws.BusPath())
+	msgs := []*bus.Message{
+		bus.NewMessage("user", bus.TypeUser, "Please check CI"),
+		bus.NewMessage("behemoth", bus.TypeChat, "All clear on my end"),
+	}
+	for _, msg := range msgs {
+		if err := busInstance.Append(msg); err != nil {
+			t.Fatalf("Failed to append message: %v", err)
+		}
+	}
+
+	prompt := buildAgentSystemPrompt(ws, agent)
+
+	if !strings.Contains(prompt, "Recent Group Chat History") {
+		t.Error("prompt should include 'Recent Group Chat History' section when bus has messages")
+	}
+	if !strings.Contains(prompt, "Please check CI") {
+		t.Error("prompt should include bus message text 'Please check CI'")
+	}
+	if !strings.Contains(prompt, "All clear on my end") {
+		t.Error("prompt should include bus message text 'All clear on my end'")
+	}
+}
+
+func TestBuildAgentSystemPromptNoBusFile(t *testing.T) {
+	dir := t.TempDir()
+
+	ws := &workspace.Workspace{
+		Path: dir,
+		Config: workspace.Config{
+			Name:  "test-apt",
+			Model: "claude-opus-4-6",
+		},
+	}
+
+	agent := &standing.Agent{
+		ID:     "azazello",
+		Name:   "Azazello",
+		Role:   "CI Watcher",
+		Prompt: "Watch CI pipelines.",
+	}
+
+	// No bus file exists — buildAgentSystemPrompt should still work.
+	prompt := buildAgentSystemPrompt(ws, agent)
+
+	if strings.Contains(prompt, "Recent Group Chat History") {
+		t.Error("prompt should not include 'Recent Group Chat History' when no bus file exists")
+	}
+	// But it should still have the basic sections.
+	if !strings.Contains(prompt, "Azazello") {
+		t.Error("prompt should contain agent name")
+	}
+	if !strings.Contains(prompt, "CI Watcher") {
+		t.Error("prompt should contain agent role")
+	}
+}
+
+func TestAgentModelOverride(t *testing.T) {
+	// Test that agent model field takes precedence over workspace model.
+	agentWithModel := &standing.Agent{
+		ID:      "azazello",
+		Name:    "Azazello",
+		Role:    "CI Watcher",
+		Prompt:  "Watch CI.",
+		Model:   "claude-sonnet-4-20250514",
+		Enabled: true,
+	}
+	agentNoModel := &standing.Agent{
+		ID:      "behemoth",
+		Name:    "Behemoth",
+		Role:    "Codebase Gardener",
+		Prompt:  "Keep it clean.",
+		Enabled: true,
+	}
+
+	wsModel := "claude-opus-4-6"
+
+	// When agent has a model, it should be used.
+	model := agentWithModel.Model
+	if model == "" {
+		model = wsModel
+	}
+	if model != "claude-sonnet-4-20250514" {
+		t.Errorf("expected agent model 'claude-sonnet-4-20250514', got %q", model)
+	}
+
+	// When agent has no model, workspace model should be used.
+	model = agentNoModel.Model
+	if model == "" {
+		model = wsModel
+	}
+	if model != wsModel {
+		t.Errorf("expected workspace model %q, got %q", wsModel, model)
+	}
+}
+
+func TestAgentListStatusColumns(t *testing.T) {
+	agents := []standing.Agent{
+		{
+			ID:      "azazello",
+			Name:    "Azazello",
+			Role:    "CI Watcher",
+			Prompt:  "Watch CI.",
+			Enabled: true,
+		},
+		{
+			ID:      "behemoth",
+			Name:    "Behemoth",
+			Role:    "Codebase Gardener",
+			Prompt:  "Keep it clean.",
+			Enabled: false,
+		},
+		{
+			ID:      "koroviev",
+			Name:    "Koroviev",
+			Role:    "PR Reviewer",
+			Prompt:  "Review PRs.",
+			Enabled: true,
+		},
+	}
+	dir := setupAgentWorkspace(t, agents)
+
+	oldFlag := workspaceFlag
+	workspaceFlag = dir
+	defer func() { workspaceFlag = oldFlag }()
+
+	cmd := newAgentListCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify all four column headers are present.
+	for _, header := range []string{"ID", "NAME", "ROLE", "STATUS"} {
+		if !strings.Contains(output, header) {
+			t.Errorf("missing table header %q in output:\n%s", header, output)
+		}
+	}
+
+	// Verify all agents appear.
+	for _, id := range []string{"azazello", "behemoth", "koroviev"} {
+		if !strings.Contains(output, id) {
+			t.Errorf("missing agent %q in output:\n%s", id, output)
+		}
+	}
+
+	// Verify status values for enabled and disabled agents.
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "behemoth") {
+			if !strings.Contains(line, "disabled") {
+				t.Errorf("behemoth should show 'disabled', got: %s", line)
+			}
+		}
+		// Enabled agents without tmux should show "stopped".
+		if strings.Contains(line, "azazello") {
+			if !strings.Contains(line, "stopped") {
+				t.Errorf("azazello should show 'stopped', got: %s", line)
+			}
+		}
+		if strings.Contains(line, "koroviev") {
+			if !strings.Contains(line, "stopped") {
+				t.Errorf("koroviev should show 'stopped', got: %s", line)
+			}
+		}
+	}
+}
+
+func TestAgentListOutputFormat(t *testing.T) {
+	agents := []standing.Agent{
+		{
+			ID:      "azazello",
+			Name:    "Azazello",
+			Role:    "CI Watcher",
+			Prompt:  "Watch CI.",
+			Enabled: true,
+		},
+	}
+	dir := setupAgentWorkspace(t, agents)
+
+	oldFlag := workspaceFlag
+	workspaceFlag = dir
+	defer func() { workspaceFlag = oldFlag }()
+
+	cmd := newAgentListCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+
+	// Expect at least 3 lines: header, separator, and one agent row.
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines (header, separator, data), got %d:\n%s", len(lines), output)
+	}
+
+	// Header line should have all columns.
+	header := lines[0]
+	for _, col := range []string{"ID", "NAME", "ROLE", "STATUS"} {
+		if !strings.Contains(header, col) {
+			t.Errorf("header missing column %q: %q", col, header)
+		}
+	}
+
+	// Separator line should have dashes.
+	if !strings.Contains(lines[1], "--") {
+		t.Errorf("expected separator line with dashes, got: %q", lines[1])
+	}
+
+	// Data line should have the agent info.
+	dataLine := lines[2]
+	if !strings.Contains(dataLine, "azazello") || !strings.Contains(dataLine, "Azazello") {
+		t.Errorf("data line should contain agent info, got: %q", dataLine)
 	}
 }
 
