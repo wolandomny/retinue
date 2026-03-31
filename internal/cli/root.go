@@ -20,6 +20,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&workspaceFlag, "workspace", "w", "", "path to retinue workspace")
 
 	cmd.AddCommand(
+		newAgentCmd(),
 		newInitCmd(),
 		newAddCmd(),
 		newAttachCmd(),
