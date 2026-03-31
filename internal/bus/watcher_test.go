@@ -9,26 +9,26 @@ func TestInjectMessageSkipsSender(t *testing.T) {
 	// Create a message from agent "azazello".
 	msg := Message{
 		ID:        "test-1",
-		From:      "azazello",
+		Name:      "azazello",
 		Timestamp: time.Now(),
 		Type:      TypeChat,
 		Text:      "hello from azazello",
 	}
 
 	// Verify FormatForInjection produces the expected format.
-	formatted := FormatForInjection(msg)
+	formatted := FormatForInjection(&msg)
 	want := "[Azazello] hello from azazello"
 	if formatted != want {
 		t.Errorf("FormatForInjection = %q, want %q", formatted, want)
 	}
 
 	// The actual injection skip logic is in Watcher.injectMessage:
-	// it skips agents where agentID == msg.From. We test this indirectly
+	// it skips agents where agentID == msg.Name. We test this indirectly
 	// by verifying the sender exclusion logic.
 	agentIDs := []string{"azazello", "behemoth", "koroviev"}
 	var targets []string
 	for _, id := range agentIDs {
-		if id == msg.From {
+		if id == msg.Name {
 			continue // sender excluded
 		}
 		targets = append(targets, id)
@@ -47,7 +47,7 @@ func TestInjectMessageSkipsSender(t *testing.T) {
 func TestInjectMessageSkipsSystemMessages(t *testing.T) {
 	msg := Message{
 		ID:        "test-2",
-		From:      "system",
+		Name:      "system",
 		Timestamp: time.Now(),
 		Type:      TypeSystem,
 		Text:      "Azazello has joined",
@@ -69,7 +69,7 @@ func TestInjectMessageFormat(t *testing.T) {
 		{
 			name: "agent chat message",
 			msg: Message{
-				From: "behemoth",
+				Name: "behemoth",
 				Type: TypeChat,
 				Text: "I fixed the build",
 			},
@@ -78,7 +78,7 @@ func TestInjectMessageFormat(t *testing.T) {
 		{
 			name: "user message",
 			msg: Message{
-				From: "user",
+				Name: "user",
 				Type: TypeUser,
 				Text: "what's the status?",
 			},
@@ -87,7 +87,7 @@ func TestInjectMessageFormat(t *testing.T) {
 		{
 			name: "action message",
 			msg: Message{
-				From: "azazello",
+				Name: "azazello",
 				Type: TypeAction,
 				Text: "I'm going to fix the CI failure",
 			},
@@ -96,7 +96,7 @@ func TestInjectMessageFormat(t *testing.T) {
 		{
 			name: "result message",
 			msg: Message{
-				From: "koroviev",
+				Name: "koroviev",
 				Type: TypeResult,
 				Text: "Fixed — PR #42 opened",
 			},
@@ -106,7 +106,7 @@ func TestInjectMessageFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatForInjection(tt.msg)
+			got := FormatForInjection(&tt.msg)
 			if got != tt.want {
 				t.Errorf("FormatForInjection = %q, want %q", got, tt.want)
 			}

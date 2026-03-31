@@ -8,7 +8,7 @@ import (
 func TestFormatForTelegram_ChatMessage(t *testing.T) {
 	msg := Message{
 		ID:        "abc123",
-		From:      "azazello",
+		Name:      "azazello",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeChat,
 		Text:      "CI is failing on test_auth_flow.",
@@ -23,7 +23,7 @@ func TestFormatForTelegram_ChatMessage(t *testing.T) {
 func TestFormatForTelegram_ActionMessage(t *testing.T) {
 	msg := Message{
 		ID:        "def456",
-		From:      "azazello",
+		Name:      "azazello",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeAction,
 		Text:      "I'm going to fix the auth test.",
@@ -38,7 +38,7 @@ func TestFormatForTelegram_ActionMessage(t *testing.T) {
 func TestFormatForTelegram_ResultMessage(t *testing.T) {
 	msg := Message{
 		ID:        "ghi789",
-		From:      "azazello",
+		Name:      "azazello",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeResult,
 		Text:      "Fixed — PR #42 opened.",
@@ -53,7 +53,7 @@ func TestFormatForTelegram_ResultMessage(t *testing.T) {
 func TestFormatForTelegram_SystemMessage(t *testing.T) {
 	msg := Message{
 		ID:        "jkl012",
-		From:      "system",
+		Name:      "system",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeSystem,
 		Text:      "Behemoth has joined",
@@ -70,7 +70,7 @@ func TestFormatForTelegram_UserMessageNotEchoed(t *testing.T) {
 	// format them if called directly (the filtering happens in Run()).
 	msg := Message{
 		ID:        "mno345",
-		From:      "user",
+		Name:      "user",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeUser,
 		Text:      "what's the status?",
@@ -119,7 +119,7 @@ func TestIsTelegramKillWord(t *testing.T) {
 func TestFormatForTelegram_CapitalizesAgentName(t *testing.T) {
 	msg := Message{
 		ID:        "cap123",
-		From:      "behemoth",
+		Name:      "behemoth",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeChat,
 		Text:      "Done.",
@@ -135,7 +135,7 @@ func TestFormatForTelegram_SystemMessageFromField(t *testing.T) {
 	// System messages use italic format regardless of the From field.
 	msg := Message{
 		ID:        "sys123",
-		From:      "system",
+		Name:      "system",
 		Timestamp: time.Date(2025, 1, 1, 12, 30, 0, 0, time.UTC),
 		Type:      TypeSystem,
 		Text:      "Koroviev has left",

@@ -81,10 +81,7 @@ func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher
 // Run starts the bus watcher daemon and blocks until ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) error {
 	// Start tailing the bus for new messages.
-	busCh, err := w.bus.Tail(ctx)
-	if err != nil {
-		return fmt.Errorf("starting bus tail: %w", err)
-	}
+	busCh := w.bus.Tail(ctx)
 
 	// Ticker for periodic agent discovery.
 	ticker := time.NewTicker(discoverInterval)
@@ -101,7 +98,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 				w.stopAllWatchers()
 				return fmt.Errorf("bus tail channel closed")
 			}
-			w.injectMessage(ctx, msg)
+			w.injectMessage(ctx, *msg)
 
 		case <-ticker.C:
 			w.discoverAgents(ctx)
@@ -483,7 +480,7 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 		return
 	}
 
-	formatted := FormatForInjection(msg)
+	formatted := FormatForInjection(&msg)
 	escaped := shell.EscapeTmux(formatted)
 
 	w.mu.Lock()
@@ -495,7 +492,7 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 
 	for _, agentID := range agents {
 		// Don't echo back to the sender.
-		if agentID == msg.From {
+		if agentID == msg.Name {
 			continue
 		}
 

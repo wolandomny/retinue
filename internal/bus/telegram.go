@@ -62,7 +62,7 @@ func IsTelegramKillWord(msg string) bool {
 //   - System messages: _text_
 //   - User messages:   (skipped — don't echo back)
 func FormatForTelegram(msg Message) string {
-	name := capitalize(msg.From)
+	name := capitalize(msg.Name)
 
 	switch msg.Type {
 	case TypeSystem:
@@ -91,10 +91,7 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 	t.logger.Printf("drained pending telegram updates, offset=%d", offset)
 
 	// Start tailing the bus.
-	busCh, err := t.bus.Tail(ctx)
-	if err != nil {
-		return fmt.Errorf("tailing bus: %w", err)
-	}
+	busCh := t.bus.Tail(ctx)
 
 	// Error channel for the telegram listener goroutine.
 	errCh := make(chan error, 1)
@@ -121,7 +118,7 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 			if msg.Type == TypeUser {
 				continue
 			}
-			formatted := FormatForTelegram(msg)
+			formatted := FormatForTelegram(*msg)
 			if _, err := t.bot.SendMessage(ctx, t.chatID, formatted); err != nil {
 				t.logger.Printf("error sending to telegram: %v", err)
 			} else {

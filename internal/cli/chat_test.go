@@ -69,9 +69,9 @@ func TestChatCmd_Send(t *testing.T) {
 		t.Errorf("Expected message text 'Hello, world!', got %q", msg.Text)
 	}
 
-	// Verify output format
+	// Verify output format — FormatMessage renders as "[HH:MM:SS] You: text"
 	outputStr := output.String()
-	if !strings.Contains(outputStr, "user: Hello, world!") {
+	if !strings.Contains(outputStr, "You: Hello, world!") {
 		t.Errorf("Output should contain formatted message, got: %q", outputStr)
 	}
 }
@@ -117,12 +117,13 @@ func TestChatCmd_History(t *testing.T) {
 		t.Errorf("Expected 2 lines of output, got %d: %v", len(lines), lines)
 	}
 
-	// Verify the messages are displayed in order
-	if !strings.Contains(lines[0], "user: Hi there") {
-		t.Errorf("First line should contain 'user: Hi there', got: %q", lines[0])
+	// Verify the messages are displayed in order — FormatMessage renders
+	// "user" as "You" and capitalizes agent names.
+	if !strings.Contains(lines[0], "You: Hi there") {
+		t.Errorf("First line should contain 'You: Hi there', got: %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "agent2: Task completed") {
-		t.Errorf("Second line should contain 'agent2: Task completed', got: %q", lines[1])
+	if !strings.Contains(lines[1], "Agent2: Task completed") {
+		t.Errorf("Second line should contain 'Agent2: Task completed', got: %q", lines[1])
 	}
 }
 
