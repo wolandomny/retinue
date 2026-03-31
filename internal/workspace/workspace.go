@@ -13,6 +13,7 @@ const (
 	ConfigFile  = "retinue.yaml"
 	TasksFile   = "tasks.yaml"
 	ArchiveFile = "tasks-archive.yaml"
+	AgentsFile  = "agents.yaml"
 	WorktreeDir = ".worktrees"
 	LogsDir     = "logs"
 	ReposDir    = "repos"
@@ -118,6 +119,11 @@ func (ws *Workspace) TasksPath() string {
 // ArchivePath returns the path to the tasks-archive.yaml file.
 func (ws *Workspace) ArchivePath() string {
 	return filepath.Join(ws.Path, ArchiveFile)
+}
+
+// AgentsPath returns the path to the agents.yaml file.
+func (ws *Workspace) AgentsPath() string {
+	return filepath.Join(ws.Path, AgentsFile)
 }
 
 // LogsPath returns the path to the logs directory.
