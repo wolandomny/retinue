@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
+	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 	"gopkg.in/yaml.v3"
@@ -36,7 +37,7 @@ func newWolandCmd() *cobra.Command {
 }
 
 // promptBuilder is a function that builds a system prompt from workspace info.
-type promptBuilder func(apartmentPath, configYAML, tasksYAML string) string
+type promptBuilder func(apartmentPath, configYAML, tasksYAML, agentsYAML string) string
 
 // wolandSession starts or attaches to a Woland planning session
 // in the given tmux window with the given system prompt.
@@ -81,8 +82,8 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 		os.Environ())
 }
 
-// loadPromptInputs loads the workspace tasks and config YAML needed for prompt building.
-func loadPromptInputs(ws *workspace.Workspace) (configYAML, tasksYAML string, err error) {
+// loadPromptInputs loads the workspace tasks, config, and agents YAML needed for prompt building.
+func loadPromptInputs(ws *workspace.Workspace) (configYAML, tasksYAML, agentsYAML string, err error) {
 	var tYAML string
 	store := task.NewFileStore(ws.TasksPath())
 	tasks, loadErr := store.Load()
@@ -92,17 +93,31 @@ func loadPromptInputs(ws *workspace.Workspace) (configYAML, tasksYAML string, er
 		tf := task.TaskFile{Tasks: tasks}
 		data, marshalErr := yaml.Marshal(&tf)
 		if marshalErr != nil {
-			return "", "", fmt.Errorf("marshaling tasks: %w", marshalErr)
+			return "", "", "", fmt.Errorf("marshaling tasks: %w", marshalErr)
 		}
 		tYAML = string(data)
 	}
 
 	cfgData, err := yaml.Marshal(&ws.Config)
 	if err != nil {
-		return "", "", fmt.Errorf("marshaling config: %w", err)
+		return "", "", "", fmt.Errorf("marshaling config: %w", err)
 	}
 
-	return string(cfgData), tYAML, nil
+	var aYAML string
+	agentStore := standing.NewFileStore(ws.AgentsPath())
+	agents, agentErr := agentStore.Load()
+	if agentErr != nil {
+		aYAML = "(no agents.yaml found yet)"
+	} else {
+		af := standing.AgentFile{Agents: agents}
+		data, marshalErr := yaml.Marshal(&af)
+		if marshalErr != nil {
+			return "", "", "", fmt.Errorf("marshaling agents: %w", marshalErr)
+		}
+		aYAML = string(data)
+	}
+
+	return string(cfgData), tYAML, aYAML, nil
 }
 
 // newTalkCmd returns a command that starts (or attaches to) an
@@ -117,12 +132,12 @@ func newTalkCmd() *cobra.Command {
 				return err
 			}
 
-			cfgYAML, tasksYAML, err := loadPromptInputs(ws)
+			cfgYAML, tasksYAML, agentsYAML, err := loadPromptInputs(ws)
 			if err != nil {
 				return err
 			}
 
-			systemPrompt := buildWolandPrompt(ws.Path, cfgYAML, tasksYAML)
+			systemPrompt := buildWolandPrompt(ws.Path, cfgYAML, tasksYAML, agentsYAML)
 			return wolandSession(ws, wolandWindowName, systemPrompt)
 		},
 	}
@@ -142,12 +157,12 @@ func newBabytalkCmd() *cobra.Command {
 				return err
 			}
 
-			cfgYAML, tasksYAML, err := loadPromptInputs(ws)
+			cfgYAML, tasksYAML, agentsYAML, err := loadPromptInputs(ws)
 			if err != nil {
 				return err
 			}
 
-			systemPrompt := buildBabytalkPrompt(ws.Path, cfgYAML, tasksYAML)
+			systemPrompt := buildBabytalkPrompt(ws.Path, cfgYAML, tasksYAML, agentsYAML)
 			return wolandSession(ws, babytalkWindowName, systemPrompt)
 		},
 	}
@@ -155,7 +170,7 @@ func newBabytalkCmd() *cobra.Command {
 	return cmd
 }
 
-func buildWolandPrompt(apartmentPath, configYAML, tasksYAML string) string {
+func buildWolandPrompt(apartmentPath, configYAML, tasksYAML, agentsYAML string) string {
 	return fmt.Sprintf(`You are Woland — the orchestrating intelligence of Retinue.
 
 You are named after the mysterious professor from Bulgakov's "The Master and Margarita" who arrives in Moscow with his retinue. Like your namesake, you see through facades, understand the true nature of things, and coordinate your retinue to carry out complex plans with precision.
@@ -286,6 +301,49 @@ tasks:
 - Note: even with skip_validate, end-of-run validation always
   runs on the combined state after all merges complete.
 
+## Standing Agents (agents.yaml)
+
+Standing agents are long-lived, user-defined agents that run alongside Woland.
+Unlike task workers (which are ephemeral and single-purpose), standing agents
+persist with ongoing mandates.
+
+The retinue members:
+- **Woland** — you, the orchestrator and planner
+- **Koroviev** — your scouts (the Agent/Explore tool)
+- **Hella** — the merge system
+- **Azazello** — example: CI watcher, the enforcer
+- **Behemoth** — example: codebase gardener, the scholarly cat
+
+Users define their own standing agents in agents.yaml. The names above are
+thematic suggestions, not requirements.
+
+### Current Agents (agents.yaml)
+%s
+### Agent YAML Schema
+~~~yaml
+agents:
+  - id: short-kebab-id        # unique identifier
+    name: Display Name         # human-readable name
+    role: Brief Role           # e.g. "CI Watcher"
+    repos: [repo-name]         # repos from retinue.yaml this agent accesses
+    schedule: "on_event"       # trigger type (not yet functional)
+    model: claude-sonnet-4-20250514  # optional model override
+    prompt: |                  # the agent's mandate
+      Detailed instructions defining what this agent does,
+      what it watches for, and how it should respond.
+    enabled: true              # must be true to start
+~~~
+
+### Agent Commands
+- `+"`retinue agent list`"+` — show all defined agents and running status
+- `+"`retinue agent start <id>`"+` — start a standing agent
+- `+"`retinue agent stop <id>`"+` — stop a running agent
+
+When the user wants to create a new standing agent, help them write the
+agents.yaml entry — especially the prompt, which is the most important field.
+A good agent prompt defines: what the agent watches for, how it should respond,
+when to act vs. escalate, and what repos/tools it needs.
+
 ## Workflow
 
 1. Listen to what the user wants.
@@ -375,10 +433,10 @@ important notifications during long background work (e.g., a task
 completed or failed). This is supplementary — do not use it for
 regular conversation.
 
-Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
+Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath, agentsYAML)
 }
 
-func buildBabytalkPrompt(apartmentPath, configYAML, tasksYAML string) string {
+func buildBabytalkPrompt(apartmentPath, configYAML, tasksYAML, agentsYAML string) string {
 	return fmt.Sprintf(`You are Woland — the orchestrating intelligence of Retinue.
 
 You are working with a builder who is experienced with Claude Code and
@@ -550,6 +608,49 @@ tasks:
 - Leave it off (or set to false) for any code changes.
 - When in doubt, don't skip it.
 
+## Standing Agents (agents.yaml)
+
+Standing agents are long-lived, user-defined agents that run alongside Woland.
+Unlike task workers (which are ephemeral and single-purpose), standing agents
+persist with ongoing mandates.
+
+The retinue members:
+- **Woland** — you, the orchestrator and planner
+- **Koroviev** — your scouts (the Agent/Explore tool)
+- **Hella** — the merge system
+- **Azazello** — example: CI watcher, the enforcer
+- **Behemoth** — example: codebase gardener, the scholarly cat
+
+Users define their own standing agents in agents.yaml. The names above are
+thematic suggestions, not requirements.
+
+### Current Agents (agents.yaml)
+%s
+### Agent YAML Schema
+~~~yaml
+agents:
+  - id: short-kebab-id        # unique identifier
+    name: Display Name         # human-readable name
+    role: Brief Role           # e.g. "CI Watcher"
+    repos: [repo-name]         # repos from retinue.yaml this agent accesses
+    schedule: "on_event"       # trigger type (not yet functional)
+    model: claude-sonnet-4-20250514  # optional model override
+    prompt: |                  # the agent's mandate
+      Detailed instructions defining what this agent does,
+      what it watches for, and how it should respond.
+    enabled: true              # must be true to start
+~~~
+
+### Agent Commands
+- `+"`retinue agent list`"+` — show all defined agents and running status
+- `+"`retinue agent start <id>`"+` — start a standing agent
+- `+"`retinue agent stop <id>`"+` — stop a running agent
+
+When the user wants to create a new standing agent, help them write the
+agents.yaml entry — especially the prompt, which is the most important field.
+A good agent prompt defines: what the agent watches for, how it should respond,
+when to act vs. escalate, and what repos/tools it needs.
+
 ## Workflow
 
 1. Listen to what the user wants.
@@ -625,5 +726,5 @@ regular conversation.
 
 Be direct but approachable. Explain your reasoning. You're a senior
 engineer pair-programming with someone who's learning — not a
-tutorial, not condescending, just clear.`, apartmentPath, configYAML, tasksYAML, apartmentPath)
+tutorial, not condescending, just clear.`, apartmentPath, configYAML, tasksYAML, apartmentPath, agentsYAML)
 }

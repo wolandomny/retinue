@@ -35,6 +35,15 @@ func TestHelpConfigOutput(t *testing.T) {
 		{"artifacts", "artifacts"},
 		{"prompt field", "prompt"},
 		{"resolution order", "resolution order"},
+		{"agents.yaml header", "agents.yaml"},
+		{"agent id field", "id              string      Unique kebab-case identifier"},
+		{"agent enabled field", "enabled         bool"},
+		{"agent schedule values", "on_event"},
+		{"agent schedule cron", "Cron expression"},
+		{"schedule not implemented", "not yet implemented"},
+		{"agent commands", "retinue agent list"},
+		{"example azazello", "azazello"},
+		{"example behemoth", "behemoth"},
 	}
 
 	for _, c := range checks {

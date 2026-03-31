@@ -10,6 +10,7 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 		"/tmp/test-apartment",
 		"name: test\nrepos:\n  api: /tmp/api\nmodel: claude-opus-4-6\nmax_workers: 4\n",
 		"tasks:\n  - id: task-1\n    status: pending\n",
+		"agents:\n  - id: azazello\n    name: Azazello\n",
 	)
 
 	checks := []struct {
@@ -28,6 +29,12 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 		{"schema prompt field", "prompt: |"},
 		{"dispatch instruction", "retinue dispatch"},
 		{"help config hint", "retinue help config"},
+		{"agents section header", "Standing Agents (agents.yaml)"},
+		{"agents content included", "azazello"},
+		{"agent commands", "retinue agent list"},
+		{"agent start command", "retinue agent start"},
+		{"agent stop command", "retinue agent stop"},
+		{"agent schema", "Agent YAML Schema"},
 	}
 
 	for _, c := range checks {
@@ -40,10 +47,18 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 }
 
 func TestBuildWolandPrompt_NoTasksMessage(t *testing.T) {
-	prompt := buildWolandPrompt("/tmp/apt", "name: x\n", "(no tasks.yaml found yet)")
+	prompt := buildWolandPrompt("/tmp/apt", "name: x\n", "(no tasks.yaml found yet)", "(no agents.yaml found yet)")
 
 	if !strings.Contains(prompt, "(no tasks.yaml found yet)") {
 		t.Error("prompt should include no-tasks message when tasks are empty")
+	}
+}
+
+func TestBuildWolandPrompt_NoAgentsMessage(t *testing.T) {
+	prompt := buildWolandPrompt("/tmp/apt", "name: x\n", "tasks: []\n", "(no agents.yaml found yet)")
+
+	if !strings.Contains(prompt, "(no agents.yaml found yet)") {
+		t.Error("prompt should include no-agents message when agents file is missing")
 	}
 }
 
@@ -52,6 +67,7 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		"/tmp/test-apartment",
 		"name: test\nrepos:\n  web: /tmp/web\nmodel: claude-opus-4-6\nmax_workers: 4\n",
 		"tasks:\n  - id: task-1\n    status: pending\n",
+		"agents:\n  - id: behemoth\n    name: Behemoth\n",
 	)
 
 	checks := []struct {
@@ -73,6 +89,10 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		{"skip validation section", "Skipping Validation"},
 		{"skip_validate field", "skip_validate: false"},
 		{"help config hint", "retinue help config"},
+		{"agents section header", "Standing Agents (agents.yaml)"},
+		{"agents content included", "behemoth"},
+		{"agent commands", "retinue agent list"},
+		{"agent schema", "Agent YAML Schema"},
 	}
 
 	for _, c := range checks {
@@ -89,9 +109,10 @@ func TestBuildBabytalkPrompt_DiffersFromTalk(t *testing.T) {
 		"/tmp/apt",
 		"name: test\n",
 		"tasks: []\n",
+		"agents: []\n",
 	}
-	talk := buildWolandPrompt(args[0], args[1], args[2])
-	baby := buildBabytalkPrompt(args[0], args[1], args[2])
+	talk := buildWolandPrompt(args[0], args[1], args[2], args[3])
+	baby := buildBabytalkPrompt(args[0], args[1], args[2], args[3])
 
 	if talk == baby {
 		t.Error("babytalk prompt should differ from talk prompt")

@@ -121,13 +121,94 @@ Example task:
       artifacts:
         - internal/auth/jwt.go
         - internal/auth/jwt_test.go
+
+═══════════════════════════════════════════
+agents.yaml — Standing Agent Definitions
+═══════════════════════════════════════════
+
+Standing agents are long-lived, user-defined agents that run alongside
+Woland. Unlike ephemeral task workers, standing agents persist with
+ongoing mandates — they watch, guard, and maintain the codebase.
+
+Top-level structure:
+
+  agents:
+    - id: ...
+      ...
+
+Agent fields:
+
+  id              string      Unique kebab-case identifier
+  name            string      Human-readable display name
+  role            string      Brief role description (e.g. "CI Watcher")
+  repos           []string    Repo keys from retinue.yaml this agent accesses
+  schedule        string      Trigger type (see below)
+  model           string      Claude model override (falls back to workspace model)
+  prompt          string      The agent's mandate — detailed operating instructions
+  enabled         bool        Must be true to start (default: false)
+
+Schedule values:
+
+  "on_event"      Triggered by events (CI failures, file changes, etc.)
+  "every 2h"      Periodic execution at the given interval
+  "0 9 * * 1-5"   Cron expression for precise scheduling
+
+  Note: schedule execution is not yet implemented. Currently, agents
+  are started and stopped manually via retinue agent start/stop.
+
+The enabled field:
+
+  Agents default to enabled: false. An agent must have enabled: true
+  before it can be started with retinue agent start. This lets you
+  define agents in agents.yaml without activating them immediately.
+
+Agent commands:
+
+  retinue agent list          Show all defined agents and running status
+  retinue agent start <id>    Start a standing agent in a tmux window
+  retinue agent stop <id>     Stop a running standing agent
+
+Example agents.yaml:
+
+  agents:
+    - id: azazello
+      name: Azazello
+      role: CI Watcher
+      repos: [backend, frontend]
+      schedule: "on_event"
+      model: claude-sonnet-4-20250514
+      prompt: |
+        You are Azazello, the enforcer. Watch CI pipelines for failures.
+        When a build or test fails:
+        1. Analyze the failure logs to identify the root cause.
+        2. If the fix is obvious and localized, fix it directly.
+        3. If the failure is complex or architectural, escalate by
+           creating a task in tasks.yaml with a detailed description.
+        Focus on the repos listed above. Do not make speculative changes.
+      enabled: true
+
+    - id: behemoth
+      name: Behemoth
+      role: Codebase Gardener
+      repos: [backend]
+      schedule: "every 2h"
+      prompt: |
+        You are Behemoth, the scholarly cat. Periodically review the
+        codebase for quality issues:
+        - Dead code and unused imports
+        - Missing or outdated tests
+        - Documentation gaps
+        - TODO/FIXME comments that should be resolved
+        Report findings as a summary. For clear improvements, submit
+        them as tasks. Do not refactor working code without cause.
+      enabled: false
 `
 
 func newHelpConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show configuration reference for retinue.yaml and tasks.yaml",
-		Long:  "Print the complete schema reference for retinue.yaml (apartment config) and tasks.yaml (task definitions).",
+		Short: "Show configuration reference for retinue.yaml, tasks.yaml, and agents.yaml",
+		Long:  "Print the complete schema reference for retinue.yaml (apartment config), tasks.yaml (task definitions), and agents.yaml (standing agent definitions).",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Fprint(cmd.OutOrStdout(), configReference)
 		},
