@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,35 +20,35 @@ const (
 // Bus provides append-only access to a JSONL message file that serves as
 // the shared communication channel between standing agents and the user.
 type Bus struct {
-	Path string // path to messages.jsonl
+	filePath string
 }
 
 // New creates a Bus that reads and writes to the given JSONL file path.
-func New(path string) *Bus {
-	return &Bus{Path: path}
+func New(filePath string) *Bus {
+	return &Bus{filePath: filePath}
 }
 
 // Append marshals msg to JSON and appends it as a single line to the bus file.
 // File locking (flock LOCK_EX) prevents concurrent write corruption.
-func (b *Bus) Append(msg Message) error {
+func (b *Bus) Append(msg *Message) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshaling bus message: %w", err)
 	}
-	data = append(data, '\n')
 
-	f, err := os.OpenFile(b.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(b.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening bus file: %w", err)
 	}
-	defer f.Close()
+	defer file.Close()
 
 	// Acquire an exclusive lock to serialize concurrent appends.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("locking bus file: %w", err)
 	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
-	if _, err := f.Write(data); err != nil {
+	if _, err := file.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("writing bus message: %w", err)
 	}
 
@@ -57,29 +58,32 @@ func (b *Bus) Append(msg Message) error {
 // ReadRecent reads the JSONL file and returns the last n messages.
 // If fewer than n messages exist, all messages are returned.
 // If the file does not exist, an empty slice is returned (not an error).
-func (b *Bus) ReadRecent(n int) ([]Message, error) {
-	data, err := os.ReadFile(b.Path)
+func (b *Bus) ReadRecent(n int) ([]*Message, error) {
+	file, err := os.Open(b.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Message{}, nil
+			return []*Message{}, nil
 		}
 		return nil, fmt.Errorf("reading bus file: %w", err)
 	}
+	defer file.Close()
 
-	var messages []Message
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
+	var messages []*Message
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
 		var msg Message
-		if err := json.Unmarshal(line, &msg); err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue // skip malformed lines
 		}
-		messages = append(messages, msg)
+		messages = append(messages, &msg)
 	}
 
-	if n >= len(messages) {
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading bus file: %w", err)
+	}
+
+	if len(messages) <= n {
 		return messages, nil
 	}
 	return messages[len(messages)-n:], nil
@@ -89,19 +93,19 @@ func (b *Bus) ReadRecent(n int) ([]Message, error) {
 // the bus file. A background goroutine polls the file every 500ms for new
 // content. The channel is closed when ctx is cancelled. If the file does
 // not yet exist, Tail waits for it to appear.
-func (b *Bus) Tail(ctx context.Context) (<-chan Message, error) {
-	out := make(chan Message, 16)
+func (b *Bus) Tail(ctx context.Context) <-chan *Message {
+	out := make(chan *Message, 16)
 
 	go func() {
 		defer close(out)
 		b.tailLoop(ctx, out)
 	}()
 
-	return out, nil
+	return out
 }
 
 // tailLoop is the internal polling loop for Tail.
-func (b *Bus) tailLoop(ctx context.Context, out chan<- Message) {
+func (b *Bus) tailLoop(ctx context.Context, out chan<- *Message) {
 	var offset int64
 	var partialLine string
 	fileExists := false
@@ -115,7 +119,7 @@ func (b *Bus) tailLoop(ctx context.Context, out chan<- Message) {
 
 		// Wait for the file to appear.
 		if !fileExists {
-			if _, err := os.Stat(b.Path); err != nil {
+			if _, err := os.Stat(b.filePath); err != nil {
 				select {
 				case <-ctx.Done():
 					return
@@ -128,7 +132,7 @@ func (b *Bus) tailLoop(ctx context.Context, out chan<- Message) {
 			partialLine = ""
 		}
 
-		info, err := os.Stat(b.Path)
+		info, err := os.Stat(b.filePath)
 		if err != nil {
 			// File may have been removed; wait for it to reappear.
 			fileExists = false
@@ -166,8 +170,8 @@ func (b *Bus) tailLoop(ctx context.Context, out chan<- Message) {
 // and sends parsed messages to out. Partial lines (data without a trailing
 // newline) are buffered and returned for the next call. Returns the updated
 // file offset and any buffered partial line.
-func (b *Bus) readNewLines(ctx context.Context, offset int64, partialLine string, out chan<- Message) (int64, string) {
-	f, err := os.Open(b.Path)
+func (b *Bus) readNewLines(ctx context.Context, offset int64, partialLine string, out chan<- *Message) (int64, string) {
+	f, err := os.Open(b.filePath)
 	if err != nil {
 		return offset, partialLine
 	}
@@ -219,7 +223,7 @@ func (b *Bus) readNewLines(ctx context.Context, offset int64, partialLine string
 		}
 
 		select {
-		case out <- msg:
+		case out <- &msg:
 		case <-ctx.Done():
 			return offset + bytesRead, partialLine
 		}

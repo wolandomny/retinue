@@ -19,7 +19,7 @@ func TestAppendAndReadRecentRoundTrip(t *testing.T) {
 	path := tempBusPath(t)
 	b := New(path)
 
-	msgs := []Message{
+	msgs := []*Message{
 		NewMessage("azazello", TypeChat, "hello"),
 		NewMessage("user", TypeUser, "hi there"),
 		NewMessage("system", TypeSystem, "koroviev has joined"),
@@ -47,8 +47,8 @@ func TestAppendAndReadRecentRoundTrip(t *testing.T) {
 		if m.Text != msgs[i].Text {
 			t.Errorf("message %d: expected Text %q, got %q", i, msgs[i].Text, m.Text)
 		}
-		if m.From != msgs[i].From {
-			t.Errorf("message %d: expected From %q, got %q", i, msgs[i].From, m.From)
+		if m.Name != msgs[i].Name {
+			t.Errorf("message %d: expected Name %q, got %q", i, msgs[i].Name, m.Name)
 		}
 		if m.Type != msgs[i].Type {
 			t.Errorf("message %d: expected Type %q, got %q", i, msgs[i].Type, m.Type)
@@ -124,10 +124,7 @@ func TestTailReceivesNewMessages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ch, err := b.Tail(ctx)
-	if err != nil {
-		t.Fatalf("tail: %v", err)
-	}
+	ch := b.Tail(ctx)
 
 	// Wait a moment for the tail goroutine to read past existing content.
 	time.Sleep(700 * time.Millisecond)
@@ -139,7 +136,7 @@ func TestTailReceivesNewMessages(t *testing.T) {
 	}
 
 	// Collect messages from the tail channel.
-	var received []Message
+	var received []*Message
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
@@ -179,10 +176,7 @@ func TestTailHandlesFileNotExistingInitially(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ch, err := b.Tail(ctx)
-	if err != nil {
-		t.Fatalf("tail: %v", err)
-	}
+	ch := b.Tail(ctx)
 
 	// Wait a moment, then create the file and write a message.
 	time.Sleep(700 * time.Millisecond)
@@ -262,10 +256,7 @@ func TestTailChannelClosedOnCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ch, err := b.Tail(ctx)
-	if err != nil {
-		t.Fatalf("tail: %v", err)
-	}
+	ch := b.Tail(ctx)
 
 	cancel()
 

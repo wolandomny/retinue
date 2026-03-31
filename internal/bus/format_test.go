@@ -11,9 +11,9 @@ func fixedTime() time.Time {
 }
 
 func TestFormatMessageChat(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:        "abc123",
-		From:      "azazello",
+		Name:      "azazello",
 		Timestamp: fixedTime(),
 		Type:      TypeChat,
 		Text:      "CI is green",
@@ -27,9 +27,9 @@ func TestFormatMessageChat(t *testing.T) {
 }
 
 func TestFormatMessageUser(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:        "def456",
-		From:      "user",
+		Name:      "user",
 		Timestamp: fixedTime(),
 		Type:      TypeUser,
 		Text:      "what's the status?",
@@ -43,9 +43,9 @@ func TestFormatMessageUser(t *testing.T) {
 }
 
 func TestFormatMessageSystem(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:        "ghi789",
-		From:      "system",
+		Name:      "system",
 		Timestamp: fixedTime(),
 		Type:      TypeSystem,
 		Text:      "Azazello has joined",
@@ -59,9 +59,9 @@ func TestFormatMessageSystem(t *testing.T) {
 }
 
 func TestFormatMessageAction(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:        "jkl012",
-		From:      "koroviev",
+		Name:      "koroviev",
 		Timestamp: fixedTime(),
 		Type:      TypeAction,
 		Text:      "deploying hotfix",
@@ -75,9 +75,9 @@ func TestFormatMessageAction(t *testing.T) {
 }
 
 func TestFormatMessageResult(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:        "mno345",
-		From:      "behemoth",
+		Name:      "behemoth",
 		Timestamp: fixedTime(),
 		Type:      TypeResult,
 		Text:      "deploy succeeded",
@@ -91,9 +91,9 @@ func TestFormatMessageResult(t *testing.T) {
 }
 
 func TestFormatForInjectionAgent(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:   "abc123",
-		From: "azazello",
+		Name: "azazello",
 		Type: TypeChat,
 		Text: "CI is failing on test_auth_flow.",
 	}
@@ -106,9 +106,9 @@ func TestFormatForInjectionAgent(t *testing.T) {
 }
 
 func TestFormatForInjectionUser(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:   "def456",
-		From: "user",
+		Name: "user",
 		Type: TypeUser,
 		Text: "what's the status?",
 	}
@@ -121,9 +121,9 @@ func TestFormatForInjectionUser(t *testing.T) {
 }
 
 func TestFormatForInjectionSystem(t *testing.T) {
-	msg := Message{
+	msg := &Message{
 		ID:   "ghi789",
-		From: "system",
+		Name: "system",
 		Type: TypeSystem,
 		Text: "Azazello has joined",
 	}

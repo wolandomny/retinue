@@ -136,3 +136,4 @@ func (ws *Workspace) BusPath() string {
 func (ws *Workspace) LogsPath() string {
 	return filepath.Join(ws.Path, LogsDir)
 }
+

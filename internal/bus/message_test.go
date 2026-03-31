@@ -28,8 +28,8 @@ func TestNewMessageGeneratesUniqueIDs(t *testing.T) {
 func TestNewMessageFields(t *testing.T) {
 	m := NewMessage("azazello", TypeAction, "deploying hotfix")
 
-	if m.From != "azazello" {
-		t.Fatalf("expected From=%q, got %q", "azazello", m.From)
+	if m.Name != "azazello" {
+		t.Fatalf("expected Name=%q, got %q", "azazello", m.Name)
 	}
 	if m.Type != TypeAction {
 		t.Fatalf("expected Type=%q, got %q", TypeAction, m.Type)
@@ -44,7 +44,7 @@ func TestNewMessageFields(t *testing.T) {
 
 func TestJSONRoundTrip(t *testing.T) {
 	original := NewMessage("user", TypeUser, "what's the status?")
-	original.Meta = map[string]string{"channel": "telegram"}
+	original.Meta = map[string]interface{}{"channel": "telegram"}
 
 	data, err := json.Marshal(original)
 	if err != nil {
@@ -59,8 +59,8 @@ func TestJSONRoundTrip(t *testing.T) {
 	if decoded.ID != original.ID {
 		t.Fatalf("ID mismatch: %q vs %q", decoded.ID, original.ID)
 	}
-	if decoded.From != original.From {
-		t.Fatalf("From mismatch: %q vs %q", decoded.From, original.From)
+	if decoded.Name != original.Name {
+		t.Fatalf("Name mismatch: %q vs %q", decoded.Name, original.Name)
 	}
 	if decoded.Type != original.Type {
 		t.Fatalf("Type mismatch: %q vs %q", decoded.Type, original.Type)
@@ -109,5 +109,25 @@ func TestMetaOmittedWhenNil(t *testing.T) {
 	}
 	if _, ok := raw["meta"]; ok {
 		t.Fatal("expected meta to be omitted from JSON when nil")
+	}
+}
+
+func TestGenerateID(t *testing.T) {
+	id1 := generateID()
+	id2 := generateID()
+
+	if id1 == id2 {
+		t.Error("generateID should produce unique IDs")
+	}
+
+	if len(id1) != 32 {
+		t.Errorf("Expected ID length 32, got %d", len(id1))
+	}
+
+	// Should be hex
+	for _, r := range id1 {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Errorf("ID should be hex, got character %q in %q", r, id1)
+		}
 	}
 }

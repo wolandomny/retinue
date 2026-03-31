@@ -19,22 +19,22 @@ const (
 
 // Message represents a single entry on the retinue message bus.
 type Message struct {
-	ID        string            `json:"id"`             // unique hex identifier
-	From      string            `json:"from"`           // agent ID, "user", or "system"
-	Timestamp time.Time         `json:"ts"`             // when the message was created
-	Type      MessageType       `json:"type"`           // message type
-	Text      string            `json:"text"`           // message content
-	Meta      map[string]string `json:"meta,omitempty"` // optional metadata
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Type      MessageType            `json:"type"`
+	Text      string                 `json:"text"`
+	Timestamp time.Time              `json:"timestamp"`
+	Meta      map[string]interface{} `json:"meta,omitempty"`
 }
 
 // NewMessage creates a Message with a generated ID and the current timestamp.
-func NewMessage(from string, msgType MessageType, text string) Message {
-	return Message{
+func NewMessage(name string, msgType MessageType, text string) *Message {
+	return &Message{
 		ID:        generateID(),
-		From:      from,
-		Timestamp: time.Now(),
+		Name:      name,
 		Type:      msgType,
 		Text:      text,
+		Timestamp: time.Now(),
 	}
 }
 

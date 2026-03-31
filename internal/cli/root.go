@@ -21,6 +21,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newAgentCmd(),
+		newChatCmd(),
 		newInitCmd(),
 		newAddCmd(),
 		newAttachCmd(),
