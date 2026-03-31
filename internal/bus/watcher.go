@@ -154,8 +154,15 @@ func (w *Watcher) listAgentWindows(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("tmux list-windows: %w", err)
 	}
 
+	return parseAgentWindows(string(out)), nil
+}
+
+// parseAgentWindows extracts agent IDs from tmux list-windows output.
+// It filters for windows with "agent-" prefixed names and returns the
+// agent ID portion (everything after "agent-").
+func parseAgentWindows(tmuxOutput string) []string {
 	var agents []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(tmuxOutput), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "agent-") {
 			id := strings.TrimPrefix(line, "agent-")
@@ -164,7 +171,7 @@ func (w *Watcher) listAgentWindows(ctx context.Context) ([]string, error) {
 			}
 		}
 	}
-	return agents, nil
+	return agents
 }
 
 // startAgentWatcher begins monitoring an agent's Claude session JSONL file.
@@ -490,12 +497,8 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	}
 	w.mu.Unlock()
 
-	for _, agentID := range agents {
-		// Don't echo back to the sender.
-		if agentID == msg.Name {
-			continue
-		}
-
+	targets := injectionTargets(agents, msg)
+	for _, agentID := range targets {
 		target := fmt.Sprintf("retinue:agent-%s", agentID)
 		args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
 
@@ -504,6 +507,22 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 			w.logger.Printf("error injecting message to agent %q: %v: %s", agentID, err, string(out))
 		}
 	}
+}
+
+// injectionTargets returns the subset of agent IDs that should receive a
+// given message. It filters out the sender (to avoid echo) and system messages.
+func injectionTargets(agents []string, msg Message) []string {
+	if msg.Type == TypeSystem {
+		return nil
+	}
+	var targets []string
+	for _, id := range agents {
+		if id == msg.Name {
+			continue
+		}
+		targets = append(targets, id)
+	}
+	return targets
 }
 
 // tmuxArgs builds a tmux argument list, prepending -L <socket> when configured.
