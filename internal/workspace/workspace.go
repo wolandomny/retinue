@@ -14,6 +14,7 @@ const (
 	TasksFile   = "tasks.yaml"
 	ArchiveFile = "tasks-archive.yaml"
 	AgentsFile  = "agents.yaml"
+	BusFile     = "messages.jsonl"
 	WorktreeDir = ".worktrees"
 	LogsDir     = "logs"
 	ReposDir    = "repos"
@@ -124,6 +125,11 @@ func (ws *Workspace) ArchivePath() string {
 // AgentsPath returns the path to the agents.yaml file.
 func (ws *Workspace) AgentsPath() string {
 	return filepath.Join(ws.Path, AgentsFile)
+}
+
+// BusPath returns the path to the messages.jsonl bus file.
+func (ws *Workspace) BusPath() string {
+	return filepath.Join(ws.Path, BusFile)
 }
 
 // LogsPath returns the path to the logs directory.
