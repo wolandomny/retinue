@@ -42,7 +42,7 @@ func RunWithEnv(ctx context.Context, dir string, env []string, args ...string) (
 // If the rebase encounters conflicts, it spawns a Claude agent to
 // resolve them before continuing. ghToken, if non-empty, is injected
 // as GH_TOKEN into all git subprocess environments.
-func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath, ghToken string) error {
+func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath, ghToken string, runner agent.Runner) error {
 	var ghEnv []string
 	if ghToken != "" {
 		ghEnv = append(ghEnv, "GH_TOKEN="+ghToken)
@@ -53,7 +53,7 @@ func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 		// Rebase failed — attempt to resolve conflicts.
 		fmt.Printf("Rebase conflict detected for branch %q, attempting resolution...\n", branch)
 
-		if err := attemptRebaseWithResolution(ctx, worktreePath, branch, model, logsPath, rebaseErr, ghEnv); err != nil {
+		if err := attemptRebaseWithResolution(ctx, worktreePath, branch, model, logsPath, rebaseErr, ghEnv, runner); err != nil {
 			return err
 		}
 	}
@@ -92,11 +92,11 @@ func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 
 // attemptRebaseWithResolution tries to resolve rebase conflicts using Claude,
 // handling multiple conflicting commits in a loop. Returns nil on success.
-func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, model, logsPath string, originalErr error, ghEnv []string) error {
+func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, model, logsPath string, originalErr error, ghEnv []string, runner agent.Runner) error {
 	const maxResolveAttempts = 5
 
 	for attempt := range maxResolveAttempts {
-		if resolveErr := resolveConflicts(ctx, worktreePath, model, logsPath, branch, ghEnv); resolveErr != nil {
+		if resolveErr := resolveConflicts(ctx, worktreePath, model, logsPath, branch, ghEnv, runner); resolveErr != nil {
 			_, _ = RunWithEnv(ctx, worktreePath, ghEnv, "rebase", "--abort")
 			return fmt.Errorf("rebase conflict (resolution failed on attempt %d: %v): %w", attempt+1, resolveErr, originalErr)
 		}
@@ -127,7 +127,7 @@ func attemptRebaseWithResolution(ctx context.Context, worktreePath, branch, mode
 // produce resolved versions. Returns nil if all conflicts were
 // resolved and staged. ghEnv provides extra environment variables
 // (e.g., GH_TOKEN) for git subprocesses and the Claude runner.
-func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string, ghEnv []string) error {
+func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string, ghEnv []string, runner agent.Runner) error {
 	// 1. Get the list of conflicted files.
 	out, _ := RunWithEnv(ctx, dir, ghEnv, "diff", "--name-only", "--diff-filter=U")
 	conflictedFiles := strings.Split(strings.TrimSpace(out), "\n")
@@ -157,7 +157,9 @@ func resolveConflicts(ctx context.Context, dir, model, logsPath, taskID string, 
 		filesContent.String(),
 	)
 
-	runner := agent.NewClaudeRunner()
+	if runner == nil {
+		runner = agent.NewClaudeRunner()
+	}
 	_, err := runner.Run(ctx, agent.RunOpts{
 		Prompt: prompt,
 		SystemPrompt: "You are Azazello, resolving git merge conflicts. " +
