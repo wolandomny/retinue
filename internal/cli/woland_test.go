@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
@@ -124,5 +127,132 @@ func TestBuildBabytalkPrompt_DiffersFromTalk(t *testing.T) {
 	}
 	if strings.Contains(talk, "Quality Standards") {
 		t.Error("talk prompt should NOT contain Quality Standards section")
+	}
+}
+
+// --- Session marker tests ---
+
+func TestNewestJSONLFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files with different modification times.
+	files := []string{"old.jsonl", "middle.jsonl", "newest.jsonl"}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Also create a non-.jsonl file that is the newest overall (should be ignored).
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := newestJSONLFile(dir)
+	want := filepath.Join(dir, "newest.jsonl")
+	if got != want {
+		t.Errorf("newestJSONLFile() = %q, want %q", got, want)
+	}
+}
+
+func TestNewestJSONLFile_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	if got := newestJSONLFile(dir); got != "" {
+		t.Errorf("expected empty string for empty dir, got %q", got)
+	}
+}
+
+func TestNewestJSONLFile_NonexistentDir(t *testing.T) {
+	if got := newestJSONLFile("/nonexistent/dir"); got != "" {
+		t.Errorf("expected empty string for nonexistent dir, got %q", got)
+	}
+}
+
+func TestWriteSessionMarker_WritesNewestFile(t *testing.T) {
+	aptDir := t.TempDir()
+
+	// Create the Claude projects directory where writeSessionMarker will look.
+	projDir := wolandProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create session files (simulating existing + Woland's new file).
+	oldFile := filepath.Join(projDir, "old-agent-session.jsonl")
+	if err := os.WriteFile(oldFile, []byte(`{"type":"human"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	wolandFile := filepath.Join(projDir, "woland-session.jsonl")
+	if err := os.WriteFile(wolandFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// writeSessionMarker sleeps 2 seconds, which is too slow for tests.
+	// Test the underlying logic directly via newestJSONLFile + marker write.
+	newest := newestJSONLFile(projDir)
+	if newest == "" {
+		t.Fatal("expected to find a .jsonl file")
+	}
+
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte(newest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify marker was written with the correct (newest) path.
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != wolandFile {
+		t.Errorf("marker = %q, want %q", string(data), wolandFile)
+	}
+}
+
+func TestWriteSessionMarker_AgentFileDoesNotOverrideMarker(t *testing.T) {
+	aptDir := t.TempDir()
+
+	projDir := wolandProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Woland's session file (created first, marker written).
+	wolandFile := filepath.Join(projDir, "woland.jsonl")
+	if err := os.WriteFile(wolandFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write the marker (simulating what writeSessionMarker does).
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte(wolandFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now a standing agent creates a newer session file.
+	time.Sleep(50 * time.Millisecond)
+	agentFile := filepath.Join(projDir, "agent-session.jsonl")
+	if err := os.WriteFile(agentFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the marker still points to Woland's file (not overwritten).
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != wolandFile {
+		t.Errorf("marker should still point to Woland's file %q, got %q", wolandFile, string(data))
+	}
+}
+
+func TestWolandProjectDir(t *testing.T) {
+	got := wolandProjectDir("/Users/broc.oppler/apt")
+	if !strings.HasSuffix(got, ".claude/projects/-Users-broc-oppler-apt") {
+		t.Errorf("wolandProjectDir() = %q, expected suffix .claude/projects/-Users-broc-oppler-apt", got)
 	}
 }

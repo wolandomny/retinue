@@ -1250,3 +1250,125 @@ func TestFindActiveSession_NoMarkerWithoutAptPath(t *testing.T) {
 		t.Error("marker file should NOT be created when aptPath is empty")
 	}
 }
+
+// TestFindActiveSession_FallbackLogsWarningWithAptPath verifies that when
+// aptPath is set but no marker file exists, findActiveSession logs a warning
+// about falling back to the newest-file scan.
+func TestFindActiveSession_FallbackLogsWarningWithAptPath(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionFile := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	logger := log.New(&logBuf, "", 0)
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     logger,
+		seen:       make(map[string]bool),
+	}
+
+	got, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != sessionFile {
+		t.Errorf("got %q, want %q", got, sessionFile)
+	}
+
+	// Verify warning was logged about missing marker.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "no Woland session marker found") {
+		t.Errorf("expected warning about missing marker in log, got: %q", logOutput)
+	}
+}
+
+// TestFindActiveSession_NoFallbackWarningWithoutAptPath verifies that when
+// aptPath is empty, no warning about missing marker is logged.
+func TestFindActiveSession_NoFallbackWarningWithoutAptPath(t *testing.T) {
+	dir := t.TempDir()
+
+	sessionFile := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"human"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	logger := log.New(&logBuf, "", 0)
+
+	w := &Watcher{
+		projectDir: dir,
+		// aptPath intentionally empty.
+		logger: logger,
+		seen:   make(map[string]bool),
+	}
+
+	_, err := w.findActiveSession()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "no Woland session marker found") {
+		t.Errorf("warning should NOT be logged when aptPath is empty, got: %q", logOutput)
+	}
+}
+
+// TestFindActiveSession_WolandMarkerSurvivesMultipleAgentFiles verifies that
+// when a marker exists, the watcher ignores multiple newer agent session files.
+// This is the specific bug scenario: standing agents creating session files
+// that are newer than Woland's.
+func TestFindActiveSession_WolandMarkerSurvivesMultipleAgentFiles(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := filepath.Join(aptDir, "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Woland's session file.
+	wolandFile := filepath.Join(projDir, "woland-session.jsonl")
+	if err := os.WriteFile(wolandFile, []byte(`{"type":"system"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write marker pointing to Woland's file (as woland.go now does).
+	markerPath := filepath.Join(aptDir, wolandSessionMarker)
+	if err := os.WriteFile(markerPath, []byte(wolandFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Multiple standing agents create newer session files.
+	for i := 0; i < 3; i++ {
+		time.Sleep(50 * time.Millisecond)
+		agentFile := filepath.Join(projDir, fmt.Sprintf("agent-%d-session.jsonl", i))
+		if err := os.WriteFile(agentFile, []byte(`{"type":"system"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := &Watcher{
+		projectDir: projDir,
+		aptPath:    aptDir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	// Call findActiveSession multiple times to simulate polling.
+	for i := 0; i < 5; i++ {
+		got, err := w.findActiveSession()
+		if err != nil {
+			t.Fatalf("poll %d: unexpected error: %v", i, err)
+		}
+		if got != wolandFile {
+			t.Errorf("poll %d: got %q, want %q (marker should hold)", i, got, wolandFile)
+		}
+	}
+}

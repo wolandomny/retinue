@@ -217,7 +217,15 @@ func (w *Watcher) findActiveSession() (string, error) {
 		}
 	}
 
-	// Fall back to scanning for the newest .jsonl file.
+	// Fall back to scanning for the newest .jsonl file. When aptPath is
+	// set, this means no marker was found — Woland may not have started
+	// yet, or the marker was cleared due to a stale session file. The
+	// scan may pick a standing agent's session file if one was recently
+	// modified. Woland startup writes the marker proactively, so this
+	// fallback should be rare in normal operation.
+	if w.aptPath != "" {
+		w.logger.Printf("warning: no Woland session marker found, falling back to newest .jsonl scan")
+	}
 	entries, err := os.ReadDir(w.projectDir)
 	if err != nil {
 		if os.IsNotExist(err) {
