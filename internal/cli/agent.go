@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/bus"
@@ -149,6 +151,16 @@ func newAgentStartCmd() *cobra.Command {
 				return fmt.Errorf("creating tmux window: %w", err)
 			}
 
+			// Give Claude CLI time to initialize and display the welcome screen.
+			time.Sleep(3 * time.Second)
+
+			// Send a kickoff message so the agent begins autonomous work
+			// instead of sitting at the welcome screen waiting for input.
+			if err := sendKickoff(ctx, mgr, agent.Name, windowName); err != nil {
+				// Non-fatal: the window is created, the kickoff just didn't inject.
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not send kickoff message: %v\n", err)
+			}
+
 			// Write a system message to the bus announcing the agent joined.
 			b := bus.New(ws.BusPath())
 			if err := b.Append(bus.NewMessage("system", bus.TypeSystem, agent.Name+" has joined")); err != nil {
@@ -266,4 +278,19 @@ func buildAgentSystemPrompt(ws *workspace.Workspace, agent *standing.Agent) stri
 	}
 
 	return b.String()
+}
+
+// sendKickoff sends an initial message to a newly created agent window so that
+// the Claude CLI begins autonomous work instead of waiting at the welcome screen.
+// Errors are non-fatal and returned for the caller to log.
+func sendKickoff(ctx context.Context, mgr *session.TmuxManager, agentName, windowName string) error {
+	kickoff := fmt.Sprintf("You are %s. Begin your work now according to your mandate.", agentName)
+	escaped := shell.EscapeTmux(kickoff)
+	sendTarget := session.ApartmentSession + ":" + windowName
+	sendArgs := mgr.TmuxArgs("send-keys", "-t", sendTarget, "--", escaped, "Enter")
+	cmd := exec.CommandContext(ctx, "tmux", sendArgs...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
 }

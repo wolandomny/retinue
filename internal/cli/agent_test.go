@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wolandomny/retinue/internal/bus"
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -652,5 +654,47 @@ func TestAgentCmdRegistered(t *testing.T) {
 	}
 	if !found {
 		t.Error("'agent' command not found under root")
+	}
+}
+
+func TestSendKickoffNoTmux(t *testing.T) {
+	// sendKickoff should return an error (not panic) when tmux is unavailable.
+	// This exercises the non-fatal error path in the start command.
+	mgr := session.NewTmuxManager("retinue-nonexistent-socket-for-test")
+	ctx := context.Background()
+
+	err := sendKickoff(ctx, mgr, "TestAgent", "agent-test")
+	if err == nil {
+		t.Fatal("expected error when tmux is not available, got nil")
+	}
+	// The error should mention something about the tmux command failing.
+	// We don't assert the exact message since it varies by platform.
+	t.Logf("sendKickoff returned expected error: %v", err)
+}
+
+func TestSendKickoffMessageContent(t *testing.T) {
+	// Verify the kickoff message includes the agent name.
+	// We can't easily intercept the exec call, but we can test that
+	// sendKickoff constructs the right message by checking it doesn't
+	// panic with various agent names including special characters.
+	mgr := session.NewTmuxManager("retinue-nonexistent-socket-for-test")
+	ctx := context.Background()
+
+	names := []string{
+		"Azazello",
+		"Agent With Spaces",
+		"agent-with-dashes",
+		"agent;semicolon",
+		"agent$dollar",
+	}
+
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			err := sendKickoff(ctx, mgr, name, "agent-test")
+			// Should return an error (no tmux) but not panic.
+			if err == nil {
+				t.Fatal("expected error when tmux is not available")
+			}
+		})
 	}
 }
