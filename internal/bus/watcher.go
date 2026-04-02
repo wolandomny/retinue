@@ -47,10 +47,26 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
+// monitoredWindow describes a tmux window that the bus watcher should monitor.
+type monitoredWindow struct {
+	busName    string // identity on the bus (e.g. "azazello", "woland")
+	windowName string // tmux window name (e.g. "agent-azazello", "woland")
+	isWoland   bool   // true for woland/babytalk windows
+}
+
+// wolandWindowNames are tmux window names that belong to Woland.
+var wolandWindowNames = map[string]bool{
+	"woland":   true,
+	"babytalk": true,
+}
+
 // agentWatcher tracks per-agent output monitoring state.
 type agentWatcher struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel     context.CancelFunc
+	done       chan struct{}
+	busName    string // identity on the bus
+	windowName string // tmux window name
+	isWoland   bool   // true for woland/babytalk windows
 }
 
 // Watcher is the bus watcher daemon. It bridges the message bus with running
@@ -64,7 +80,7 @@ type Watcher struct {
 	logger     *log.Logger
 
 	mu       sync.Mutex
-	watchers map[string]*agentWatcher // agentID → watcher
+	watchers map[string]*agentWatcher // windowName → watcher
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
@@ -106,44 +122,45 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// discoverAgents polls tmux for running agent windows and starts/stops
-// output watchers as needed.
+// discoverAgents polls tmux for running agent and Woland windows and
+// starts/stops output watchers as needed.
 func (w *Watcher) discoverAgents(ctx context.Context) {
-	windows, err := w.listAgentWindows(ctx)
+	windows, err := w.listMonitoredWindows(ctx)
 	if err != nil {
-		w.logger.Printf("error listing agent windows: %v", err)
+		w.logger.Printf("error listing monitored windows: %v", err)
 		return
 	}
 
 	active := make(map[string]bool, len(windows))
-	for _, id := range windows {
-		active[id] = true
+	for _, win := range windows {
+		active[win.windowName] = true
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Start watchers for new agents.
-	for _, id := range windows {
-		if _, exists := w.watchers[id]; !exists {
-			w.startAgentWatcher(ctx, id)
+	// Start watchers for new windows.
+	for _, win := range windows {
+		if _, exists := w.watchers[win.windowName]; !exists {
+			w.startMonitoredWatcher(ctx, win)
 		}
 	}
 
-	// Stop watchers for agents that are no longer running.
-	for id, aw := range w.watchers {
-		if !active[id] {
-			w.logger.Printf("agent %q window disappeared, stopping output watcher", id)
+	// Stop watchers for windows that are no longer running.
+	for windowName, aw := range w.watchers {
+		if !active[windowName] {
+			w.logger.Printf("%q window %q disappeared, stopping output watcher", aw.busName, windowName)
 			aw.cancel()
 			<-aw.done
-			delete(w.watchers, id)
+			delete(w.watchers, windowName)
 		}
 	}
 }
 
-// listAgentWindows returns the agent IDs extracted from tmux window names
-// matching the "agent-" prefix.
-func (w *Watcher) listAgentWindows(ctx context.Context) ([]string, error) {
+// listMonitoredWindows returns the monitored windows extracted from tmux,
+// including both agent windows (prefixed "agent-") and Woland windows
+// ("woland", "babytalk").
+func (w *Watcher) listMonitoredWindows(ctx context.Context) ([]monitoredWindow, error) {
 	args := w.tmuxArgs("list-windows", "-t", "retinue", "-F", "#{window_name}")
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	out, err := cmd.Output()
@@ -154,46 +171,65 @@ func (w *Watcher) listAgentWindows(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("tmux list-windows: %w", err)
 	}
 
-	return parseAgentWindows(string(out)), nil
+	return parseMonitoredWindows(string(out)), nil
 }
 
-// parseAgentWindows extracts agent IDs from tmux list-windows output.
-// It filters for windows with "agent-" prefixed names and returns the
-// agent ID portion (everything after "agent-").
-func parseAgentWindows(tmuxOutput string) []string {
-	var agents []string
+// parseMonitoredWindows extracts monitored windows from tmux list-windows
+// output. It includes agent windows (prefixed "agent-") and Woland windows
+// ("woland", "babytalk"). Agent windows use the portion after "agent-" as
+// the bus identity; Woland windows always use "woland" as the bus identity.
+func parseMonitoredWindows(tmuxOutput string) []monitoredWindow {
+	var windows []monitoredWindow
 	for _, line := range strings.Split(strings.TrimSpace(tmuxOutput), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "agent-") {
 			id := strings.TrimPrefix(line, "agent-")
 			if id != "" {
-				agents = append(agents, id)
+				windows = append(windows, monitoredWindow{
+					busName:    id,
+					windowName: line,
+				})
 			}
+		} else if wolandWindowNames[line] {
+			windows = append(windows, monitoredWindow{
+				busName:    "woland",
+				windowName: line,
+				isWoland:   true,
+			})
 		}
 	}
-	return agents
+	return windows
 }
 
-// startAgentWatcher begins monitoring an agent's Claude session JSONL file.
+// startMonitoredWatcher begins monitoring a tmux window's Claude session
+// JSONL file. Works for both agent windows and Woland windows.
 // Must be called with w.mu held.
-func (w *Watcher) startAgentWatcher(ctx context.Context, agentID string) {
+func (w *Watcher) startMonitoredWatcher(ctx context.Context, win monitoredWindow) {
 	childCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
 	aw := &agentWatcher{
-		cancel: cancel,
-		done:   done,
+		cancel:     cancel,
+		done:       done,
+		busName:    win.busName,
+		windowName: win.windowName,
+		isWoland:   win.isWoland,
 	}
-	w.watchers[agentID] = aw
+	w.watchers[win.windowName] = aw
 
-	// Snapshot the newest session file at the time the agent window appears.
-	sessionFile := w.findAgentSessionFile(agentID)
+	// Snapshot the session file at the time the window appears.
+	var sessionFile string
+	if win.isWoland {
+		sessionFile = w.findWolandSessionFile()
+	} else {
+		sessionFile = w.findAgentSessionFile(win.busName)
+	}
 
-	w.logger.Printf("starting output watcher for agent %q (session: %s)", agentID, filepath.Base(sessionFile))
+	w.logger.Printf("starting output watcher for %q (window: %s, session: %s)", win.busName, win.windowName, filepath.Base(sessionFile))
 
 	go func() {
 		defer close(done)
-		w.watchAgentOutput(childCtx, agentID, sessionFile)
+		w.watchAgentOutput(childCtx, win.busName, sessionFile, win.isWoland)
 	}()
 }
 
@@ -240,9 +276,31 @@ func claudeProjectDir(aptPath string) string {
 	return filepath.Join(home, ".claude", "projects", mangled)
 }
 
-// watchAgentOutput tails an agent's Claude session JSONL file and writes
-// extracted assistant messages to the bus.
-func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile string) {
+// findWolandSessionFile reads the .woland-session marker file to locate
+// Woland's active Claude session JSONL. Falls back to the newest JSONL
+// in the Claude projects directory if the marker is absent or stale.
+func (w *Watcher) findWolandSessionFile() string {
+	markerPath := filepath.Join(w.aptPath, ".woland-session")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		w.logger.Printf("no .woland-session marker found, falling back to newest JSONL")
+		return w.findAgentSessionFile("woland")
+	}
+	sessionPath := strings.TrimSpace(string(data))
+	if sessionPath == "" {
+		return w.findAgentSessionFile("woland")
+	}
+	// Verify the file exists.
+	if _, err := os.Stat(sessionPath); err != nil {
+		w.logger.Printf(".woland-session marker points to missing file %q, falling back", sessionPath)
+		return w.findAgentSessionFile("woland")
+	}
+	return sessionPath
+}
+
+// watchAgentOutput tails an agent's (or Woland's) Claude session JSONL file
+// and writes extracted assistant messages to the bus.
+func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile string, isWoland bool) {
 	seen := make(map[string]bool)
 	var partialLine string
 	var offset int64
@@ -257,9 +315,13 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 				return
 			case <-time.After(agentPollInterval):
 			}
-			sessionFile = w.findNewestJSONL(projDir)
+			if isWoland {
+				sessionFile = w.findWolandSessionFile()
+			} else {
+				sessionFile = w.findNewestJSONL(projDir)
+			}
 			if sessionFile != "" {
-				w.logger.Printf("agent %q: found session file %s", agentID, filepath.Base(sessionFile))
+				w.logger.Printf("%q: found session file %s", agentID, filepath.Base(sessionFile))
 				break
 			}
 		}
@@ -292,11 +354,16 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 		case <-time.After(agentPollInterval):
 		}
 
-		// Check if a newer session file has appeared (the agent may have
-		// restarted its Claude session).
-		newest := w.findNewestJSONL(projDir)
+		// Check if a newer session file has appeared (the agent/Woland
+		// may have restarted its Claude session).
+		var newest string
+		if isWoland {
+			newest = w.findWolandSessionFile()
+		} else {
+			newest = w.findNewestJSONL(projDir)
+		}
 		if newest != "" && newest != sessionFile {
-			w.logger.Printf("agent %q: session file changed to %s", agentID, filepath.Base(newest))
+			w.logger.Printf("%q: session file changed to %s", agentID, filepath.Base(newest))
 			sessionFile = newest
 			offset = 0
 			partialLine = ""
@@ -479,7 +546,14 @@ func parseSessionLine(line string) (text string, uuid string, ok bool) {
 	return strings.Join(parts, "\n"), msg.UUID, true
 }
 
-// injectMessage sends a bus message to all active agent tmux sessions
+// injectionWindow pairs a bus identity with its tmux window name for
+// message injection targeting.
+type injectionWindow struct {
+	busName    string // identity on the bus (used for sender filtering)
+	windowName string // tmux window name (used as tmux target)
+}
+
+// injectMessage sends a bus message to all active monitored tmux sessions
 // except the sender.
 func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	// Don't inject system messages into agent sessions.
@@ -491,36 +565,40 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	escaped := shell.EscapeTmux(formatted)
 
 	w.mu.Lock()
-	agents := make([]string, 0, len(w.watchers))
-	for id := range w.watchers {
-		agents = append(agents, id)
+	windows := make([]injectionWindow, 0, len(w.watchers))
+	for _, aw := range w.watchers {
+		windows = append(windows, injectionWindow{
+			busName:    aw.busName,
+			windowName: aw.windowName,
+		})
 	}
 	w.mu.Unlock()
 
-	targets := injectionTargets(agents, msg)
-	for _, agentID := range targets {
-		target := fmt.Sprintf("retinue:agent-%s", agentID)
+	targets := injectionTargets(windows, msg)
+	for _, t := range targets {
+		target := fmt.Sprintf("retinue:%s", t.windowName)
 		args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
 
 		cmd := exec.CommandContext(ctx, "tmux", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			w.logger.Printf("error injecting message to agent %q: %v: %s", agentID, err, string(out))
+			w.logger.Printf("error injecting message to %q (window %s): %v: %s", t.busName, t.windowName, err, string(out))
 		}
 	}
 }
 
-// injectionTargets returns the subset of agent IDs that should receive a
-// given message. It filters out the sender (to avoid echo) and system messages.
-func injectionTargets(agents []string, msg Message) []string {
+// injectionTargets returns the subset of monitored windows that should
+// receive a given message. It filters out the sender (by bus name, to
+// avoid echo) and system messages.
+func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
 	if msg.Type == TypeSystem {
 		return nil
 	}
-	var targets []string
-	for _, id := range agents {
-		if id == msg.Name {
+	var targets []injectionWindow
+	for _, w := range windows {
+		if w.busName == msg.Name {
 			continue
 		}
-		targets = append(targets, id)
+		targets = append(targets, w)
 	}
 	return targets
 }

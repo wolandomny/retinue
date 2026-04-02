@@ -222,16 +222,20 @@ func searchStr(s, substr string) bool {
 // 1. Agent discovery / parseAgentWindows
 // ---------------------------------------------------------------------------
 
-func TestParseAgentWindows(t *testing.T) {
+func TestParseMonitoredWindows(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		want  []string
+		want  []monitoredWindow
 	}{
 		{
 			name:  "typical tmux output with mixed windows",
 			input: "control\nagent-azazello\nagent-behemoth\nlogs\nagent-koroviev\n",
-			want:  []string{"azazello", "behemoth", "koroviev"},
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
 		},
 		{
 			name:  "only non-agent windows",
@@ -251,7 +255,9 @@ func TestParseAgentWindows(t *testing.T) {
 		{
 			name:  "single agent window",
 			input: "agent-azazello\n",
-			want:  []string{"azazello"},
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+			},
 		},
 		{
 			name:  "agent- prefix only (no ID)",
@@ -261,40 +267,87 @@ func TestParseAgentWindows(t *testing.T) {
 		{
 			name:  "agent- prefix only among valid agents",
 			input: "agent-azazello\nagent-\nagent-behemoth\n",
-			want:  []string{"azazello", "behemoth"},
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
 		},
 		{
 			name:  "windows with extra whitespace",
 			input: "  agent-azazello  \n  control  \n  agent-behemoth  \n",
-			want:  []string{"azazello", "behemoth"},
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
 		},
 		{
 			name:  "no trailing newline",
 			input: "agent-azazello\nagent-behemoth",
-			want:  []string{"azazello", "behemoth"},
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
 		},
 		{
 			name:  "agent ID with hyphens",
 			input: "agent-my-cool-agent\n",
-			want:  []string{"my-cool-agent"},
+			want: []monitoredWindow{
+				{busName: "my-cool-agent", windowName: "agent-my-cool-agent"},
+			},
 		},
 		{
 			name:  "window named 'agent' without hyphen is not matched",
 			input: "agent\nagentfoo\n",
 			want:  nil,
 		},
+		{
+			name:  "woland window is included",
+			input: "control\nagent-azazello\nwoland\nagent-behemoth\n",
+			want: []monitoredWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
+		},
+		{
+			name:  "babytalk window is included as woland",
+			input: "control\nbabytalk\nagent-koroviev\n",
+			want: []monitoredWindow{
+				{busName: "woland", windowName: "babytalk", isWoland: true},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
+		},
+		{
+			name:  "woland only",
+			input: "woland\n",
+			want: []monitoredWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+		{
+			name:  "babytalk only",
+			input: "babytalk\n",
+			want: []monitoredWindow{
+				{busName: "woland", windowName: "babytalk", isWoland: true},
+			},
+		},
+		{
+			name:  "no monitored windows",
+			input: "control\nlogs\n",
+			want:  nil,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseAgentWindows(tt.input)
+			got := parseMonitoredWindows(tt.input)
 			if len(got) != len(tt.want) {
-				t.Fatalf("parseAgentWindows() returned %d results, want %d\n  got:  %v\n  want: %v",
+				t.Fatalf("parseMonitoredWindows() returned %d results, want %d\n  got:  %v\n  want: %v",
 					len(got), len(tt.want), got, tt.want)
 			}
 			for i := range got {
 				if got[i] != tt.want[i] {
-					t.Errorf("parseAgentWindows()[%d] = %q, want %q", i, got[i], tt.want[i])
+					t.Errorf("parseMonitoredWindows()[%d] = %+v, want %+v", i, got[i], tt.want[i])
 				}
 			}
 		})
@@ -690,12 +743,16 @@ func TestReadAgentLines_MissingFile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInjectionTargets(t *testing.T) {
-	agents := []string{"azazello", "behemoth", "koroviev"}
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+		{busName: "behemoth", windowName: "agent-behemoth"},
+		{busName: "koroviev", windowName: "agent-koroviev"},
+	}
 
 	tests := []struct {
 		name    string
 		msg     Message
-		want    []string
+		want    []injectionWindow
 		wantLen int
 	}{
 		{
@@ -705,17 +762,24 @@ func TestInjectionTargets(t *testing.T) {
 				Type: TypeChat,
 				Text: "hello",
 			},
-			want:    []string{"behemoth", "koroviev"},
+			want: []injectionWindow{
+				{busName: "behemoth", windowName: "agent-behemoth"},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
 			wantLen: 2,
 		},
 		{
-			name: "chat from non-agent includes all agents",
+			name: "chat from non-agent includes all",
 			msg: Message{
 				Name: "user",
 				Type: TypeUser,
 				Text: "status?",
 			},
-			want:    []string{"azazello", "behemoth", "koroviev"},
+			want: []injectionWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
 			wantLen: 3,
 		},
 		{
@@ -735,7 +799,10 @@ func TestInjectionTargets(t *testing.T) {
 				Type: TypeAction,
 				Text: "fixing CI",
 			},
-			want:    []string{"azazello", "koroviev"},
+			want: []injectionWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
 			wantLen: 2,
 		},
 		{
@@ -745,7 +812,10 @@ func TestInjectionTargets(t *testing.T) {
 				Type: TypeResult,
 				Text: "PR opened",
 			},
-			want:    []string{"azazello", "behemoth"},
+			want: []injectionWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
 			wantLen: 2,
 		},
 		{
@@ -755,50 +825,102 @@ func TestInjectionTargets(t *testing.T) {
 				Type: TypeChat,
 				Text: "who am I?",
 			},
-			want:    []string{"azazello", "behemoth", "koroviev"},
+			want: []injectionWindow{
+				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+				{busName: "koroviev", windowName: "agent-koroviev"},
+			},
 			wantLen: 3,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := injectionTargets(agents, tt.msg)
+			got := injectionTargets(windows, tt.msg)
 			if len(got) != tt.wantLen {
 				t.Fatalf("injectionTargets() returned %d results, want %d\n  got:  %v\n  want: %v",
 					len(got), tt.wantLen, got, tt.want)
 			}
-			for i, id := range got {
-				if id != tt.want[i] {
-					t.Errorf("injectionTargets()[%d] = %q, want %q", i, id, tt.want[i])
+			for i, w := range got {
+				if w != tt.want[i] {
+					t.Errorf("injectionTargets()[%d] = %+v, want %+v", i, w, tt.want[i])
 				}
 			}
 		})
 	}
 }
 
-func TestInjectionTargets_EmptyAgentList(t *testing.T) {
+func TestInjectionTargets_EmptyWindowList(t *testing.T) {
 	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
 	got := injectionTargets(nil, msg)
 	if len(got) != 0 {
-		t.Errorf("expected 0 targets with no agents, got %d", len(got))
+		t.Errorf("expected 0 targets with no windows, got %d", len(got))
 	}
 }
 
 func TestInjectionTargets_SingleAgent_IsSender(t *testing.T) {
-	agents := []string{"azazello"}
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+	}
 	msg := Message{Name: "azazello", Type: TypeChat, Text: "solo"}
-	got := injectionTargets(agents, msg)
+	got := injectionTargets(windows, msg)
 	if len(got) != 0 {
 		t.Errorf("expected 0 targets when single agent is sender, got %d: %v", len(got), got)
 	}
 }
 
 func TestInjectionTargets_SingleAgent_NotSender(t *testing.T) {
-	agents := []string{"azazello"}
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+	}
 	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
-	got := injectionTargets(agents, msg)
-	if len(got) != 1 || got[0] != "azazello" {
-		t.Errorf("expected [azazello], got %v", got)
+	got := injectionTargets(windows, msg)
+	if len(got) != 1 || got[0].busName != "azazello" {
+		t.Errorf("expected [{azazello agent-azazello}], got %v", got)
+	}
+}
+
+func TestInjectionTargets_WolandExcludedWhenSender(t *testing.T) {
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+		{busName: "woland", windowName: "woland"},
+		{busName: "behemoth", windowName: "agent-behemoth"},
+	}
+	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything"}
+	got := injectionTargets(windows, msg)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 targets (woland excluded), got %d: %v", len(got), got)
+	}
+	for _, w := range got {
+		if w.busName == "woland" {
+			t.Error("woland should be excluded when it is the sender")
+		}
+	}
+}
+
+func TestInjectionTargets_WolandIncludedWhenNotSender(t *testing.T) {
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+		{busName: "woland", windowName: "woland"},
+	}
+	msg := Message{Name: "azazello", Type: TypeChat, Text: "reporting in"}
+	got := injectionTargets(windows, msg)
+	if len(got) != 1 || got[0].busName != "woland" {
+		t.Errorf("expected woland as sole target, got %v", got)
+	}
+}
+
+func TestInjectionTargets_BabytalkExcludedWhenWolandSends(t *testing.T) {
+	// "babytalk" window has busName "woland", so it should be excluded
+	// when the sender is "woland".
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+		{busName: "woland", windowName: "babytalk"},
+	}
+	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything"}
+	got := injectionTargets(windows, msg)
+	if len(got) != 1 || got[0].busName != "azazello" {
+		t.Errorf("expected only azazello, got %v", got)
 	}
 }
 
@@ -1386,6 +1508,154 @@ func TestParseSessionLine_EdgeCases(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 12. claudeProjectDir edge cases
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Woland session file discovery
+// ---------------------------------------------------------------------------
+
+func TestFindWolandSessionFile_UsesMarker(t *testing.T) {
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// Create the session file the marker points to.
+	sessionFile := filepath.Join(dir, "woland-session.jsonl")
+	os.WriteFile(sessionFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write the marker.
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte(sessionFile+"\n"), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != sessionFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q", got, sessionFile)
+	}
+}
+
+func TestFindWolandSessionFile_MarkerMissing(t *testing.T) {
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// No marker file — should fall back to findAgentSessionFile.
+	// Create the Claude projects dir with a JSONL file.
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+	fallbackFile := filepath.Join(projDir, "fallback.jsonl")
+	os.WriteFile(fallbackFile, []byte(`{"type":"human"}`), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != fallbackFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (fallback)", got, fallbackFile)
+	}
+}
+
+func TestFindWolandSessionFile_MarkerPointsToMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// Marker points to a non-existent file.
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte("/nonexistent/session.jsonl"), 0o644)
+
+	// Create fallback.
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+	fallbackFile := filepath.Join(projDir, "fallback.jsonl")
+	os.WriteFile(fallbackFile, []byte(`{"type":"human"}`), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != fallbackFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (fallback)", got, fallbackFile)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Woland bus identity
+// ---------------------------------------------------------------------------
+
+func TestWolandMessagesUseBusNameWoland(t *testing.T) {
+	// Verify that messages from a Woland window use "woland" as the bus name,
+	// not "agent-woland" or "babytalk".
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "assistant",
+			UUID: "woland-msg-1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "I see everything"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	// Simulate reading as "woland" (the busName used for Woland windows).
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 bus message, got %d", len(recent))
+	}
+	if recent[0].Name != "woland" {
+		t.Errorf("message name = %q, want %q", recent[0].Name, "woland")
+	}
+	if recent[0].Text != "I see everything" {
+		t.Errorf("message text = %q, want %q", recent[0].Text, "I see everything")
+	}
+}
+
+func TestParseMonitoredWindows_WolandBusName(t *testing.T) {
+	// Both "woland" and "babytalk" windows should produce busName "woland".
+	input := "woland\nbabytalk\nagent-azazello\n"
+	got := parseMonitoredWindows(input)
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 windows, got %d: %v", len(got), got)
+	}
+	// woland window
+	if got[0].busName != "woland" {
+		t.Errorf("woland busName = %q, want %q", got[0].busName, "woland")
+	}
+	if got[0].windowName != "woland" {
+		t.Errorf("woland windowName = %q, want %q", got[0].windowName, "woland")
+	}
+	// babytalk window
+	if got[1].busName != "woland" {
+		t.Errorf("babytalk busName = %q, want %q", got[1].busName, "woland")
+	}
+	if got[1].windowName != "babytalk" {
+		t.Errorf("babytalk windowName = %q, want %q", got[1].windowName, "babytalk")
+	}
+	// agent window uses its ID, not "agent-azazello"
+	if got[2].busName != "azazello" {
+		t.Errorf("agent busName = %q, want %q", got[2].busName, "azazello")
+	}
+}
 
 func TestClaudeProjectDir_DotPaths(t *testing.T) {
 	dir := claudeProjectDir("/home/user/.hidden/path.v2")
