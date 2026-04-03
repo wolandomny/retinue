@@ -20,6 +20,11 @@ import (
 
 const agentWindowPrefix = "agent-"
 
+// busWatcherWindow is the tmux window name for the bus watcher daemon.
+// The bus watcher is auto-started when the first agent starts and auto-stopped
+// when the last agent stops.
+const busWatcherWindow = "bus-watcher"
+
 // agentWindowName returns the tmux window name for a standing agent.
 func agentWindowName(id string) string {
 	return agentWindowPrefix + id
@@ -131,6 +136,16 @@ func newAgentStartCmd() *cobra.Command {
 				return fmt.Errorf("agent %q is already running", agentID)
 			}
 
+			// Auto-start bus watcher if one isn't already running.
+			if shouldStartBusWatcher(ctx, mgr) {
+				bwCmd := busWatcherCommand(ws)
+				if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not start bus watcher: %v\n", err)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Bus watcher started.\n")
+				}
+			}
+
 			systemPrompt := buildAgentSystemPrompt(ws, agent)
 
 			model := agent.Model
@@ -170,20 +185,6 @@ func newAgentStartCmd() *cobra.Command {
 			if err := b.Append(bus.NewMessage("system", bus.TypeSystem, agent.Name+" has joined")); err != nil {
 				// Non-fatal: log but don't fail the start.
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write bus message: %v\n", err)
-			}
-
-			// Auto-start bus watcher if not already running.
-			hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
-			if !hasBus {
-				busCmd := fmt.Sprintf("retinue bus serve --workspace %s",
-					shell.Quote(ws.Path))
-				if err := mgr.CreateWindow(ctx, session.ApartmentSession,
-					session.BusWatcherWindow, ws.Path, busCmd); err != nil {
-					fmt.Fprintf(cmd.OutOrStdout(),
-						"Warning: could not start bus watcher: %v\n", err)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Bus watcher started.\n")
-				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Agent %q (%s) started.\n", agentID, agent.Name)
@@ -240,28 +241,11 @@ func newAgentStopCmd() *cobra.Command {
 			// Clean up the session marker file.
 			removeAgentSessionMarker(ws.Path, agentID)
 
-			// Check if any other agents are still running. If none, stop the bus watcher.
-			agents, _ := store.Load()
-			anyRunning := false
-			for _, a := range agents {
-				if a.ID == agentID {
-					continue // the one we just stopped
-				}
-				if !a.Enabled {
-					continue
-				}
-				wn := agentWindowName(a.ID)
-				running, _ := mgr.HasWindow(ctx, session.ApartmentSession, wn)
-				if running {
-					anyRunning = true
-					break
-				}
-			}
-
-			if !anyRunning {
-				hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
-				if hasBus {
-					mgr.KillWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
+			// Auto-stop bus watcher if no other agents are still running.
+			if shouldStopBusWatcher(ctx, mgr, store, agentID) {
+				if err := mgr.KillWindow(ctx, session.ApartmentSession, busWatcherWindow); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not stop bus watcher: %v\n", err)
+				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "Bus watcher stopped (no agents running).\n")
 				}
 			}
@@ -350,6 +334,50 @@ func writeAgentSessionMarker(aptPath, agentID string) {
 func removeAgentSessionMarker(aptPath, agentID string) {
 	markerPath := filepath.Join(aptPath, agentSessionMarkerName(agentID))
 	os.Remove(markerPath)
+}
+
+// shouldStartBusWatcher returns true if the bus-watcher window is not already
+// running in the apartment session. It accepts session.Manager so it can be
+// tested with session.FakeManager.
+func shouldStartBusWatcher(ctx context.Context, mgr session.Manager) bool {
+	has, err := mgr.HasWindow(ctx, session.ApartmentSession, busWatcherWindow)
+	if err != nil {
+		return false
+	}
+	return !has
+}
+
+// shouldStopBusWatcher returns true if no agent windows (other than the agent
+// identified by stoppedAgentID) are still running. It checks every enabled agent
+// in the store. It accepts session.Manager so it can be tested with FakeManager.
+func shouldStopBusWatcher(ctx context.Context, mgr session.Manager, store *standing.FileStore, stoppedAgentID string) bool {
+	agents, err := store.Load()
+	if err != nil {
+		return false
+	}
+	for _, a := range agents {
+		if a.ID == stoppedAgentID {
+			continue
+		}
+		if !a.Enabled {
+			continue
+		}
+		running, err := mgr.HasWindow(ctx, session.ApartmentSession, agentWindowName(a.ID))
+		if err == nil && running {
+			return false
+		}
+	}
+	return true
+}
+
+// busWatcherCommand returns the shell command used to run the bus watcher
+// in a tmux window.
+func busWatcherCommand(ws *workspace.Workspace) string {
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "retinue"
+	}
+	return bin + " bus serve --workspace " + shell.Quote(ws.Path)
 }
 
 // sendKickoff sends an initial message to a newly created agent window so that

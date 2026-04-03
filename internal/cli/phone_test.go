@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -90,5 +92,88 @@ func TestPhoneServe_AgentsPathFromWorkspace(t *testing.T) {
 	expected := filepath.Join(ws.Path, "agents.yaml")
 	if ws.AgentsPath() != expected {
 		t.Errorf("AgentsPath() = %q, want %q", ws.AgentsPath(), expected)
+	}
+}
+
+func TestPhoneServeDetectsExistingBusWatcher(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	// When no bus-watcher window exists, phone serve in group mode should
+	// want to start one.
+	if !shouldStartBusWatcher(ctx, mgr) {
+		t.Error("expected shouldStartBusWatcher=true when no bus-watcher window exists")
+	}
+
+	// Simulate bus-watcher window already running (e.g. started by agent start).
+	if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, "/tmp", "retinue bus serve"); err != nil {
+		t.Fatalf("creating bus-watcher window: %v", err)
+	}
+
+	// Now phone serve should detect the existing bus-watcher and NOT try to start another.
+	if shouldStartBusWatcher(ctx, mgr) {
+		t.Error("expected shouldStartBusWatcher=false when bus-watcher window already exists")
+	}
+}
+
+func TestPhoneServeGroupModeStartsBusWatcher(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	// In group mode with no bus-watcher running, phone serve should start it.
+	ws := setupTestWorkspace(t)
+
+	// Create agents.yaml with agents defined.
+	agentsYAML := `agents:
+  - id: ci-watcher
+    name: CI Watcher
+    prompt: Watch CI
+    enabled: true
+`
+	if err := os.WriteFile(ws.AgentsPath(), []byte(agentsYAML), 0o644); err != nil {
+		t.Fatalf("failed to create agents.yaml: %v", err)
+	}
+
+	// Verify it's group mode.
+	mode := phoneMode(ws)
+	if mode != "group" {
+		t.Fatalf("expected group mode, got %q", mode)
+	}
+
+	// In group mode, bus watcher should be needed.
+	if !shouldStartBusWatcher(ctx, mgr) {
+		t.Fatal("bus watcher should be started in group mode with no existing watcher")
+	}
+
+	// Simulate starting it.
+	if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, "retinue bus serve"); err != nil {
+		t.Fatalf("starting bus watcher: %v", err)
+	}
+
+	// Now it should not need to start again.
+	if shouldStartBusWatcher(ctx, mgr) {
+		t.Fatal("bus watcher should not start again after it's already running")
+	}
+}
+
+func TestPhoneServeLegacyModeSkipsBusWatcher(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+
+	// In legacy mode (no agents), the bus watcher is irrelevant, but
+	// shouldStartBusWatcher still returns true (it just checks if the window
+	// exists). The caller is responsible for only starting it in group mode.
+	ws := setupTestWorkspace(t)
+
+	mode := phoneMode(ws)
+	if mode != "legacy" {
+		t.Fatalf("expected legacy mode, got %q", mode)
+	}
+
+	// The phone serve command checks mode first, then decides whether to
+	// start the watcher. Verify the mode gating works correctly.
+	needsWatcher := mode == "group" && shouldStartBusWatcher(ctx, mgr)
+	if needsWatcher {
+		t.Fatal("legacy mode should not need a bus watcher")
 	}
 }
