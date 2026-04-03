@@ -28,6 +28,10 @@ const (
 	// agentStartupWindow is how far back from end-of-file we seek when first
 	// discovering an agent's session file (to drain for dedup, not forward).
 	agentStartupWindow = 4096
+
+	// watcherStaleness is how long the watcher tolerates no new content from a
+	// session file before attempting to re-discover via the marker file.
+	watcherStaleness = 30 * time.Second
 )
 
 // sessionMessage represents a JSONL line from Claude Code's session file.
@@ -277,11 +281,14 @@ func (w *Watcher) findWolandSessionFile() string {
 	if sessionPath == "" {
 		return w.findAgentSessionFile("woland")
 	}
-	// Verify the file exists.
-	if _, err := os.Stat(sessionPath); err != nil {
+	// Verify the file exists and log diagnostics.
+	info, err := os.Stat(sessionPath)
+	if err != nil {
 		w.logger.Printf(".woland-session marker points to missing file %q, falling back", sessionPath)
 		return w.findAgentSessionFile("woland")
 	}
+	w.logger.Printf("found .woland-session marker pointing to %s", filepath.Base(sessionPath))
+	w.logger.Printf("marker file modified %s ago", time.Since(info.ModTime()).Round(time.Second))
 	return sessionPath
 }
 
@@ -332,6 +339,8 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 	// Drain: parse existing lines for dedup but don't write to bus.
 	offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
 
+	lastNewContent := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -352,12 +361,45 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 			sessionFile = newest
 			offset = 0
 			partialLine = ""
+			lastNewContent = time.Now()
 			// Drain the new file.
 			offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
 			continue
 		}
 
+		prevOffset := offset
 		offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, false)
+
+		if offset != prevOffset {
+			lastNewContent = time.Now()
+		}
+
+		// Staleness detection: if no new content for watcherStaleness and the
+		// file's ModTime is also older than watcherStaleness, attempt to
+		// re-discover the session file via the marker.
+		if time.Since(lastNewContent) > watcherStaleness {
+			if info, err := os.Stat(sessionFile); err != nil || time.Since(info.ModTime()) > watcherStaleness {
+				w.logger.Printf("%q: session file %s appears stale (no new content for %s), re-discovering",
+					agentID, filepath.Base(sessionFile), time.Since(lastNewContent).Round(time.Second))
+				var rediscovered string
+				if isWoland {
+					rediscovered = w.findWolandSessionFile()
+				} else {
+					rediscovered = w.findAgentSessionFile(agentID)
+				}
+				if rediscovered != "" && rediscovered != sessionFile {
+					w.logger.Printf("%q: re-discovered session file %s", agentID, filepath.Base(rediscovered))
+					sessionFile = rediscovered
+					offset = 0
+					partialLine = ""
+					lastNewContent = time.Now()
+					offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
+				} else {
+					// Reset timer to avoid spamming re-discovery.
+					lastNewContent = time.Now()
+				}
+			}
+		}
 	}
 }
 

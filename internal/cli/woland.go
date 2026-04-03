@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,12 +82,20 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 		// Wait for Woland's new session file to appear instead of
 		// picking the newest file (which may belong to another agent).
 		writeSessionMarker(ws.Path, projDir, existingFiles)
+	} else {
+		// Window already exists — validate and refresh the marker so the
+		// bus watcher always tails the correct session file.
+		refreshSessionMarker(ws.Path)
 	}
 
 	return syscall.Exec(tmuxPath,
 		[]string{"tmux", "-L", socket, "attach-session", "-t", aptSession + ":" + windowName},
 		os.Environ())
 }
+
+// markerStaleness is the maximum age a session file's ModTime can have
+// before we consider the marker stale and re-discover the session file.
+const markerStaleness = 5 * time.Minute
 
 // writeSessionMarker waits for a new .jsonl session file to appear in the
 // Claude projects directory and writes its path to the .woland-session marker
@@ -100,6 +110,47 @@ func writeSessionMarker(aptPath, projDir string, existingFiles map[string]bool) 
 
 	markerPath := filepath.Join(aptPath, ".woland-session")
 	_ = os.WriteFile(markerPath, []byte(newFile), 0o644)
+	log.Printf("wrote .woland-session marker: %s", newFile)
+}
+
+// refreshSessionMarker validates the existing .woland-session marker and
+// refreshes it if the file it points to is stale or missing. This is called
+// when the Woland tmux window already exists (reconnect case) to ensure the
+// bus watcher tails the correct session file.
+func refreshSessionMarker(aptPath string) {
+	markerPath := filepath.Join(aptPath, ".woland-session")
+
+	// Read the current marker.
+	data, err := os.ReadFile(markerPath)
+	if err == nil {
+		sessionPath := strings.TrimSpace(string(data))
+		if sessionPath != "" {
+			info, statErr := os.Stat(sessionPath)
+			if statErr == nil {
+				age := time.Since(info.ModTime())
+				if age < markerStaleness {
+					// Marker points to a valid, recently-active file.
+					log.Printf("existing .woland-session marker valid (age: %s): %s", age.Round(time.Second), sessionPath)
+					return
+				}
+				log.Printf("existing .woland-session marker stale (age: %s): %s", age.Round(time.Second), sessionPath)
+			} else {
+				log.Printf("existing .woland-session marker points to missing file: %s", sessionPath)
+			}
+		}
+	}
+
+	// Marker is absent, empty, stale, or points to a missing file.
+	// Find the most recently modified .jsonl file as the best candidate.
+	projDir := session.ClaudeProjectDir(aptPath)
+	newest := session.NewestJSONLFile(projDir)
+	if newest == "" {
+		log.Printf("no .jsonl files found in %s, cannot refresh marker", projDir)
+		return
+	}
+
+	_ = os.WriteFile(markerPath, []byte(newest), 0o644)
+	log.Printf("refreshed .woland-session marker: %s", newest)
 }
 
 // loadPromptInputs loads the workspace tasks, config, and agents YAML needed for prompt building.
