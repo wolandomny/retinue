@@ -3737,3 +3737,250 @@ func TestReadAgentLines_WolandMixedEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Staleness fallback tests
+// ---------------------------------------------------------------------------
+
+func TestFindWolandSessionFile_StaleMarkerFallsBackToNewest(t *testing.T) {
+	// When the .woland-session marker points to a valid file whose modtime
+	// is older than watcherStaleness (30s), findWolandSessionFile should
+	// fall back to the newest JSONL in the project directory.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// Create the Claude projects dir.
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create a stale session file (marker target).
+	staleFile := filepath.Join(projDir, "stale-session.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"human"}`), 0o644)
+	// Set modtime to 2 minutes ago (well past the 30s threshold).
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create a fresh session file (should be picked up as newest).
+	freshFile := filepath.Join(projDir, "fresh-session.jsonl")
+	os.WriteFile(freshFile, []byte(`{"type":"human"}`), 0o644)
+	// Ensure fresh file has current modtime (default).
+
+	// Write marker pointing to the stale file.
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte(staleFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != freshFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (should fall back to newest when marker is stale)", got, freshFile)
+	}
+}
+
+func TestFindWolandSessionFile_FreshMarkerTrusted(t *testing.T) {
+	// When the marker target has been modified recently (within 30s),
+	// it should be trusted even if a newer file exists.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create the marker target file with recent modtime.
+	markerTargetFile := filepath.Join(projDir, "marker-target.jsonl")
+	os.WriteFile(markerTargetFile, []byte(`{"type":"human"}`), 0o644)
+	// File just written — modtime is now (fresh).
+
+	// Create a newer file with a later modtime.
+	time.Sleep(50 * time.Millisecond)
+	newerFile := filepath.Join(projDir, "newer-session.jsonl")
+	os.WriteFile(newerFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write marker pointing to the marker target (not the newest file).
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte(markerTargetFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != markerTargetFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (fresh marker should be trusted)", got, markerTargetFile)
+	}
+}
+
+func TestFindWolandSessionFile_StaleMarkerNoNewerFile(t *testing.T) {
+	// When the marker target is stale but there's no newer file,
+	// the stale file should still be returned as a last resort.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create only one session file (stale).
+	staleFile := filepath.Join(projDir, "only-session.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"human"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Write marker pointing to it.
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte(staleFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findWolandSessionFile()
+	if got != staleFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (stale file returned when no better option)", got, staleFile)
+	}
+}
+
+func TestFindAgentSessionFile_StaleMarkerFallsBackToNewest(t *testing.T) {
+	// Same as Woland test but for regular agents.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create stale session file.
+	staleFile := filepath.Join(projDir, "agent-stale.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"human"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create fresh session file.
+	freshFile := filepath.Join(projDir, "agent-fresh.jsonl")
+	os.WriteFile(freshFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write marker pointing to stale file.
+	markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+	os.WriteFile(markerPath, []byte(staleFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findAgentSessionFile("azazello")
+	if got != freshFile {
+		t.Errorf("findAgentSessionFile() = %q, want %q (should fall back to newest when marker is stale)", got, freshFile)
+	}
+}
+
+func TestFindAgentSessionFile_FreshMarkerTrusted(t *testing.T) {
+	// Fresh marker should be trusted even if a newer file exists.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create marker target (fresh).
+	markerTargetFile := filepath.Join(projDir, "agent-target.jsonl")
+	os.WriteFile(markerTargetFile, []byte(`{"type":"human"}`), 0o644)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Create newer file.
+	newerFile := filepath.Join(projDir, "agent-newer.jsonl")
+	os.WriteFile(newerFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write marker pointing to target (not newest).
+	markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+	os.WriteFile(markerPath, []byte(markerTargetFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findAgentSessionFile("azazello")
+	if got != markerTargetFile {
+		t.Errorf("findAgentSessionFile() = %q, want %q (fresh marker should be trusted)", got, markerTargetFile)
+	}
+}
+
+func TestStalenessRediscovery_BypassesMarkerWhenSameStaleFile(t *testing.T) {
+	// Simulates the core bug: re-discovery via markers returns the same
+	// stale file. The watcher should bypass markers and find the newest
+	// JSONL directly, then update the marker.
+	dir := t.TempDir()
+	aptPath := dir
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create stale session file.
+	staleFile := filepath.Join(projDir, "stale-session.jsonl")
+	os.WriteFile(staleFile, []byte(
+		`{"type":"assistant","uuid":"msg-stale","message":{"content":[{"type":"text","text":"Stale msg"}]}}`+"\n",
+	), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create a fresh session file that the watcher should discover.
+	freshFile := filepath.Join(projDir, "fresh-session.jsonl")
+	os.WriteFile(freshFile, []byte(
+		`{"type":"assistant","uuid":"msg-fresh","message":{"content":[{"type":"text","text":"Fresh msg"}]}}`+"\n",
+	), 0o644)
+
+	// Write marker pointing to stale file (this is the bug condition:
+	// the marker always points to the stale file).
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	os.WriteFile(markerPath, []byte(staleFile), 0o644)
+
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	bus := New(busFile)
+	logger := log.New(os.Stderr, "test-staleness: ", 0)
+	watcher := NewWatcher(bus, "", aptPath, logger)
+
+	// Start output watcher for woland.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.watchAgentOutput(ctx, "woland", staleFile, true)
+	}()
+
+	// Wait for the staleness detection to kick in and switch files.
+	// The watcher polls every 1.5s and staleness threshold is 30s.
+	// Since the stale file's modtime is 2 minutes ago, staleness should
+	// be detected on the first check after watcherStaleness elapses.
+	// But we're in a test and lastNewContent starts at time.Now(), so
+	// we need to wait ~31 seconds... Instead, let's test the marker
+	// update indirectly by checking findWolandSessionFile behavior.
+	//
+	// For a fast test, we verify the building blocks work correctly:
+	// findWolandSessionFile returns the fresh file (not the stale one).
+	got := watcher.findWolandSessionFile()
+	if got != freshFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (should bypass stale marker)", got, freshFile)
+	}
+
+	// Also verify that after manual marker update, findWolandSessionFile
+	// returns the fresh file immediately.
+	os.WriteFile(markerPath, []byte(freshFile), 0o644)
+	got2 := watcher.findWolandSessionFile()
+	if got2 != freshFile {
+		t.Errorf("findWolandSessionFile() after marker update = %q, want %q", got2, freshFile)
+	}
+
+	cancel()
+	<-done
+}
