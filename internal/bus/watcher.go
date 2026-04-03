@@ -32,6 +32,17 @@ const (
 	// watcherStaleness is how long the watcher tolerates no new content from a
 	// session file before attempting to re-discover via the marker file.
 	watcherStaleness = 30 * time.Second
+
+	// responseSuppressWindow is how long after an agent's message is injected
+	// into Woland before we suppress routing Woland's response back to that
+	// agent. This prevents the immediate bounce-back (Woland acknowledging
+	// an agent's message being routed back to the agent).
+	responseSuppressWindow = 10 * time.Second
+
+	// maxExchangesPerTurn is the maximum number of times Woland can route a
+	// message to a given agent between user messages. This is a safety net
+	// against infinite Woland↔Agent ping-pong loops.
+	maxExchangesPerTurn = 2
 )
 
 // sessionMessage represents a JSONL line from Claude Code's session file.
@@ -86,16 +97,34 @@ type Watcher struct {
 
 	mu       sync.Mutex
 	watchers map[string]*agentWatcher // windowName → watcher
+
+	// Loop prevention state (protected by mu).
+
+	// lastInjectedToWoland tracks when each agent's message was last injected
+	// into Woland's window. Used to suppress routing Woland's immediate
+	// acknowledgment back to the originating agent.
+	lastInjectedToWoland map[string]time.Time // agent busName → timestamp
+
+	// exchangeCount tracks how many times Woland has routed a message to each
+	// agent since the last user message. Capped at maxExchangesPerTurn.
+	exchangeCount map[string]int // agent busName → count
+
+	// timeNow is a function that returns the current time. It defaults to
+	// time.Now but can be overridden in tests.
+	timeNow func() time.Time
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
 func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher {
 	return &Watcher{
-		bus:        b,
-		tmuxSocket: tmuxSocket,
-		aptPath:    aptPath,
-		logger:     logger,
-		watchers:   make(map[string]*agentWatcher),
+		bus:                  b,
+		tmuxSocket:           tmuxSocket,
+		aptPath:              aptPath,
+		logger:               logger,
+		watchers:             make(map[string]*agentWatcher),
+		lastInjectedToWoland: make(map[string]time.Time),
+		exchangeCount:        make(map[string]int),
+		timeNow:              time.Now,
 	}
 }
 
@@ -572,7 +601,18 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	formatted := FormatForInjection(&msg)
 	escaped := shell.EscapeTmux(formatted)
 
+	now := w.timeNow()
+
 	w.mu.Lock()
+
+	// When a user message arrives, reset all exchange counts so that
+	// Woland can address agents again.
+	if msg.Type == TypeUser {
+		for k := range w.exchangeCount {
+			delete(w.exchangeCount, k)
+		}
+	}
+
 	windows := make([]injectionWindow, 0, len(w.watchers))
 	for _, aw := range w.watchers {
 		windows = append(windows, injectionWindow{
@@ -581,9 +621,52 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 			isWoland:   aw.isWoland,
 		})
 	}
-	w.mu.Unlock()
 
-	targets := injectionTargets(windows, msg)
+	// Compute base routing targets (pure function, no loop-prevention).
+	baseTargets := injectionTargets(windows, msg)
+
+	// Apply loop prevention: filter Woland→Agent routing through the
+	// suppression window and exchange limiter. User messages bypass all
+	// loop prevention entirely.
+	var targets []injectionWindow
+	for _, t := range baseTargets {
+		if t.isWoland {
+			// Hub rule: Woland always receives all messages.
+			// When injecting into Woland from a standing agent, record
+			// the timestamp for suppression window tracking.
+			if msg.Type != TypeUser && msg.Type != TypeSystem && msg.Name != "woland" {
+				w.lastInjectedToWoland[msg.Name] = now
+			}
+			targets = append(targets, t)
+			continue
+		}
+
+		// For agent targets: if this is a Woland→Agent route, check
+		// loop prevention. User messages bypass all checks.
+		if msg.Name == "woland" && msg.Type != TypeUser {
+			// Layer 1: suppression window.
+			if lastInj, ok := w.lastInjectedToWoland[t.busName]; ok {
+				if now.Sub(lastInj) < responseSuppressWindow {
+					w.logger.Printf("suppressing Woland→%s route: agent message injected %s ago (within %s window)",
+						t.busName, now.Sub(lastInj).Round(time.Millisecond), responseSuppressWindow)
+					continue
+				}
+			}
+
+			// Layer 2: exchange limiter.
+			if w.exchangeCount[t.busName] >= maxExchangesPerTurn {
+				w.logger.Printf("suppressing Woland→%s route: exchange limit reached (%d/%d)",
+					t.busName, w.exchangeCount[t.busName], maxExchangesPerTurn)
+				continue
+			}
+
+			// Routing allowed — increment exchange count.
+			w.exchangeCount[t.busName]++
+		}
+
+		targets = append(targets, t)
+	}
+	w.mu.Unlock()
 
 	if len(targets) > 0 {
 		names := make([]string, len(targets))

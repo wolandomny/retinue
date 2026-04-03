@@ -2666,3 +2666,434 @@ func TestWatcherDetectsStaleness(t *testing.T) {
 	// Stop the watcher.
 	watcher.stopAllWatchers()
 }
+
+// ---------------------------------------------------------------------------
+// Loop prevention: Woland↔Agent ping-pong suppression
+// ---------------------------------------------------------------------------
+
+// newTestWatcherWithTime creates a test watcher with a controllable time function.
+func newTestWatcherWithTime(t *testing.T, busDir string, nowFn func() time.Time) *Watcher {
+	t.Helper()
+	w := newTestWatcher(t, busDir)
+	w.timeNow = nowFn
+	return w
+}
+
+// setupWatcherWithAgents creates a watcher with fake agent watchers registered,
+// suitable for testing injectMessage loop prevention. The watcher has no real
+// tmux connection, so tmux send-keys will fail silently — that's fine, we're
+// testing routing decisions via the log output and state changes.
+func setupWatcherWithAgents(t *testing.T, agents []injectionWindow, nowFn func() time.Time) *Watcher {
+	t.Helper()
+	dir := t.TempDir()
+	w := newTestWatcherWithTime(t, dir, nowFn)
+
+	ctx := context.Background()
+	for _, a := range agents {
+		childCtx, childCancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		w.watchers[a.windowName] = &agentWatcher{
+			cancel:     childCancel,
+			done:       done,
+			busName:    a.busName,
+			windowName: a.windowName,
+			isWoland:   a.isWoland,
+		}
+		go func(c context.Context, d chan struct{}) {
+			defer close(d)
+			<-c.Done()
+		}(childCtx, done)
+	}
+	t.Cleanup(func() { w.stopAllWatchers() })
+	return w
+}
+
+func TestLoopPrevention_SuppressionWindow(t *testing.T) {
+	// Scenario: agent "tester" sends a joke → injected to woland (records timestamp).
+	// Woland responds mentioning "tester" within 10s → NOT routed to tester.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Step 1: Agent "tester" sends a message → injected to woland.
+	testerMsg := Message{
+		ID:        "t1",
+		Name:      "tester",
+		Timestamp: currentTime,
+		Type:      TypeChat,
+		Text:      "Here's a joke for you!",
+	}
+	w.injectMessage(ctx, testerMsg)
+
+	// Verify timestamp was recorded.
+	w.mu.Lock()
+	lastInj, ok := w.lastInjectedToWoland["tester"]
+	w.mu.Unlock()
+	if !ok {
+		t.Fatal("expected lastInjectedToWoland entry for 'tester'")
+	}
+	if lastInj != now {
+		t.Errorf("lastInjectedToWoland[tester] = %v, want %v", lastInj, now)
+	}
+
+	// Step 2: Woland responds mentioning "tester" 2 seconds later (within window).
+	currentTime = now.Add(2 * time.Second)
+	wolandMsg := Message{
+		ID:        "w1",
+		Name:      "woland",
+		Timestamp: currentTime,
+		Type:      TypeChat,
+		Text:      "Looks like Tester's warmed up with a good one!",
+	}
+	w.injectMessage(ctx, wolandMsg)
+
+	// Verify that the exchange count for tester was NOT incremented
+	// (message was suppressed by the window).
+	w.mu.Lock()
+	count := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if count != 0 {
+		t.Errorf("expected exchangeCount[tester] = 0 (suppressed), got %d", count)
+	}
+}
+
+func TestLoopPrevention_SuppressionWindowExpired(t *testing.T) {
+	// Woland can address agent after the suppression window expires.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Agent sends message → injected to woland.
+	testerMsg := Message{
+		ID:   "t1",
+		Name: "tester",
+		Type: TypeChat,
+		Text: "Here's a joke!",
+	}
+	w.injectMessage(ctx, testerMsg)
+
+	// Woland responds 15 seconds later (OUTSIDE the 10s window).
+	currentTime = now.Add(15 * time.Second)
+	wolandMsg := Message{
+		ID:   "w1",
+		Name: "woland",
+		Type: TypeChat,
+		Text: "Hey Tester, that was funny",
+	}
+	w.injectMessage(ctx, wolandMsg)
+
+	// The message SHOULD have been routed (exchange count incremented).
+	w.mu.Lock()
+	count := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected exchangeCount[tester] = 1 (routed after window expired), got %d", count)
+	}
+}
+
+func TestLoopPrevention_ExchangeLimit(t *testing.T) {
+	// Simulate 3+ Woland messages mentioning tester with no user message between.
+	// First 2 route, 3rd is suppressed.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Send 3 Woland messages mentioning tester, each well outside the
+	// suppression window (so only the exchange limiter can stop them).
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
+		msg := Message{
+			ID:   fmt.Sprintf("w%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Tester, do thing %d", i),
+		}
+		w.injectMessage(ctx, msg)
+	}
+
+	// Exchange count should be capped at maxExchangesPerTurn (2).
+	w.mu.Lock()
+	count := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if count != maxExchangesPerTurn {
+		t.Errorf("expected exchangeCount[tester] = %d (capped), got %d", maxExchangesPerTurn, count)
+	}
+}
+
+func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
+	// Hit exchange limit → user sends message → count resets → routing works again.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Exhaust the exchange limit (2 messages outside suppression window).
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
+		msg := Message{
+			ID:   fmt.Sprintf("w%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Tester, message %d", i),
+		}
+		w.injectMessage(ctx, msg)
+	}
+
+	w.mu.Lock()
+	countBefore := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countBefore != maxExchangesPerTurn {
+		t.Fatalf("expected exchange count at limit (%d), got %d", maxExchangesPerTurn, countBefore)
+	}
+
+	// User sends a message → resets exchange counts.
+	currentTime = now.Add(100 * time.Second)
+	userMsg := Message{
+		ID:   "u1",
+		Name: "user",
+		Type: TypeUser,
+		Text: "Hey everyone, what's up?",
+	}
+	w.injectMessage(ctx, userMsg)
+
+	w.mu.Lock()
+	countAfterReset := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countAfterReset != 0 {
+		t.Errorf("expected exchangeCount[tester] = 0 after user message, got %d", countAfterReset)
+	}
+
+	// Now Woland can route to tester again.
+	currentTime = now.Add(120 * time.Second)
+	wolandMsg := Message{
+		ID:   "w-after-reset",
+		Name: "woland",
+		Type: TypeChat,
+		Text: "Tester, try again please",
+	}
+	w.injectMessage(ctx, wolandMsg)
+
+	w.mu.Lock()
+	countAfterRoute := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countAfterRoute != 1 {
+		t.Errorf("expected exchangeCount[tester] = 1 after reset + new route, got %d", countAfterRoute)
+	}
+}
+
+func TestLoopPrevention_UserMessagesBypassAllPrevention(t *testing.T) {
+	// TypeUser messages mentioning an agent should always route, regardless
+	// of suppression window or exchange count.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Set up suppression state: pretend tester just sent a message.
+	w.mu.Lock()
+	w.lastInjectedToWoland["tester"] = now
+	// Also max out the exchange count.
+	w.exchangeCount["tester"] = maxExchangesPerTurn + 10
+	w.mu.Unlock()
+
+	// User message mentioning tester 1 second later (within suppression window,
+	// over exchange limit) → should still route to tester.
+	currentTime = now.Add(1 * time.Second)
+	userMsg := Message{
+		ID:   "u1",
+		Name: "user",
+		Type: TypeUser,
+		Text: "Tester, run the suite please",
+	}
+	w.injectMessage(ctx, userMsg)
+
+	// The user message should have reset the exchange count (it's a TypeUser).
+	// And the routing to tester should have happened via injectionTargets
+	// (TypeUser messages route based on simple substring match).
+	// Verify exchange count was reset by the user message.
+	w.mu.Lock()
+	count := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if count != 0 {
+		t.Errorf("expected exchangeCount[tester] = 0 (reset by user message), got %d", count)
+	}
+}
+
+func TestLoopPrevention_OnlySuppressesOriginatingAgent(t *testing.T) {
+	// When agent "tester" sends a message to Woland, the suppression window
+	// should only affect routing back to "tester", not to other agents.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+		{busName: "builder", windowName: "agent-builder"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Agent "tester" sends message → injected to woland.
+	testerMsg := Message{
+		ID:   "t1",
+		Name: "tester",
+		Type: TypeChat,
+		Text: "Tests passed!",
+	}
+	w.injectMessage(ctx, testerMsg)
+
+	// Woland responds mentioning both tester and builder within window.
+	currentTime = now.Add(2 * time.Second)
+	wolandMsg := Message{
+		ID:   "w1",
+		Name: "woland",
+		Type: TypeChat,
+		Text: "Great! Tester passed, Builder can deploy now",
+	}
+	w.injectMessage(ctx, wolandMsg)
+
+	// "tester" should be suppressed (within window), "builder" should route.
+	w.mu.Lock()
+	testerCount := w.exchangeCount["tester"]
+	builderCount := w.exchangeCount["builder"]
+	w.mu.Unlock()
+
+	if testerCount != 0 {
+		t.Errorf("expected tester suppressed (count 0), got %d", testerCount)
+	}
+	if builderCount != 1 {
+		t.Errorf("expected builder routed (count 1), got %d", builderCount)
+	}
+}
+
+func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
+	// Simulate the exact bug scenario from the issue:
+	// 1. Agent "tester" sends a joke → bus captures → injected to woland
+	// 2. Woland responds mentioning tester → should NOT route back to tester
+	// 3. Even if suppression window expires, exchange limit caps at 2
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Round 1: tester sends joke.
+	currentTime = now
+	w.injectMessage(ctx, Message{
+		ID: "t1", Name: "tester", Type: TypeChat,
+		Text: "Why did the chicken cross the road?",
+	})
+
+	// Round 2: Woland acknowledges (within suppression window) → suppressed.
+	currentTime = now.Add(3 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "w1", Name: "woland", Type: TypeChat,
+		Text: "Ha! Tester's got jokes today",
+	})
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != 0 {
+		t.Errorf("round 2: expected suppression, got count %d", w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+
+	// Simulate tester responding again (as if this got through somehow in
+	// a different timeline). Record new injection timestamp.
+	currentTime = now.Add(15 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "t2", Name: "tester", Type: TypeChat,
+		Text: "To get to the other side!",
+	})
+
+	// Woland responds after suppression window expires → routed (exchange 1).
+	currentTime = now.Add(30 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "w2", Name: "woland", Type: TypeChat,
+		Text: "Classic, Tester. Very classic.",
+	})
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != 1 {
+		t.Errorf("round 4: expected count 1, got %d", w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+
+	// Tester responds again, then Woland → exchange 2.
+	currentTime = now.Add(45 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "t3", Name: "tester", Type: TypeChat,
+		Text: "I've got more!",
+	})
+
+	currentTime = now.Add(60 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "w3", Name: "woland", Type: TypeChat,
+		Text: "Tester, please focus on work",
+	})
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != 2 {
+		t.Errorf("round 6: expected count 2 (limit), got %d", w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+
+	// Woland tries one more time → should be blocked by exchange limit.
+	currentTime = now.Add(75 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "w4", Name: "woland", Type: TypeChat,
+		Text: "Tester, seriously stop",
+	})
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != 2 {
+		t.Errorf("round 7: expected count still 2 (blocked), got %d", w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+
+	// User intervenes → resets everything.
+	currentTime = now.Add(90 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "u1", Name: "user", Type: TypeUser,
+		Text: "Tester, run the actual tests",
+	})
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != 0 {
+		t.Errorf("after user: expected count 0, got %d", w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+}
