@@ -605,13 +605,15 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 }
 
 // injectionTargets returns the subset of monitored windows that should
-// receive a given message. It uses smart routing:
+// receive a given message. It uses hub-and-spoke routing:
 //   - System messages are never injected.
 //   - The sender never receives its own message (echo prevention).
 //   - Woland (the hub/orchestrator) always receives all messages.
-//   - Standing agents only receive messages that mention their busName
-//     (case-insensitive substring match in the message text).
-//   - If no specific agent is mentioned, only Woland receives the message.
+//   - Standing agents only receive messages from the user or from Woland
+//     that mention their busName (case-insensitive substring match).
+//   - Agent-to-agent communication always goes through Woland (the hub),
+//     preventing echo loops where agent A mentions agent B, B responds
+//     mentioning A, and so on.
 func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
 	if msg.Type == TypeSystem {
 		return nil
@@ -630,9 +632,12 @@ func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow 
 			targets = append(targets, w)
 			continue
 		}
-		// Standing agents only receive messages mentioning their name.
-		if strings.Contains(textLower, strings.ToLower(w.busName)) {
-			targets = append(targets, w)
+		// Standing agents only receive messages from user or Woland
+		// that mention their name. Agent-to-agent goes through Woland.
+		if msg.Type == TypeUser || msg.Name == "woland" {
+			if strings.Contains(textLower, strings.ToLower(w.busName)) {
+				targets = append(targets, w)
+			}
 		}
 	}
 

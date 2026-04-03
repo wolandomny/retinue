@@ -822,13 +822,12 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name: "agent mentions another agent - mentioned agent and woland get it",
+			name: "agent mentions another agent - hub-and-spoke: woland only",
 			msg:  Message{Name: "behemoth", Type: TypeChat, Text: "I talked to Azazello about it"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
-				{busName: "azazello", windowName: "agent-azazello"},
 			},
-			wantLen: 2,
+			wantLen: 1,
 		},
 		{
 			name: "action from agent no mention - woland only",
@@ -1040,7 +1039,22 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			msg:     Message{Name: "behemoth", Type: TypeChat, Text: "I coordinated with Azazello on this"},
 			expected: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
-				{busName: "azazello", windowName: "agent-azazello"},
+			},
+		},
+		{
+			name:    "AgentMessageToWolandOnly",
+			windows: windows,
+			msg:     Message{Name: "azazello", Type: TypeChat, Text: "Behemoth and I finished the task"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+		{
+			name:    "WolandAddressesTester",
+			windows: append(windows, injectionWindow{busName: "tester", windowName: "agent-tester"}),
+			msg:     Message{Name: "woland", Type: TypeChat, Text: "Tester's joke was funny"},
+			expected: []injectionWindow{
+				{busName: "tester", windowName: "agent-tester"},
 			},
 		},
 		{
