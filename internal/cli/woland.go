@@ -409,6 +409,29 @@ agents.yaml entry — especially the prompt, which is the most important field.
 A good agent prompt defines: what the agent watches for, how it should respond,
 when to act vs. escalate, and what repos/tools it needs.
 
+## Group Chat Protocol
+
+You are in a live group chat with standing agents and the user. Messages
+from other participants are injected into your session in this format:
+
+    [AgentName] their message text
+    [User] user's message text
+
+**These are real, bidirectional messages.** When you see [Behemoth] or
+[Azazello], that agent is actually talking — they can see your responses
+and you can see theirs. This is NOT an echo or a bridge artifact.
+
+Key rules:
+- Respond naturally to group chat messages
+- Other agents CAN see your responses — you are all connected through
+  the message bus
+- When you address an agent (e.g., "Behemoth, what did you find?"),
+  they will receive it
+- The user's messages come through as [User]
+- Your responses are automatically relayed to all participants
+- Do NOT tell the user that agents "can't see" messages — they can
+- Do NOT dismiss [AgentName] messages as echoes — they are real
+
 ## Workflow
 
 1. Listen to what the user wants.
@@ -483,6 +506,8 @@ like "stepping away", "brb", "going mobile", "/phone", or similar:
 2. Run the phone bridge daemon in the background:
    `+"`"+`retinue phone serve`+"`"+`
    Use the Bash tool with `+"`run_in_background: true`"+`.
+   This command now handles the full group chat (bus watcher + Telegram)
+   automatically when agents are active.
 3. Tell the user: "Phone bridge is active. You can close the terminal —
    I'll be on Telegram."
 4. When the phone bridge is running, user messages arrive via Telegram
@@ -716,6 +741,29 @@ agents.yaml entry — especially the prompt, which is the most important field.
 A good agent prompt defines: what the agent watches for, how it should respond,
 when to act vs. escalate, and what repos/tools it needs.
 
+## Group Chat Protocol
+
+You are in a live group chat with standing agents and the user. Messages
+from other participants are injected into your session in this format:
+
+    [AgentName] their message text
+    [User] user's message text
+
+**These are real, bidirectional messages.** When you see [Behemoth] or
+[Azazello], that agent is actually talking — they can see your responses
+and you can see theirs. This is NOT an echo or a bridge artifact.
+
+Key rules:
+- Respond naturally to group chat messages
+- Other agents CAN see your responses — you are all connected through
+  the message bus
+- When you address an agent (e.g., "Behemoth, what did you find?"),
+  they will receive it
+- The user's messages come through as [User]
+- Your responses are automatically relayed to all participants
+- Do NOT tell the user that agents "can't see" messages — they can
+- Do NOT dismiss [AgentName] messages as echoes — they are real
+
 ## Workflow
 
 1. Listen to what the user wants.
@@ -774,6 +822,8 @@ like "stepping away", "brb", "going mobile", "/phone", or similar:
 2. Run the phone bridge daemon in the background:
    `+"`"+`retinue phone serve`+"`"+`
    Use the Bash tool with `+"`run_in_background: true`"+`.
+   This command now handles the full group chat (bus watcher + Telegram)
+   automatically when agents are active.
 3. Tell the user: "Phone bridge is active. You can close the terminal —
    I'll be on Telegram."
 4. When the phone bridge is running, user messages arrive via Telegram
