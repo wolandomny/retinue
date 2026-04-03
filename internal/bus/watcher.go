@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,18 @@ const (
 	// against infinite Woland↔Agent ping-pong loops.
 	maxExchangesPerTurn = 2
 )
+
+// injectedMessagePattern matches messages injected by the bus watcher via tmux
+// send-keys. These use the format "[Name] message text" as produced by
+// FormatForInjection in format.go. We must filter these out when propagating
+// "human" messages from Woland's session to avoid creating a feedback loop.
+var injectedMessagePattern = regexp.MustCompile(`^\[.+\] `)
+
+// isInjectedMessage returns true if the text looks like a bus-injected message
+// (matches the "[Name] text" format produced by FormatForInjection).
+func isInjectedMessage(text string) bool {
+	return injectedMessagePattern.MatchString(text)
+}
 
 // sessionMessage represents a JSONL line from Claude Code's session file.
 type sessionMessage struct {
@@ -366,7 +379,7 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 	}
 
 	// Drain: parse existing lines for dedup but don't write to bus.
-	offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
+	offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
 
 	lastNewContent := time.Now()
 
@@ -392,12 +405,12 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 			partialLine = ""
 			lastNewContent = time.Now()
 			// Drain the new file.
-			offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
+			offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
 			continue
 		}
 
 		prevOffset := offset
-		offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, false)
+		offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, false, isWoland)
 
 		if offset != prevOffset {
 			lastNewContent = time.Now()
@@ -422,7 +435,7 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 					offset = 0
 					partialLine = ""
 					lastNewContent = time.Now()
-					offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true)
+					offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
 				} else {
 					// Reset timer to avoid spamming re-discovery.
 					lastNewContent = time.Now()
@@ -468,8 +481,10 @@ func seekToLineStart(path string, offset int64) (int64, error) {
 }
 
 // readAgentLines reads new lines from the agent's session file and writes
-// extracted assistant messages to the bus (unless draining).
-func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offset int64, partialLine string, seen map[string]bool, draining bool) (int64, string) {
+// extracted assistant messages to the bus (unless draining). When isWoland
+// is true, genuine "human" messages (not bus-injected) are also propagated
+// to the bus as TypeUser, enabling exchange counter resets.
+func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offset int64, partialLine string, seen map[string]bool, draining bool, isWoland bool) (int64, string) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return offset, partialLine
@@ -529,7 +544,7 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 		default:
 		}
 
-		text, uuid, ok := parseSessionLine(line)
+		msgType, text, uuid, ok := parseSessionLineTyped(line)
 		if !ok {
 			continue
 		}
@@ -541,9 +556,27 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 			seen[uuid] = true
 		}
 
-		if text != "" && !draining {
+		if text == "" || draining {
+			continue
+		}
+
+		switch msgType {
+		case "assistant":
 			if err := w.bus.Append(NewMessage(agentID, TypeChat, text)); err != nil {
 				w.logger.Printf("error writing agent %q message to bus: %v", agentID, err)
+			}
+		case "human":
+			// Only propagate human messages from Woland's session.
+			// Agent "human" messages are bus-injected content, not real user input.
+			if !isWoland {
+				continue
+			}
+			// Filter out bus-injected messages (format: "[Name] text").
+			if isInjectedMessage(text) {
+				continue
+			}
+			if err := w.bus.Append(NewMessage("user", TypeUser, text)); err != nil {
+				w.logger.Printf("error writing user message from Woland session to bus: %v", err)
 			}
 		}
 	}
@@ -554,18 +587,26 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 // parseSessionLine parses a single JSONL line and extracts text from
 // assistant messages. Returns the concatenated text, UUID, and success.
 func parseSessionLine(line string) (text string, uuid string, ok bool) {
+	_, text, uuid, ok = parseSessionLineTyped(line)
+	return text, uuid, ok
+}
+
+// parseSessionLineTyped parses a single JSONL line and extracts the session
+// message type, text content, UUID, and success. It recognizes both "assistant"
+// and "human" message types. Other types return ok=true but empty fields.
+func parseSessionLineTyped(line string) (msgType string, text string, uuid string, ok bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	var msg sessionMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
-	if msg.Type != "assistant" {
-		return "", "", true // valid JSON but not an assistant message
+	if msg.Type != "assistant" && msg.Type != "human" {
+		return msg.Type, "", "", true // valid JSON but not a type we extract text from
 	}
 
 	var parts []string
@@ -576,10 +617,10 @@ func parseSessionLine(line string) (text string, uuid string, ok bool) {
 	}
 
 	if len(parts) == 0 {
-		return "", msg.UUID, true
+		return msg.Type, "", msg.UUID, true
 	}
 
-	return strings.Join(parts, "\n"), msg.UUID, true
+	return msg.Type, strings.Join(parts, "\n"), msg.UUID, true
 }
 
 // injectionWindow pairs a bus identity with its tmux window name for

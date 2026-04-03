@@ -141,10 +141,10 @@ func TestParseSessionLine(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:     "non-assistant message",
+			name:     "human message (now extracted)",
 			line:     `{"type":"human","uuid":"def-456","message":{"content":[{"type":"text","text":"User input"}]}}`,
-			wantText: "",
-			wantUUID: "",
+			wantText: "User input",
+			wantUUID: "def-456",
 			wantOK:   true,
 		},
 		{
@@ -423,7 +423,7 @@ func TestReadAgentLines_ExtractsAssistantText(t *testing.T) {
 	ctx := context.Background()
 
 	// Read with draining=false so messages go to the bus.
-	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	if partial != "" {
 		t.Errorf("expected empty partial line, got %q", partial)
@@ -493,7 +493,7 @@ func TestReadAgentLines_UUIDDedup(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -546,7 +546,7 @@ func TestReadAgentLines_Draining(t *testing.T) {
 	ctx := context.Background()
 
 	// Read with draining=true — messages should populate seen but NOT go to bus.
-	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, true)
+	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, true, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -597,7 +597,7 @@ func TestReadAgentLines_PartialLine(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	// Only the first message should be processed.
 	recent, err := w.bus.ReadRecent(100)
@@ -625,7 +625,7 @@ func TestReadAgentLines_PartialLine(t *testing.T) {
 	f.Close()
 
 	// Read again, continuing with partial.
-	_, partial2 := w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false)
+	_, partial2 := w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false, false)
 
 	if partial2 != "" {
 		t.Errorf("expected empty partial after completing line, got %q", partial2)
@@ -662,7 +662,7 @@ func TestReadAgentLines_HandlesTruncation(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	offset, _ := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, _ := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	// Truncate the file (simulate Claude session restart).
 	newMsg := sessionMessage{
@@ -675,7 +675,7 @@ func TestReadAgentLines_HandlesTruncation(t *testing.T) {
 	writeJSONL(t, sessionPath, []sessionMessage{newMsg})
 
 	// The new file is shorter than our offset, so readAgentLines should reset.
-	_, _ = w.readAgentLines(ctx, "test-agent", sessionPath, offset, "", seen, false)
+	_, _ = w.readAgentLines(ctx, "test-agent", sessionPath, offset, "", seen, false, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -702,7 +702,7 @@ func TestReadAgentLines_EmptyFile(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	if offset != 0 {
 		t.Errorf("expected offset 0 for empty file, got %d", offset)
@@ -728,7 +728,7 @@ func TestReadAgentLines_MissingFile(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	if offset != 0 {
 		t.Errorf("expected offset 0 for missing file, got %d", offset)
@@ -1521,7 +1521,7 @@ func TestReadAgentLines_IncrementalReads(t *testing.T) {
 	ctx := context.Background()
 
 	// First read.
-	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	offset, partial := w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	recent, _ := w.bus.ReadRecent(100)
 	if len(recent) != 1 {
@@ -1542,7 +1542,7 @@ func TestReadAgentLines_IncrementalReads(t *testing.T) {
 	f.Close()
 
 	// Second read picks up only the new message.
-	offset, partial = w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false)
+	offset, partial = w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false, false)
 	_ = offset
 
 	recent, _ = w.bus.ReadRecent(100)
@@ -1611,7 +1611,7 @@ func TestReadAgentLines_MixedMessageTypes(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -1653,7 +1653,7 @@ func TestReadAgentLines_MalformedLines(t *testing.T) {
 	seen := make(map[string]bool)
 	ctx := context.Background()
 
-	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false)
+	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -1881,7 +1881,7 @@ func TestWolandMessagesUseBusNameWoland(t *testing.T) {
 	ctx := context.Background()
 
 	// Simulate reading as "woland" (the busName used for Woland windows).
-	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false)
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false, false)
 
 	recent, err := w.bus.ReadRecent(100)
 	if err != nil {
@@ -2108,9 +2108,9 @@ func TestMultiAgentSessionAttribution(t *testing.T) {
 		seenA := make(map[string]bool)
 		seenB := make(map[string]bool)
 
-		localW.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
-		localW.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
-		localW.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+		localW.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false, false)
+		localW.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false, false)
+		localW.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false, false)
 
 		recent, err := b.ReadRecent(100)
 		if err != nil {
@@ -2435,9 +2435,9 @@ func TestMultiAgentBusFlow(t *testing.T) {
 	seenA := make(map[string]bool)
 	seenB := make(map[string]bool)
 
-	w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
-	w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
-	w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+	w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false, false)
+	w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false, false)
+	w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false, false)
 
 	// Verify all messages are present on the bus.
 	recent, err := b.ReadRecent(100)
@@ -2496,9 +2496,9 @@ func TestMultiAgentBusFlow(t *testing.T) {
 		// Reading the same files again with the same seen maps should
 		// produce no new bus messages.
 		countBefore := len(recent)
-		w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
-		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
-		w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+		w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false, false)
+		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false, false)
+		w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false, false)
 
 		afterReread, err := b.ReadRecent(100)
 		if err != nil {
@@ -2549,7 +2549,7 @@ func TestMultiAgentBusFlow(t *testing.T) {
 		// Read from a point after the previous content. We need to find
 		// the offset that covers only the new line. For simplicity, re-read
 		// from 0 with the existing seen map — only new UUIDs will be emitted.
-		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
+		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false, false)
 		_ = info
 
 		afterIncr, err := b.ReadRecent(100)
@@ -3096,4 +3096,644 @@ func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
 		t.Errorf("after user: expected count 0, got %d", w.exchangeCount["tester"])
 	}
 	w.mu.Unlock()
+}
+
+// ===========================================================================
+// Woland user input propagation tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// isInjectedMessage
+// ---------------------------------------------------------------------------
+
+func TestIsInjectedMessage(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"[User] what's the status?", true},
+		{"[Azazello] CI is green", true},
+		{"[System] agent joined", true},
+		{"[Behemoth] I fixed the build", true},
+		{"Hello, how are you?", false},
+		{"Please check the logs", false},
+		{"[] empty brackets", false},           // no name inside brackets
+		{"[A] single char name", true},         // minimal valid format
+		{"not [bracketed] at start", false},     // brackets not at start
+		{"", false},                             // empty string
+		{"[Name]no space after bracket", false}, // missing space after ]
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := isInjectedMessage(tt.text)
+			if got != tt.want {
+				t.Errorf("isInjectedMessage(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseSessionLineTyped
+// ---------------------------------------------------------------------------
+
+func TestParseSessionLineTyped(t *testing.T) {
+	tests := []struct {
+		name     string
+		line     string
+		wantType string
+		wantText string
+		wantUUID string
+		wantOK   bool
+	}{
+		{
+			name:     "assistant message",
+			line:     `{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Hello"}]}}`,
+			wantType: "assistant",
+			wantText: "Hello",
+			wantUUID: "a1",
+			wantOK:   true,
+		},
+		{
+			name:     "human message",
+			line:     `{"type":"human","uuid":"h1","message":{"content":[{"type":"text","text":"Hi there"}]}}`,
+			wantType: "human",
+			wantText: "Hi there",
+			wantUUID: "h1",
+			wantOK:   true,
+		},
+		{
+			name:     "system message (no text extracted)",
+			line:     `{"type":"system","uuid":"s1","message":{"content":[{"type":"text","text":"init"}]}}`,
+			wantType: "system",
+			wantText: "",
+			wantUUID: "",
+			wantOK:   true,
+		},
+		{
+			name:     "tool_result (no text extracted)",
+			line:     `{"type":"tool_result","uuid":"t1","message":{"content":[{"type":"text","text":"result"}]}}`,
+			wantType: "tool_result",
+			wantText: "",
+			wantUUID: "",
+			wantOK:   true,
+		},
+		{
+			name:     "empty line",
+			line:     "",
+			wantType: "",
+			wantText: "",
+			wantUUID: "",
+			wantOK:   false,
+		},
+		{
+			name:     "invalid JSON",
+			line:     "not json",
+			wantType: "",
+			wantText: "",
+			wantUUID: "",
+			wantOK:   false,
+		},
+		{
+			name:     "human message with multiple text blocks",
+			line:     `{"type":"human","uuid":"h2","message":{"content":[{"type":"text","text":"part one"},{"type":"text","text":"part two"}]}}`,
+			wantType: "human",
+			wantText: "part one\npart two",
+			wantUUID: "h2",
+			wantOK:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgType, text, uuid, ok := parseSessionLineTyped(tt.line)
+			if ok != tt.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if msgType != tt.wantType {
+				t.Errorf("msgType = %q, want %q", msgType, tt.wantType)
+			}
+			if text != tt.wantText {
+				t.Errorf("text = %q, want %q", text, tt.wantText)
+			}
+			if uuid != tt.wantUUID {
+				t.Errorf("uuid = %q, want %q", uuid, tt.wantUUID)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Woland human messages → bus as TypeUser
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_WolandHumanMessages_PropagatedAsBusUser(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "assistant",
+			UUID: "a1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Hello from Woland"},
+			}},
+		},
+		{
+			Type: "human",
+			UUID: "h1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "What is the build status?"},
+			}},
+		},
+		{
+			Type: "assistant",
+			UUID: "a2",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Build is green"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	// isWoland=true — human messages should propagate as TypeUser.
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false, true)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have 3 messages: 2 assistant (TypeChat) + 1 human (TypeUser).
+	if len(recent) != 3 {
+		t.Fatalf("expected 3 bus messages, got %d", len(recent))
+	}
+
+	// First: assistant → TypeChat from woland.
+	if recent[0].Type != TypeChat {
+		t.Errorf("msg[0].Type = %q, want %q", recent[0].Type, TypeChat)
+	}
+	if recent[0].Name != "woland" {
+		t.Errorf("msg[0].Name = %q, want %q", recent[0].Name, "woland")
+	}
+	if recent[0].Text != "Hello from Woland" {
+		t.Errorf("msg[0].Text = %q, want %q", recent[0].Text, "Hello from Woland")
+	}
+
+	// Second: human → TypeUser from "user".
+	if recent[1].Type != TypeUser {
+		t.Errorf("msg[1].Type = %q, want %q", recent[1].Type, TypeUser)
+	}
+	if recent[1].Name != "user" {
+		t.Errorf("msg[1].Name = %q, want %q", recent[1].Name, "user")
+	}
+	if recent[1].Text != "What is the build status?" {
+		t.Errorf("msg[1].Text = %q, want %q", recent[1].Text, "What is the build status?")
+	}
+
+	// Third: assistant → TypeChat from woland.
+	if recent[2].Type != TypeChat {
+		t.Errorf("msg[2].Type = %q, want %q", recent[2].Type, TypeChat)
+	}
+	if recent[2].Name != "woland" {
+		t.Errorf("msg[2].Name = %q, want %q", recent[2].Name, "woland")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Injected messages are filtered out
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_WolandInjectedMessagesFiltered(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			// Genuine user input — should propagate.
+			Type: "human",
+			UUID: "h1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Check the CI logs please"},
+			}},
+		},
+		{
+			// Bus-injected from agent Azazello — should NOT propagate.
+			Type: "human",
+			UUID: "h2",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "[Azazello] CI is green, all tests pass"},
+			}},
+		},
+		{
+			// Bus-injected from User via bus — should NOT propagate.
+			Type: "human",
+			UUID: "h3",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "[User] what's the status?"},
+			}},
+		},
+		{
+			// Genuine user input — should propagate.
+			Type: "human",
+			UUID: "h4",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Thanks, looks good"},
+			}},
+		},
+		{
+			// Bus-injected from System — should NOT propagate.
+			Type: "human",
+			UUID: "h5",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "[System] agent joined"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false, true)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only 2 genuine user messages should have been written.
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 bus messages (filtered injected), got %d", len(recent))
+	}
+	if recent[0].Text != "Check the CI logs please" {
+		t.Errorf("msg[0].Text = %q, want %q", recent[0].Text, "Check the CI logs please")
+	}
+	if recent[0].Type != TypeUser {
+		t.Errorf("msg[0].Type = %q, want %q", recent[0].Type, TypeUser)
+	}
+	if recent[1].Text != "Thanks, looks good" {
+		t.Errorf("msg[1].Text = %q, want %q", recent[1].Text, "Thanks, looks good")
+	}
+	if recent[1].Type != TypeUser {
+		t.Errorf("msg[1].Type = %q, want %q", recent[1].Type, TypeUser)
+	}
+
+	// All UUIDs (including filtered ones) should be in the seen map.
+	for _, uuid := range []string{"h1", "h2", "h3", "h4", "h5"} {
+		if !seen[uuid] {
+			t.Errorf("expected UUID %q in seen map", uuid)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UUID deduplication for human messages
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_WolandHumanUUIDDedup(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "human",
+			UUID: "dup-human",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "First user message"},
+			}},
+		},
+		{
+			Type: "human",
+			UUID: "dup-human",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Duplicate (should be deduped)"},
+			}},
+		},
+		{
+			Type: "human",
+			UUID: "unique-human",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Second unique message"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false, true)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have only 2 messages (dup-human deduplicated).
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 bus messages (dedup), got %d", len(recent))
+	}
+	if recent[0].Text != "First user message" {
+		t.Errorf("msg[0].Text = %q, want %q", recent[0].Text, "First user message")
+	}
+	if recent[1].Text != "Second unique message" {
+		t.Errorf("msg[1].Text = %q, want %q", recent[1].Text, "Second unique message")
+	}
+
+	if !seen["dup-human"] || !seen["unique-human"] {
+		t.Error("expected both UUIDs in seen map")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Non-Woland agents do NOT propagate human messages
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_NonWolandHumanNotPropagated(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "assistant",
+			UUID: "a1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Agent output"},
+			}},
+		},
+		{
+			Type: "human",
+			UUID: "h1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "[Woland] Check the CI please"},
+			}},
+		},
+		{
+			Type: "human",
+			UUID: "h2",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Some other human message"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	// isWoland=false — human messages should NOT propagate.
+	w.readAgentLines(ctx, "azazello", sessionPath, 0, "", seen, false, false)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the assistant message should appear.
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 bus message (agent only), got %d", len(recent))
+	}
+	if recent[0].Text != "Agent output" {
+		t.Errorf("msg[0].Text = %q, want %q", recent[0].Text, "Agent output")
+	}
+	if recent[0].Type != TypeChat {
+		t.Errorf("msg[0].Type = %q, want %q", recent[0].Type, TypeChat)
+	}
+	if recent[0].Name != "azazello" {
+		t.Errorf("msg[0].Name = %q, want %q", recent[0].Name, "azazello")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Human messages during draining are NOT written but UUIDs are tracked
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_WolandHumanDraining(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "human",
+			UUID: "drain-h1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "User message during drain"},
+			}},
+		},
+		{
+			Type: "assistant",
+			UUID: "drain-a1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Assistant during drain"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	// Drain with isWoland=true — nothing should be written to bus.
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, true, true)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 0 {
+		t.Errorf("expected 0 bus messages during draining, got %d", len(recent))
+	}
+
+	// But seen map should be populated.
+	if !seen["drain-h1"] || !seen["drain-a1"] {
+		t.Error("expected both UUIDs in seen map during drain")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Exchange counter reset via propagated user messages
+// ---------------------------------------------------------------------------
+
+func TestLoopPrevention_WolandTerminalUserInputResetsExchangeCount(t *testing.T) {
+	// Scenario: Woland↔Agent routing hits the exchange limit, then the user
+	// types directly into Woland's terminal. The human message should propagate
+	// to the bus as TypeUser, which resets the exchange counter.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Exhaust the exchange limit.
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
+		msg := Message{
+			ID:   fmt.Sprintf("w%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Tester, do thing %d", i),
+		}
+		w.injectMessage(ctx, msg)
+	}
+
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != maxExchangesPerTurn {
+		t.Fatalf("expected exchange count at limit (%d), got %d", maxExchangesPerTurn, w.exchangeCount["tester"])
+	}
+	w.mu.Unlock()
+
+	// Simulate a user message arriving on the bus (as would happen when
+	// readAgentLines propagates a human message from Woland's session).
+	currentTime = now.Add(100 * time.Second)
+	userMsg := Message{
+		ID:   "user-from-terminal",
+		Name: "user",
+		Type: TypeUser,
+		Text: "Everyone, keep going",
+	}
+	w.injectMessage(ctx, userMsg)
+
+	// Exchange count should be reset.
+	w.mu.Lock()
+	countAfterReset := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countAfterReset != 0 {
+		t.Errorf("expected exchangeCount[tester] = 0 after user message from terminal, got %d", countAfterReset)
+	}
+
+	// Woland can now route to tester again.
+	currentTime = now.Add(120 * time.Second)
+	wolandMsg := Message{
+		ID:   "w-after-reset",
+		Name: "woland",
+		Type: TypeChat,
+		Text: "Tester, try again please",
+	}
+	w.injectMessage(ctx, wolandMsg)
+
+	w.mu.Lock()
+	countAfterRoute := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countAfterRoute != 1 {
+		t.Errorf("expected exchangeCount[tester] = 1 after reset + new route, got %d", countAfterRoute)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end: Woland session with mixed messages
+// ---------------------------------------------------------------------------
+
+func TestReadAgentLines_WolandMixedEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		// User types into Woland's terminal.
+		{
+			Type: "human",
+			UUID: "h1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Behemoth, check the garden"},
+			}},
+		},
+		// Woland responds.
+		{
+			Type: "assistant",
+			UUID: "a1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "I'll relay to Behemoth"},
+			}},
+		},
+		// Bus-injected message from Behemoth (should be filtered).
+		{
+			Type: "human",
+			UUID: "h2",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "[Behemoth] Garden is blooming nicely"},
+			}},
+		},
+		// Woland responds to Behemoth's update.
+		{
+			Type: "assistant",
+			UUID: "a2",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Behemoth reports the garden is fine"},
+			}},
+		},
+		// User types again.
+		{
+			Type: "human",
+			UUID: "h3",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "Great, thanks"},
+			}},
+		},
+		// Tool result (should be ignored entirely).
+		{
+			Type: "tool_result",
+			UUID: "t1",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "tool output"},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	w.readAgentLines(ctx, "woland", sessionPath, 0, "", seen, false, true)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expected bus messages:
+	// 1. h1: user → TypeUser "Behemoth, check the garden"
+	// 2. a1: woland → TypeChat "I'll relay to Behemoth"
+	// 3. (h2 filtered — injected "[Behemoth]...")
+	// 4. a2: woland → TypeChat "Behemoth reports the garden is fine"
+	// 5. h3: user → TypeUser "Great, thanks"
+	// 6. (t1 ignored — tool_result)
+	if len(recent) != 4 {
+		t.Fatalf("expected 4 bus messages, got %d", len(recent))
+	}
+
+	expected := []struct {
+		name    string
+		msgType MessageType
+		text    string
+	}{
+		{"user", TypeUser, "Behemoth, check the garden"},
+		{"woland", TypeChat, "I'll relay to Behemoth"},
+		{"woland", TypeChat, "Behemoth reports the garden is fine"},
+		{"user", TypeUser, "Great, thanks"},
+	}
+	for i, exp := range expected {
+		if recent[i].Name != exp.name {
+			t.Errorf("msg[%d].Name = %q, want %q", i, recent[i].Name, exp.name)
+		}
+		if recent[i].Type != exp.msgType {
+			t.Errorf("msg[%d].Type = %q, want %q", i, recent[i].Type, exp.msgType)
+		}
+		if recent[i].Text != exp.text {
+			t.Errorf("msg[%d].Text = %q, want %q", i, recent[i].Text, exp.text)
+		}
+	}
 }
