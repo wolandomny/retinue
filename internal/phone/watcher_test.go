@@ -40,13 +40,14 @@ func TestParseLine_MultipleTextBlocks(t *testing.T) {
 }
 
 func TestParseLine_NonAssistant(t *testing.T) {
-	line := `{"type":"human","uuid":"ghi-789","message":{"content":[{"type":"text","text":"user input"}]}}`
+	// System messages should still return empty text.
+	line := `{"type":"system","uuid":"ghi-789","message":{"content":[{"type":"text","text":"system prompt"}]}}`
 	text, _, ok := ParseLine(line)
 	if !ok {
 		t.Fatal("expected ok=true for valid JSON")
 	}
 	if text != "" {
-		t.Errorf("expected empty text for non-assistant message, got %q", text)
+		t.Errorf("expected empty text for system message, got %q", text)
 	}
 }
 
@@ -250,10 +251,10 @@ func TestWatcher_RealFile(t *testing.T) {
 	}
 	f.Close()
 
-	// Collect messages from the channel.
+	// Collect messages from the channel. Now includes the human message too.
 	var received []string
 	timeout := time.After(4 * time.Second)
-	for len(received) < 2 {
+	for len(received) < 3 {
 		select {
 		case msg := <-ch:
 			received = append(received, msg)
@@ -262,14 +263,17 @@ func TestWatcher_RealFile(t *testing.T) {
 		}
 	}
 
-	if len(received) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %v", len(received), received)
+	if len(received) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %v", len(received), received)
 	}
-	if received[0] != "Hi there!" {
-		t.Errorf("first message = %q, want %q", received[0], "Hi there!")
+	if received[0] != "hello" {
+		t.Errorf("first message = %q, want %q", received[0], "hello")
 	}
-	if received[1] != "How can I help?" {
-		t.Errorf("second message = %q, want %q", received[1], "How can I help?")
+	if received[1] != "Hi there!" {
+		t.Errorf("second message = %q, want %q", received[1], "Hi there!")
+	}
+	if received[2] != "How can I help?" {
+		t.Errorf("third message = %q, want %q", received[2], "How can I help?")
 	}
 }
 
@@ -1370,5 +1374,204 @@ func TestFindActiveSession_WolandMarkerSurvivesMultipleAgentFiles(t *testing.T) 
 		if got != wolandFile {
 			t.Errorf("poll %d: got %q, want %q (marker should hold)", i, got, wolandFile)
 		}
+	}
+}
+
+// --- User message parsing tests ---
+
+// TestParseLine_UserMessageStringContent verifies that user messages with
+// plain string content (the common format in Claude Code sessions) are
+// correctly parsed and their text is extracted.
+func TestParseLine_UserMessageStringContent(t *testing.T) {
+	line := `{"type":"user","uuid":"u1","message":{"role":"user","content":"tell me a joke"}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "u1" {
+		t.Errorf("expected uuid 'u1', got %q", uuid)
+	}
+	if text != "tell me a joke" {
+		t.Errorf("expected text 'tell me a joke', got %q", text)
+	}
+}
+
+// TestParseLine_UserMessageArrayContent verifies that user messages with
+// array content (containing text blocks) are correctly parsed.
+func TestParseLine_UserMessageArrayContent(t *testing.T) {
+	line := `{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"text","text":"hello from user"}]}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "u2" {
+		t.Errorf("expected uuid 'u2', got %q", uuid)
+	}
+	if text != "hello from user" {
+		t.Errorf("expected text 'hello from user', got %q", text)
+	}
+}
+
+// TestParseLine_UserMessageToolResultOnly verifies that user messages
+// containing only tool_result blocks (no text blocks) return empty text
+// and are NOT propagated.
+func TestParseLine_UserMessageToolResultOnly(t *testing.T) {
+	line := `{"type":"user","uuid":"u3","message":{"role":"user","content":[{"type":"tool_result","text":"tool output data"}]}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "u3" {
+		t.Errorf("expected uuid 'u3', got %q", uuid)
+	}
+	if text != "" {
+		t.Errorf("expected empty text for tool_result-only message, got %q", text)
+	}
+}
+
+// TestParseLine_UserMessageMixedContent verifies that user messages with
+// a mix of text and tool_result blocks only extract the text blocks.
+func TestParseLine_UserMessageMixedContent(t *testing.T) {
+	line := `{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","text":"internal data"},{"type":"text","text":"actual user text"}]}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "u4" {
+		t.Errorf("expected uuid 'u4', got %q", uuid)
+	}
+	if text != "actual user text" {
+		t.Errorf("expected 'actual user text', got %q", text)
+	}
+}
+
+// TestParseLine_HumanTypeAlsoWorks verifies that messages with type "human"
+// (the legacy format) are still processed correctly.
+func TestParseLine_HumanTypeAlsoWorks(t *testing.T) {
+	line := `{"type":"human","uuid":"h1","message":{"role":"user","content":"legacy human input"}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "h1" {
+		t.Errorf("expected uuid 'h1', got %q", uuid)
+	}
+	if text != "legacy human input" {
+		t.Errorf("expected 'legacy human input', got %q", text)
+	}
+}
+
+// TestParseLine_AssistantStillWorks verifies that assistant message parsing
+// is not broken by the user message changes.
+func TestParseLine_AssistantStillWorks(t *testing.T) {
+	line := `{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Hello!"},{"type":"tool_use","text":"ignored"},{"type":"text","text":"World!"}]}}`
+	text, uuid, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if uuid != "a1" {
+		t.Errorf("expected uuid 'a1', got %q", uuid)
+	}
+	if text != "Hello!\nWorld!" {
+		t.Errorf("expected 'Hello!\\nWorld!', got %q", text)
+	}
+}
+
+// TestParseLine_SystemTypeSkipped verifies that system messages are still
+// skipped (not processed for text extraction).
+func TestParseLine_SystemTypeSkipped(t *testing.T) {
+	line := `{"type":"system","uuid":"s1","message":{"content":[{"type":"text","text":"system prompt"}]}}`
+	text, _, ok := ParseLine(line)
+	if !ok {
+		t.Fatal("expected ok=true for valid JSON")
+	}
+	if text != "" {
+		t.Errorf("expected empty text for system message, got %q", text)
+	}
+}
+
+// TestWatcher_UserMessagesFlowThroughReadNewLines verifies that user messages
+// with string content are forwarded through readNewLines to the output channel.
+func TestWatcher_UserMessagesFlowThroughReadNewLines(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	content := strings.Join([]string{
+		`{"type":"user","uuid":"u1","message":{"role":"user","content":"hello Woland"}}`,
+		`{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Hi there!"}]}}`,
+		`{"type":"user","uuid":"u2","message":{"role":"user","content":"tester tell me a joke"}}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+	w.readNewLines(ctx, sessionFile, 0, out)
+	close(out)
+
+	var received []string
+	for msg := range out {
+		received = append(received, msg)
+	}
+
+	if len(received) != 3 {
+		t.Fatalf("expected 3 messages (2 user + 1 assistant), got %d: %v", len(received), received)
+	}
+	if received[0] != "hello Woland" {
+		t.Errorf("first message = %q, want %q", received[0], "hello Woland")
+	}
+	if received[1] != "Hi there!" {
+		t.Errorf("second message = %q, want %q", received[1], "Hi there!")
+	}
+	if received[2] != "tester tell me a joke" {
+		t.Errorf("third message = %q, want %q", received[2], "tester tell me a joke")
+	}
+}
+
+// TestWatcher_ToolResultOnlyNotPropagated verifies that user messages containing
+// only tool_result blocks (no text blocks) are NOT forwarded to the output channel.
+func TestWatcher_ToolResultOnlyNotPropagated(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+
+	content := strings.Join([]string{
+		`{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","text":"internal tool output"}]}}`,
+		`{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Real message"}]}}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		projectDir: dir,
+		logger:     log.New(os.Stderr, "test: ", 0),
+		seen:       make(map[string]bool),
+	}
+
+	out := make(chan string, 16)
+	ctx := context.Background()
+	w.readNewLines(ctx, sessionFile, 0, out)
+	close(out)
+
+	var received []string
+	for msg := range out {
+		received = append(received, msg)
+	}
+
+	// Only the assistant message should come through; tool_result-only user message is skipped.
+	if len(received) != 1 {
+		t.Fatalf("expected 1 message (tool_result should be filtered), got %d: %v", len(received), received)
+	}
+	if received[0] != "Real message" {
+		t.Errorf("got %q, want %q", received[0], "Real message")
 	}
 }

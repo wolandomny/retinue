@@ -44,8 +44,11 @@ type sessionMessage struct {
 }
 
 // messageContent represents the "message" field within a session message.
+// The Content field uses json.RawMessage because Claude Code session files
+// encode content as a plain string for user messages but as an array of
+// content blocks for assistant messages.
 type messageContent struct {
-	Content []contentBlock `json:"content"`
+	Content json.RawMessage `json:"content"`
 }
 
 // contentBlock represents a single content block within a message.
@@ -386,7 +389,7 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."
 			}
-			w.logger.Printf("new assistant message: %q", preview)
+			w.logger.Printf("new session message: %q", preview)
 
 			select {
 			case out <- text:
@@ -399,8 +402,9 @@ func (w *Watcher) readNewLines(ctx context.Context, path string, offset int64, o
 	return offset + bytesRead
 }
 
-// parseLine parses a single JSONL line and extracts text from assistant messages.
-// Returns the concatenated text, the UUID (if any), and whether parsing succeeded.
+// parseLine parses a single JSONL line and extracts text from assistant or
+// user messages. Returns the concatenated text, the UUID (if any), and whether
+// parsing succeeded.
 func (w *Watcher) parseLine(line string) (text string, uuid string, ok bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -412,12 +416,30 @@ func (w *Watcher) parseLine(line string) (text string, uuid string, ok bool) {
 		return "", "", false
 	}
 
-	if msg.Type != "assistant" {
-		return "", "", true // valid JSON but not an assistant message
+	// Only process assistant and user/human messages; skip system, result, etc.
+	if msg.Type != "assistant" && msg.Type != "user" && msg.Type != "human" {
+		return "", "", true // valid JSON but not a message we extract text from
+	}
+
+	if msg.Message.Content == nil {
+		return "", msg.UUID, true
+	}
+
+	// Try content as a plain string first (common for user messages).
+	var contentStr string
+	if err := json.Unmarshal(msg.Message.Content, &contentStr); err == nil {
+		return contentStr, msg.UUID, true
+	}
+
+	// Fall back to array of content blocks (assistant messages and some
+	// user messages with tool_result blocks).
+	var blocks []contentBlock
+	if err := json.Unmarshal(msg.Message.Content, &blocks); err != nil {
+		return "", msg.UUID, true
 	}
 
 	var parts []string
-	for _, block := range msg.Message.Content {
+	for _, block := range blocks {
 		if block.Type == "text" && block.Text != "" {
 			parts = append(parts, block.Text)
 		}
