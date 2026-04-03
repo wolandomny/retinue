@@ -744,6 +744,7 @@ func TestReadAgentLines_MissingFile(t *testing.T) {
 
 func TestInjectionTargets(t *testing.T) {
 	windows := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "azazello", windowName: "agent-azazello"},
 		{busName: "behemoth", windowName: "agent-behemoth"},
 		{busName: "koroviev", windowName: "agent-koroviev"},
@@ -756,62 +757,55 @@ func TestInjectionTargets(t *testing.T) {
 		wantLen int
 	}{
 		{
-			name: "chat from agent excludes sender",
-			msg: Message{
-				Name: "azazello",
-				Type: TypeChat,
-				Text: "hello",
-			},
-			want: []injectionWindow{
-				{busName: "behemoth", windowName: "agent-behemoth"},
-				{busName: "koroviev", windowName: "agent-koroviev"},
-			},
-			wantLen: 2,
-		},
-		{
-			name: "chat from non-agent includes all",
-			msg: Message{
-				Name: "user",
-				Type: TypeUser,
-				Text: "status?",
-			},
-			want: []injectionWindow{
-				{busName: "azazello", windowName: "agent-azazello"},
-				{busName: "behemoth", windowName: "agent-behemoth"},
-				{busName: "koroviev", windowName: "agent-koroviev"},
-			},
-			wantLen: 3,
-		},
-		{
-			name: "system message returns nil",
-			msg: Message{
-				Name: "system",
-				Type: TypeSystem,
-				Text: "agent joined",
-			},
+			name:    "system message returns nil",
+			msg:     Message{Name: "system", Type: TypeSystem, Text: "agent joined"},
 			want:    nil,
 			wantLen: 0,
 		},
 		{
-			name: "action from agent excludes sender",
-			msg: Message{
-				Name: "behemoth",
-				Type: TypeAction,
-				Text: "fixing CI",
-			},
+			name: "user addresses woland only - woland gets it as hub",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "Woland are you there?"},
 			want: []injectionWindow{
-				{busName: "azazello", windowName: "agent-azazello"},
-				{busName: "koroviev", windowName: "agent-koroviev"},
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "user addresses behemoth - woland and behemoth get it",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "behemoth", windowName: "agent-behemoth"},
 			},
 			wantLen: 2,
 		},
 		{
-			name: "result from agent excludes sender",
-			msg: Message{
-				Name: "koroviev",
-				Type: TypeResult,
-				Text: "PR opened",
+			name: "user no agent mentioned - woland only",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "How's everyone doing?"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
 			},
+			wantLen: 1,
+		},
+		{
+			name: "woland addresses behemoth - behemoth only",
+			msg:  Message{Name: "woland", Type: TypeChat, Text: "Behemoth, you are a good kitty"},
+			want: []injectionWindow{
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "agent sends no mention - woland only as hub",
+			msg:  Message{Name: "behemoth", Type: TypeChat, Text: "Done with the sweep"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "woland addresses two agents - both get it",
+			msg:  Message{Name: "woland", Type: TypeChat, Text: "Behemoth and Azazello, coordinate"},
 			want: []injectionWindow{
 				{busName: "azazello", windowName: "agent-azazello"},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -819,18 +813,46 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name: "message from unknown sender includes all",
-			msg: Message{
-				Name: "stranger",
-				Type: TypeChat,
-				Text: "who am I?",
-			},
+			name: "case insensitive matching",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "BEHEMOTH check status"},
 			want: []injectionWindow{
-				{busName: "azazello", windowName: "agent-azazello"},
+				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
-				{busName: "koroviev", windowName: "agent-koroviev"},
 			},
-			wantLen: 3,
+			wantLen: 2,
+		},
+		{
+			name: "agent mentions another agent - mentioned agent and woland get it",
+			msg:  Message{Name: "behemoth", Type: TypeChat, Text: "I talked to Azazello about it"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "azazello", windowName: "agent-azazello"},
+			},
+			wantLen: 2,
+		},
+		{
+			name: "action from agent no mention - woland only",
+			msg:  Message{Name: "behemoth", Type: TypeAction, Text: "fixing CI"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "result from agent no mention - woland only",
+			msg:  Message{Name: "koroviev", Type: TypeResult, Text: "PR opened"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "message from unknown sender no mention - woland only",
+			msg:  Message{Name: "stranger", Type: TypeChat, Text: "who am I?"},
+			want: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			wantLen: 1,
 		},
 	}
 
@@ -870,28 +892,50 @@ func TestInjectionTargets_SingleAgent_IsSender(t *testing.T) {
 }
 
 func TestInjectionTargets_SingleAgent_NotSender(t *testing.T) {
+	// Non-woland agent only receives messages mentioning their name.
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 	}
-	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
+	msg := Message{Name: "user", Type: TypeUser, Text: "hello azazello"}
 	got := injectionTargets(windows, msg)
 	if len(got) != 1 || got[0].busName != "azazello" {
 		t.Errorf("expected [{azazello agent-azazello}], got %v", got)
 	}
 }
 
+func TestInjectionTargets_SingleAgent_NotMentioned(t *testing.T) {
+	// Non-woland agent does NOT receive messages that don't mention them.
+	windows := []injectionWindow{
+		{busName: "azazello", windowName: "agent-azazello"},
+	}
+	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
+	got := injectionTargets(windows, msg)
+	if len(got) != 0 {
+		t.Errorf("expected 0 targets when agent is not mentioned, got %d: %v", len(got), got)
+	}
+}
+
 func TestInjectionTargets_WolandExcludedWhenSender(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
-		{busName: "woland", windowName: "woland"},
+		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "behemoth", windowName: "agent-behemoth"},
 	}
+	// Woland sends a message that doesn't mention any agent —
+	// no one receives it (woland excluded as sender, agents not mentioned).
 	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything"}
 	got := injectionTargets(windows, msg)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 targets (woland excluded), got %d: %v", len(got), got)
+	if len(got) != 0 {
+		t.Fatalf("expected 0 targets (woland sender, no agents mentioned), got %d: %v", len(got), got)
 	}
-	for _, w := range got {
+
+	// Woland sends a message mentioning azazello — only azazello receives.
+	msg2 := Message{Name: "woland", Type: TypeChat, Text: "Azazello, report status"}
+	got2 := injectionTargets(windows, msg2)
+	if len(got2) != 1 || got2[0].busName != "azazello" {
+		t.Fatalf("expected [azazello], got %v", got2)
+	}
+	for _, w := range got2 {
 		if w.busName == "woland" {
 			t.Error("woland should be excluded when it is the sender")
 		}
@@ -901,12 +945,12 @@ func TestInjectionTargets_WolandExcludedWhenSender(t *testing.T) {
 func TestInjectionTargets_WolandIncludedWhenNotSender(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
-		{busName: "woland", windowName: "woland"},
+		{busName: "woland", windowName: "woland", isWoland: true},
 	}
 	msg := Message{Name: "azazello", Type: TypeChat, Text: "reporting in"}
 	got := injectionTargets(windows, msg)
 	if len(got) != 1 || got[0].busName != "woland" {
-		t.Errorf("expected woland as sole target, got %v", got)
+		t.Errorf("expected woland as sole target (hub), got %v", got)
 	}
 }
 
@@ -915,9 +959,10 @@ func TestInjectionTargets_BabytalkExcludedWhenWolandSends(t *testing.T) {
 	// when the sender is "woland".
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
-		{busName: "woland", windowName: "babytalk"},
+		{busName: "woland", windowName: "babytalk", isWoland: true},
 	}
-	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything"}
+	// Woland mentions azazello → azazello gets it, babytalk (woland) excluded as sender.
+	msg := Message{Name: "woland", Type: TypeChat, Text: "Azazello, I see everything"}
 	got := injectionTargets(windows, msg)
 	if len(got) != 1 || got[0].busName != "azazello" {
 		t.Errorf("expected only azazello, got %v", got)
@@ -2016,11 +2061,13 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 
 	// Build injection windows for both Woland and Behemoth.
 	windows := []injectionWindow{
-		{busName: "woland", windowName: "woland"},
+		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "behemoth", windowName: "agent-behemoth"},
 	}
 
-	// Get injection targets for this message.
+	// Get injection targets for this message ("I see all" from woland).
+	// Woland is sender (excluded), "I see all" doesn't mention behemoth,
+	// so no targets with smart routing.
 	targets := injectionTargets(windows, *msg)
 
 	// Verify Woland is NOT in the targets (sender excluded).
@@ -2030,23 +2077,18 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		}
 	}
 
-	// Verify Behemoth IS in the targets.
-	found := false
-	for _, tgt := range targets {
-		if tgt.busName == "behemoth" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("behemoth should be in injection targets")
+	if len(targets) != 0 {
+		t.Errorf("expected 0 injection targets (no agent mentioned), got %d: %v", len(targets), targets)
 	}
 
-	if len(targets) != 1 {
-		t.Errorf("expected 1 injection target, got %d: %v", len(targets), targets)
+	// Woland sends a message mentioning Behemoth — Behemoth should receive.
+	msgMention := NewMessage("woland", TypeChat, "Behemoth, report status")
+	targetsMention := injectionTargets(windows, *msgMention)
+	if len(targetsMention) != 1 || targetsMention[0].busName != "behemoth" {
+		t.Errorf("expected [behemoth] when mentioned, got %v", targetsMention)
 	}
 
-	// Reverse: Behemoth sends, verify Woland receives and Behemoth does not.
+	// Reverse: Behemoth sends, verify Woland receives (hub) and Behemoth does not.
 	msgB := NewMessage("behemoth", TypeChat, "I am the gardener")
 	targetsB := injectionTargets(windows, *msgB)
 
@@ -2063,7 +2105,7 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		}
 	}
 	if !foundWoland {
-		t.Error("woland should be in injection targets when behemoth sends")
+		t.Error("woland should be in injection targets when behemoth sends (hub rule)")
 	}
 
 	// Verify echo prevention works with the correct attribution. If
@@ -2078,7 +2120,7 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		targets := injectionTargets(windows, *misattributed)
 		// With the misattribution, Behemoth would be excluded (it's listed
 		// as sender), but Woland would receive its own message — causing
-		// an echo loop.
+		// an echo loop. Woland receives because it's the hub.
 		for _, tgt := range targets {
 			if tgt.busName == "woland" {
 				// This is the echo that the bug would cause:
@@ -2328,10 +2370,11 @@ func TestMultiAgentBusFlow(t *testing.T) {
 	})
 
 	// Verify echo prevention: for each agent's messages, the injection
-	// targets should exclude that agent.
+	// targets should exclude that agent. With smart routing, targets
+	// depend on whether agent names are mentioned in the text.
 	t.Run("no_echo_injection", func(t *testing.T) {
 		windows := []injectionWindow{
-			{busName: "woland", windowName: "woland"},
+			{busName: "woland", windowName: "woland", isWoland: true},
 			{busName: "azazello", windowName: "agent-azazello"},
 			{busName: "behemoth", windowName: "agent-behemoth"},
 		}
@@ -2344,10 +2387,9 @@ func TestMultiAgentBusFlow(t *testing.T) {
 						m.Name, tgt.busName)
 				}
 			}
-			// Should target exactly 2 other agents.
-			if len(targets) != 2 {
-				t.Errorf("message from %q should target 2 others, got %d", m.Name, len(targets))
-			}
+			// With smart routing: messages from agents go to woland (hub)
+			// plus any mentioned agents. Messages from woland go only to
+			// mentioned agents. No one ever gets their own message.
 		}
 	})
 

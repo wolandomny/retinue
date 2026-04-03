@@ -558,6 +558,7 @@ func parseSessionLine(line string) (text string, uuid string, ok bool) {
 type injectionWindow struct {
 	busName    string // identity on the bus (used for sender filtering)
 	windowName string // tmux window name (used as tmux target)
+	isWoland   bool   // true for woland/babytalk windows (hub: receives all messages)
 }
 
 // injectMessage sends a bus message to all active monitored tmux sessions
@@ -577,11 +578,21 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 		windows = append(windows, injectionWindow{
 			busName:    aw.busName,
 			windowName: aw.windowName,
+			isWoland:   aw.isWoland,
 		})
 	}
 	w.mu.Unlock()
 
 	targets := injectionTargets(windows, msg)
+
+	if len(targets) > 0 {
+		names := make([]string, len(targets))
+		for i, t := range targets {
+			names[i] = t.busName
+		}
+		w.logger.Printf("routing message from %q to %d targets: %v", msg.Name, len(targets), names)
+	}
+
 	for _, t := range targets {
 		target := fmt.Sprintf("retinue:%s", t.windowName)
 		args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
@@ -594,19 +605,37 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 }
 
 // injectionTargets returns the subset of monitored windows that should
-// receive a given message. It filters out the sender (by bus name, to
-// avoid echo) and system messages.
+// receive a given message. It uses smart routing:
+//   - System messages are never injected.
+//   - The sender never receives its own message (echo prevention).
+//   - Woland (the hub/orchestrator) always receives all messages.
+//   - Standing agents only receive messages that mention their busName
+//     (case-insensitive substring match in the message text).
+//   - If no specific agent is mentioned, only Woland receives the message.
 func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
 	if msg.Type == TypeSystem {
 		return nil
 	}
+
+	textLower := strings.ToLower(msg.Text)
 	var targets []injectionWindow
+
 	for _, w := range windows {
+		// Never echo to sender.
 		if w.busName == msg.Name {
 			continue
 		}
-		targets = append(targets, w)
+		// Woland always sees everything (he's the orchestrator/hub).
+		if w.isWoland {
+			targets = append(targets, w)
+			continue
+		}
+		// Standing agents only receive messages mentioning their name.
+		if strings.Contains(textLower, strings.ToLower(w.busName)) {
+			targets = append(targets, w)
+		}
 	}
+
 	return targets
 }
 
