@@ -2559,3 +2559,96 @@ func TestMultiAgentBusFlow(t *testing.T) {
 		}
 	})
 }
+
+// TestWatcherDetectsStaleness tests that the watcher detects when a session file
+// becomes stale (no new activity for an extended period) and switches to a newer
+// session file when the marker is updated.
+func TestWatcherDetectsStaleness(t *testing.T) {
+	aptPath := t.TempDir()
+	projDir := claudeProjectDir(aptPath)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an initial session file.
+	oldSessionFile := filepath.Join(projDir, "old-session.jsonl")
+	if err := os.WriteFile(oldSessionFile, []byte(`{"type":"assistant","uuid":"msg-1","message":{"content":[{"type":"text","text":"Initial message"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a marker pointing to the old session file.
+	markerPath := filepath.Join(aptPath, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte(oldSessionFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a bus and watcher.
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	bus := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	watcher := NewWatcher(bus, "", aptPath, logger)
+
+	// Start monitoring a mock Woland window.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockWindow := monitoredWindow{
+		busName:    "woland",
+		windowName: "woland",
+		isWoland:   true,
+	}
+
+	// Start the watcher for the window.
+	watcher.mu.Lock()
+	watcher.startMonitoredWatcher(ctx, mockWindow)
+	watcher.mu.Unlock()
+
+	// Wait for the watcher to detect the initial session file.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify the watcher is using the old session file initially.
+	initialSessionFile := watcher.findWolandSessionFile()
+	if initialSessionFile != oldSessionFile {
+		t.Errorf("watcher initially using %q, want %q", initialSessionFile, oldSessionFile)
+	}
+
+	// Simulate staleness by creating a new session file and updating the marker.
+	// In a real scenario, this would happen when Woland detects the old session
+	// hasn't been active and refreshes to a newer session.
+	time.Sleep(100 * time.Millisecond)
+	newSessionFile := filepath.Join(projDir, "new-session.jsonl")
+	if err := os.WriteFile(newSessionFile, []byte(`{"type":"assistant","uuid":"msg-2","message":{"content":[{"type":"text","text":"New session message"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update the marker to point to the new session file (simulating marker refresh).
+	if err := os.WriteFile(markerPath, []byte(newSessionFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the watcher to detect the session file change.
+	// The watcher should detect the change during its polling cycle.
+	timeout := time.Now().Add(10 * time.Second)
+	var detectedNewSession bool
+	for time.Now().Before(timeout) {
+		currentSessionFile := watcher.findWolandSessionFile()
+		if currentSessionFile == newSessionFile {
+			detectedNewSession = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !detectedNewSession {
+		t.Fatal("watcher failed to detect session file change within timeout")
+	}
+
+	// Verify the watcher is now using the new session file.
+	finalSessionFile := watcher.findWolandSessionFile()
+	if finalSessionFile != newSessionFile {
+		t.Errorf("watcher using %q, want %q after marker update", finalSessionFile, newSessionFile)
+	}
+
+	// Stop the watcher.
+	watcher.stopAllWatchers()
+}

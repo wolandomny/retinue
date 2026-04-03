@@ -88,3 +88,36 @@ func WaitForNewJSONL(dir string, existingFiles map[string]bool, timeout time.Dur
 	}
 	return ""
 }
+
+// RefreshSessionMarker checks if a session marker file points to a valid,
+// recently-modified session file. If the marker is missing, stale (>5 minutes),
+// or points to a deleted file, it updates the marker to point to the newest
+// .jsonl file in the Claude projects directory.
+func RefreshSessionMarker(aptPath, markerName string) error {
+	markerPath := filepath.Join(aptPath, markerName)
+	projDir := ClaudeProjectDir(aptPath)
+
+	// Check if marker exists and points to a valid file
+	if data, err := os.ReadFile(markerPath); err == nil {
+		sessionPath := strings.TrimSpace(string(data))
+		if sessionPath != "" {
+			if info, err := os.Stat(sessionPath); err == nil {
+				// File exists - check if it's been modified recently (within 5 minutes)
+				if time.Since(info.ModTime()) <= 5*time.Minute {
+					return nil // Marker is valid and recent
+				}
+				// File is stale - continue to refresh logic
+			}
+			// File doesn't exist anymore - continue to refresh logic
+		}
+	}
+
+	// Marker is missing, stale, or points to deleted file - find newest .jsonl
+	newest := NewestJSONLFile(projDir)
+	if newest == "" {
+		return nil // No .jsonl files available
+	}
+
+	// Update marker to point to newest file
+	return os.WriteFile(markerPath, []byte(newest), 0o644)
+}

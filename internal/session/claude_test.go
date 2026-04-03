@@ -235,3 +235,181 @@ func TestWaitForNewJSONLExistingFilesIgnored(t *testing.T) {
 		t.Errorf("WaitForNewJSONL() = %q, want %q (should ignore modified existing files)", got, newFilePath)
 	}
 }
+
+// --- RefreshSessionMarker tests ---
+
+func TestRefreshSessionMarker_ValidMarker(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a recently modified session file
+	sessionFile := filepath.Join(projDir, "woland-session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create marker pointing to the session file
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte(sessionFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh should do nothing since the marker is valid and recent
+	if err := session.RefreshSessionMarker(aptDir, ".woland-session"); err != nil {
+		t.Fatalf("RefreshSessionMarker() failed: %v", err)
+	}
+
+	// Verify marker still points to the same file
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != sessionFile {
+		t.Errorf("marker = %q, want %q", string(data), sessionFile)
+	}
+}
+
+func TestRefreshSessionMarker_StaleMarker(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an old session file (>5 minutes old)
+	oldFile := filepath.Join(projDir, "old-session.jsonl")
+	if err := os.WriteFile(oldFile, []byte(`{"type":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate the file to >5 minutes ago
+	oldTime := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(oldFile, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create marker pointing to the old file
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte(oldFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait a bit to ensure time difference
+	time.Sleep(100 * time.Millisecond)
+
+	// Create a newer session file
+	newerFile := filepath.Join(projDir, "newer-session.jsonl")
+	if err := os.WriteFile(newerFile, []byte(`{"type":"newer"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh should update the marker to point to newer file
+	if err := session.RefreshSessionMarker(aptDir, ".woland-session"); err != nil {
+		t.Fatalf("RefreshSessionMarker() failed: %v", err)
+	}
+
+	// Verify marker now points to the newer file
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != newerFile {
+		t.Errorf("marker = %q, want %q", string(data), newerFile)
+	}
+}
+
+func TestRefreshSessionMarker_MissingMarker(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a session file but no marker
+	sessionFile := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh should create the marker
+	if err := session.RefreshSessionMarker(aptDir, ".woland-session"); err != nil {
+		t.Fatalf("RefreshSessionMarker() failed: %v", err)
+	}
+
+	// Verify marker was created and points to the session file
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != sessionFile {
+		t.Errorf("marker = %q, want %q", string(data), sessionFile)
+	}
+}
+
+func TestRefreshSessionMarker_MarkerPointsToDeletedFile(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create marker pointing to a nonexistent file
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	deletedFile := filepath.Join(projDir, "deleted-session.jsonl")
+	if err := os.WriteFile(markerPath, []byte(deletedFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a valid session file
+	validFile := filepath.Join(projDir, "valid-session.jsonl")
+	if err := os.WriteFile(validFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh should update the marker
+	if err := session.RefreshSessionMarker(aptDir, ".woland-session"); err != nil {
+		t.Fatalf("RefreshSessionMarker() failed: %v", err)
+	}
+
+	// Verify marker now points to the valid file
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != validFile {
+		t.Errorf("marker = %q, want %q", string(data), validFile)
+	}
+}
+
+func TestRefreshSessionMarker_NoJSONLFiles(t *testing.T) {
+	aptDir := t.TempDir()
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// No .jsonl files in projDir
+
+	// Create a stale marker
+	markerPath := filepath.Join(aptDir, ".woland-session")
+	if err := os.WriteFile(markerPath, []byte("/nonexistent/file.jsonl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh should succeed but marker should remain unchanged since no .jsonl files exist
+	if err := session.RefreshSessionMarker(aptDir, ".woland-session"); err != nil {
+		t.Fatalf("RefreshSessionMarker() failed: %v", err)
+	}
+
+	// Verify marker still exists (unchanged)
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != "/nonexistent/file.jsonl" {
+		t.Errorf("marker changed when no .jsonl files available: got %q", string(data))
+	}
+}
