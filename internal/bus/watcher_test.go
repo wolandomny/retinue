@@ -969,6 +969,133 @@ func TestInjectionTargets_BabytalkExcludedWhenWolandSends(t *testing.T) {
 	}
 }
 
+func TestInjectionTargets_SmartRouting(t *testing.T) {
+	// Standard window setup with woland, behemoth, and azazello.
+	windows := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "behemoth", windowName: "agent-behemoth"},
+		{busName: "azazello", windowName: "agent-azazello"},
+	}
+
+	tests := []struct {
+		name     string
+		windows  []injectionWindow
+		msg      Message
+		expected []injectionWindow
+	}{
+		{
+			name:    "UserAddressesWoland",
+			windows: windows,
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Woland are you there?"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+		{
+			name:    "UserAddressesBehemoth",
+			windows: windows,
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
+		},
+		{
+			name:    "UserAddressesBothAgents",
+			windows: windows,
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Behemoth and Azazello, coordinate"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+				{busName: "azazello", windowName: "agent-azazello"},
+			},
+		},
+		{
+			name:    "UserGeneralMessage",
+			windows: windows,
+			msg:     Message{Name: "user", Type: TypeUser, Text: "How is everyone doing?"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+		{
+			name:    "WolandAddressesBehemoth",
+			windows: windows,
+			msg:     Message{Name: "woland", Type: TypeChat, Text: "Behemoth, you did great"},
+			expected: []injectionWindow{
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
+		},
+		{
+			name:    "BehemothReports",
+			windows: windows,
+			msg:     Message{Name: "behemoth", Type: TypeChat, Text: "Done with the sweep"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+		{
+			name:    "BehemothMentionsAzazello",
+			windows: windows,
+			msg:     Message{Name: "behemoth", Type: TypeChat, Text: "I coordinated with Azazello on this"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "azazello", windowName: "agent-azazello"},
+			},
+		},
+		{
+			name:     "SystemMessage",
+			windows:  windows,
+			msg:      Message{Name: "system", Type: TypeSystem, Text: "agent joined"},
+			expected: nil,
+		},
+		{
+			name:    "CaseInsensitive",
+			windows: windows,
+			msg:     Message{Name: "user", Type: TypeUser, Text: "BEHEMOTH check this"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+				{busName: "behemoth", windowName: "agent-behemoth"},
+			},
+		},
+		{
+			name: "NoAgentsRunning",
+			windows: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+			msg: Message{Name: "user", Type: TypeUser, Text: "hello"},
+			expected: []injectionWindow{
+				{busName: "woland", windowName: "woland", isWoland: true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := injectionTargets(tt.windows, tt.msg)
+
+			// Check length first.
+			if len(got) != len(tt.expected) {
+				t.Errorf("injectionTargets() length = %d, expected %d\nGot: %v\nExpected: %v",
+					len(got), len(tt.expected), got, tt.expected)
+				return
+			}
+
+			// For nil case, both should be nil.
+			if len(tt.expected) == 0 && len(got) == 0 {
+				return
+			}
+
+			// Check each window.
+			for i, expected := range tt.expected {
+				if got[i] != expected {
+					t.Errorf("injectionTargets()[%d] = %+v, expected %+v", i, got[i], expected)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 4. Session file discovery (findNewestJSONL / findAgentSessionFile)
 // ---------------------------------------------------------------------------
