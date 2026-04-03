@@ -206,17 +206,18 @@ Requires:
 				b := bus.New(ws.BusPath())
 
 				// Only start bus watcher if not already running in tmux.
+				// Use the same tmux-window mechanism as agent.go so that both
+				// phone serve and agent start detect each other's bus watcher.
 				mgr := session.NewTmuxManager(tmuxSocket)
-				hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
-				if !hasBus {
-					busWatcher := bus.NewWatcher(b, tmuxSocket, ws.Path, logger)
-					go func() {
-						if err := busWatcher.Run(ctx); err != nil && ctx.Err() == nil {
-							logger.Printf("bus watcher error: %v", err)
-						}
-					}()
+				if shouldStartBusWatcher(ctx, mgr) {
+					bwCmd := busWatcherCommand(ws)
+					if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
+						logger.Printf("warning: could not start bus watcher: %v", err)
+					} else {
+						logger.Printf("bus watcher started as tmux window")
+					}
 				} else {
-					logger.Printf("bus watcher already running in tmux, skipping in-process watcher")
+					logger.Printf("bus watcher already running in tmux, skipping")
 				}
 
 				// Run telegram adapter on the bus (blocks).

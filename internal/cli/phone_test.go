@@ -156,6 +156,40 @@ func TestPhoneServeGroupModeStartsBusWatcher(t *testing.T) {
 	}
 }
 
+// TestPhoneAndAgentShareBusWatcherWindow verifies that phone serve and agent
+// start use the same tmux window name for the bus watcher, so whichever runs
+// first creates it and the second detects it and skips. This was the root cause
+// of the double-bus-watcher bug: phone used to start an in-process goroutine
+// that was invisible to agent's tmux window check.
+func TestPhoneAndAgentShareBusWatcherWindow(t *testing.T) {
+	ctx := context.Background()
+	mgr := session.NewFakeManager()
+	ws := setupTestWorkspace(t)
+
+	// Simulate phone serve creating the bus watcher as a tmux window (the fix).
+	bwCmd := busWatcherCommand(ws)
+	if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
+		t.Fatalf("phone creating bus watcher window: %v", err)
+	}
+
+	// Now agent start checks shouldStartBusWatcher — it must see the
+	// window phone created and NOT start a second one.
+	if shouldStartBusWatcher(ctx, mgr) {
+		t.Fatal("agent should detect bus watcher started by phone and not create a second one")
+	}
+
+	// Verify the reverse: agent creates it first, phone detects it.
+	mgr2 := session.NewFakeManager()
+	if err := mgr2.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
+		t.Fatalf("agent creating bus watcher window: %v", err)
+	}
+
+	// Phone's check (same function) should also detect it.
+	if shouldStartBusWatcher(ctx, mgr2) {
+		t.Fatal("phone should detect bus watcher started by agent and not create a second one")
+	}
+}
+
 func TestPhoneServeLegacyModeSkipsBusWatcher(t *testing.T) {
 	ctx := context.Background()
 	mgr := session.NewFakeManager()
