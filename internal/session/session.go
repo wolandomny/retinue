@@ -13,6 +13,9 @@ import (
 // tmux server. All worker windows live inside this single session.
 const ApartmentSession = "retinue"
 
+// BusWatcherWindow is the tmux window name for the auto-managed bus watcher.
+const BusWatcherWindow = "bus-watcher"
+
 // Manager manages lifecycle of named terminal sessions.
 type Manager interface {
 	// Create starts a new detached session running the given command in workDir.

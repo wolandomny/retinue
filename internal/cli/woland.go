@@ -360,8 +360,13 @@ agents:
 
 ### Agent Commands
 - `+"`retinue agent list`"+` — show all defined agents and running status
-- `+"`retinue agent start <id>`"+` — start a standing agent
-- `+"`retinue agent stop <id>`"+` — stop a running agent
+- `+"`retinue agent start <id>`"+` — start a standing agent (auto-starts the bus watcher)
+- `+"`retinue agent stop <id>`"+` — stop a running agent (auto-stops bus watcher when last agent stops)
+
+The bus watcher starts automatically with the first `+"`retinue agent start`"+`
+and stops when the last agent is stopped. There is no need to run
+`+"`retinue bus serve`"+` manually — the group chat is immediately live once
+any agent is started.
 
 When the user wants to create a new standing agent, help them write the
 agents.yaml entry — especially the prompt, which is the most important field.
@@ -692,8 +697,14 @@ agents:
 
 ### Agent Commands
 - `+"`retinue agent list`"+` — show all defined agents and running status
-- `+"`retinue agent start <id>`"+` — start a standing agent
-- `+"`retinue agent stop <id>`"+` — stop a running agent
+- `+"`retinue agent start <id>`"+` — start a standing agent (auto-starts the bus watcher)
+- `+"`retinue agent stop <id>`"+` — stop a running agent (auto-stops bus watcher when last agent stops)
+
+The bus watcher starts automatically with the first `+"`retinue agent start`"+`
+and stops when the last agent is stopped. There is no need to run
+`+"`retinue bus serve`"+` manually — the group chat is immediately live once
+any agent is started. For Telegram access, run `+"`retinue phone serve`"+`
+which detects the existing bus watcher and just adds the Telegram bridge.
 
 When the user wants to create a new standing agent, help them write the
 agents.yaml entry — especially the prompt, which is the most important field.

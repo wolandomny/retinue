@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/phone"
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/telegram"
 )
@@ -204,13 +205,19 @@ Requires:
 
 				b := bus.New(ws.BusPath())
 
-				// Start bus watcher in a background goroutine.
-				busWatcher := bus.NewWatcher(b, tmuxSocket, ws.Path, logger)
-				go func() {
-					if err := busWatcher.Run(ctx); err != nil && ctx.Err() == nil {
-						logger.Printf("bus watcher error: %v", err)
-					}
-				}()
+				// Only start bus watcher if not already running in tmux.
+				mgr := session.NewTmuxManager(tmuxSocket)
+				hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
+				if !hasBus {
+					busWatcher := bus.NewWatcher(b, tmuxSocket, ws.Path, logger)
+					go func() {
+						if err := busWatcher.Run(ctx); err != nil && ctx.Err() == nil {
+							logger.Printf("bus watcher error: %v", err)
+						}
+					}()
+				} else {
+					logger.Printf("bus watcher already running in tmux, skipping in-process watcher")
+				}
 
 				// Run telegram adapter on the bus (blocks).
 				adapter := bus.NewTelegramAdapter(b, bot, chatID, logger, cancel)

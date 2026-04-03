@@ -172,6 +172,20 @@ func newAgentStartCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write bus message: %v\n", err)
 			}
 
+			// Auto-start bus watcher if not already running.
+			hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
+			if !hasBus {
+				busCmd := fmt.Sprintf("retinue bus serve --workspace %s",
+					shell.Quote(ws.Path))
+				if err := mgr.CreateWindow(ctx, session.ApartmentSession,
+					session.BusWatcherWindow, ws.Path, busCmd); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(),
+						"Warning: could not start bus watcher: %v\n", err)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Bus watcher started.\n")
+				}
+			}
+
 			fmt.Fprintf(cmd.OutOrStdout(), "Agent %q (%s) started.\n", agentID, agent.Name)
 			return nil
 		},
@@ -225,6 +239,32 @@ func newAgentStopCmd() *cobra.Command {
 
 			// Clean up the session marker file.
 			removeAgentSessionMarker(ws.Path, agentID)
+
+			// Check if any other agents are still running. If none, stop the bus watcher.
+			agents, _ := store.Load()
+			anyRunning := false
+			for _, a := range agents {
+				if a.ID == agentID {
+					continue // the one we just stopped
+				}
+				if !a.Enabled {
+					continue
+				}
+				wn := agentWindowName(a.ID)
+				running, _ := mgr.HasWindow(ctx, session.ApartmentSession, wn)
+				if running {
+					anyRunning = true
+					break
+				}
+			}
+
+			if !anyRunning {
+				hasBus, _ := mgr.HasWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
+				if hasBus {
+					mgr.KillWindow(ctx, session.ApartmentSession, session.BusWatcherWindow)
+					fmt.Fprintf(cmd.OutOrStdout(), "Bus watcher stopped (no agents running).\n")
+				}
+			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Agent %q (%s) stopped.\n", agentID, agent.Name)
 			return nil
