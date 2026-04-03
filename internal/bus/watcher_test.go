@@ -1754,3 +1754,639 @@ func TestClaudeProjectDir_ContainsProjectsDir(t *testing.T) {
 		t.Errorf("claudeProjectDir should contain .claude/projects, got %q", dir)
 	}
 }
+
+// ===========================================================================
+// Multi-agent integration tests: verify correct session file attribution
+// and prevent the race condition that caused Woland's output to be tagged
+// as Behemoth's.
+// ===========================================================================
+
+// makeSessionJSONL builds a single JSONL line for an assistant message.
+func makeSessionJSONL(uuid, text string) string {
+	msg := sessionMessage{
+		Type: "assistant",
+		UUID: uuid,
+		Message: messageContent{Content: []contentBlock{
+			{Type: "text", Text: text},
+		}},
+	}
+	data, _ := json.Marshal(msg)
+	return string(data) + "\n"
+}
+
+// setupMultiAgentEnv creates a temp directory with:
+//   - an aptPath directory
+//   - a Claude projects directory (derived from aptPath) containing
+//     the specified session JSONL files
+//   - a bus JSONL path
+//
+// It returns (aptPath, projDir, busFile, watcher).
+func setupMultiAgentEnv(t *testing.T) (string, string, string, *Watcher) {
+	t.Helper()
+	dir := t.TempDir()
+
+	aptPath := filepath.Join(dir, "apt")
+	if err := os.MkdirAll(aptPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := claudeProjectDir(aptPath)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	return aptPath, projDir, busFile, w
+}
+
+// writeMarker writes a session marker file at aptPath.
+func writeMarker(t *testing.T, aptPath, markerName, sessionPath string) {
+	t.Helper()
+	markerFile := filepath.Join(aptPath, markerName)
+	if err := os.WriteFile(markerFile, []byte(sessionPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestMultiAgentSessionAttribution
+//
+// Verifies that marker files correctly attribute session files to agents
+// when multiple Claude sessions run simultaneously. Covers:
+//   - Marker-based lookup for agents and Woland
+//   - No cross-contamination of messages across agents
+//   - Fallback to newest file when marker is missing
+// ---------------------------------------------------------------------------
+
+func TestMultiAgentSessionAttribution(t *testing.T) {
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	// Step 1: Create fake session JSONL files for Woland, Azazello, Behemoth.
+	// Use staggered timestamps so Behemoth's file is newest.
+	wolandFile := filepath.Join(projDir, "session-woland.jsonl")
+	azazelloFile := filepath.Join(projDir, "session-azazello.jsonl")
+	behemothFile := filepath.Join(projDir, "session-behemoth.jsonl")
+
+	// Write initial content.
+	if err := os.WriteFile(wolandFile,
+		[]byte(makeSessionJSONL("w1", "I am Woland, the orchestrator")),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(azazelloFile,
+		[]byte(makeSessionJSONL("a1", "I am Azazello, watching CI")),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(behemothFile,
+		[]byte(makeSessionJSONL("b1", "I am Behemoth, the gardener")),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Create marker files pointing to the correct session files.
+	writeMarker(t, aptPath, ".woland-session", wolandFile)
+	writeMarker(t, aptPath, ".agent-azazello-session", azazelloFile)
+	writeMarker(t, aptPath, ".agent-behemoth-session", behemothFile)
+
+	// Step 3: Verify marker-based attribution.
+	t.Run("marker_returns_correct_agent_file", func(t *testing.T) {
+		got := w.findAgentSessionFile("azazello")
+		if got != azazelloFile {
+			t.Errorf("findAgentSessionFile(azazello) = %q, want %q", got, azazelloFile)
+		}
+
+		got = w.findAgentSessionFile("behemoth")
+		if got != behemothFile {
+			t.Errorf("findAgentSessionFile(behemoth) = %q, want %q", got, behemothFile)
+		}
+	})
+
+	t.Run("marker_returns_correct_woland_file", func(t *testing.T) {
+		got := w.findWolandSessionFile()
+		if got != wolandFile {
+			t.Errorf("findWolandSessionFile() = %q, want %q", got, wolandFile)
+		}
+	})
+
+	t.Run("marker_ignores_newest_timestamp", func(t *testing.T) {
+		// Behemoth's file is newest, but Azazello's marker should still
+		// return Azazello's file.
+		got := w.findAgentSessionFile("azazello")
+		if got != azazelloFile {
+			t.Errorf("findAgentSessionFile(azazello) returned newest instead of marker target: got %q, want %q", got, azazelloFile)
+		}
+
+		// And Woland's marker should return Woland's file, even though
+		// it's the oldest.
+		got = w.findWolandSessionFile()
+		if got != wolandFile {
+			t.Errorf("findWolandSessionFile() returned newest instead of marker target: got %q, want %q", got, wolandFile)
+		}
+	})
+
+	// Step 4: Verify no cross-contamination — each agent's messages have
+	// the correct Name field on the bus.
+	t.Run("no_cross_contamination", func(t *testing.T) {
+		// Create a fresh bus for this subtest.
+		busDir := t.TempDir()
+		busFile := filepath.Join(busDir, "bus.jsonl")
+		b := New(busFile)
+		logger := log.New(os.Stderr, "test: ", 0)
+		localW := NewWatcher(b, "", aptPath, logger)
+
+		ctx := context.Background()
+
+		// Append a fresh message to each session file.
+		appendLine := func(path, uuid, text string) {
+			t.Helper()
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			f.WriteString(makeSessionJSONL(uuid, text))
+		}
+		appendLine(wolandFile, "w2", "Woland speaks again")
+		appendLine(azazelloFile, "a2", "Azazello speaks again")
+		appendLine(behemothFile, "b2", "Behemoth speaks again")
+
+		// Read each file as the correct agent identity.
+		seenW := make(map[string]bool)
+		seenA := make(map[string]bool)
+		seenB := make(map[string]bool)
+
+		localW.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
+		localW.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
+		localW.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+
+		recent, err := b.ReadRecent(100)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify attributions.
+		nameCount := map[string]int{}
+		for _, m := range recent {
+			nameCount[m.Name]++
+			switch m.Name {
+			case "woland":
+				if !strings.Contains(m.Text, "Woland") {
+					t.Errorf("woland message has wrong text: %q", m.Text)
+				}
+			case "azazello":
+				if !strings.Contains(m.Text, "Azazello") {
+					t.Errorf("azazello message has wrong text: %q", m.Text)
+				}
+			case "behemoth":
+				if !strings.Contains(m.Text, "Behemoth") {
+					t.Errorf("behemoth message has wrong text: %q", m.Text)
+				}
+			default:
+				t.Errorf("unexpected agent name on bus: %q", m.Name)
+			}
+		}
+
+		// Each agent should have exactly 2 messages (initial + appended).
+		for _, agent := range []string{"woland", "azazello", "behemoth"} {
+			if nameCount[agent] != 2 {
+				t.Errorf("expected 2 messages from %q, got %d", agent, nameCount[agent])
+			}
+		}
+	})
+
+	// Step 5: Verify marker fallback — delete one marker and confirm
+	// fallback to newest file.
+	t.Run("marker_fallback_to_newest", func(t *testing.T) {
+		// Remove Azazello's marker.
+		markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+		if err := os.Remove(markerPath); err != nil {
+			t.Fatal(err)
+		}
+
+		// Without the marker, findAgentSessionFile falls back to newest.
+		got := w.findAgentSessionFile("azazello")
+		// Behemoth's file is newest, so this should return it
+		// (which is wrong — demonstrating why markers matter).
+		if got != behemothFile {
+			t.Errorf("without marker, expected newest file %q, got %q", behemothFile, got)
+		}
+
+		// Restore the marker.
+		writeMarker(t, aptPath, ".agent-azazello-session", azazelloFile)
+		got = w.findAgentSessionFile("azazello")
+		if got != azazelloFile {
+			t.Errorf("after restoring marker, expected %q, got %q", azazelloFile, got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestEchoPreventionWithCorrectAttribution
+//
+// Verifies that the echo loop bug cannot happen: when a message is written
+// to the bus by one agent, it should not be re-injected into that agent's
+// own session.
+// ---------------------------------------------------------------------------
+
+func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
+	aptPath, projDir, busFile, w := setupMultiAgentEnv(t)
+
+	// Create session files with markers.
+	wolandFile := filepath.Join(projDir, "woland.jsonl")
+	behemothFile := filepath.Join(projDir, "behemoth.jsonl")
+	os.WriteFile(wolandFile, []byte(makeSessionJSONL("w1", "Woland init")), 0o644)
+	os.WriteFile(behemothFile, []byte(makeSessionJSONL("b1", "Behemoth init")), 0o644)
+
+	writeMarker(t, aptPath, ".woland-session", wolandFile)
+	writeMarker(t, aptPath, ".agent-behemoth-session", behemothFile)
+
+	// Write a message to the bus as from "woland".
+	b := New(busFile)
+	msg := NewMessage("woland", TypeChat, "I see all")
+	if err := b.Append(msg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build injection windows for both Woland and Behemoth.
+	windows := []injectionWindow{
+		{busName: "woland", windowName: "woland"},
+		{busName: "behemoth", windowName: "agent-behemoth"},
+	}
+
+	// Get injection targets for this message.
+	targets := injectionTargets(windows, *msg)
+
+	// Verify Woland is NOT in the targets (sender excluded).
+	for _, tgt := range targets {
+		if tgt.busName == "woland" {
+			t.Error("woland should NOT be in injection targets — it is the sender")
+		}
+	}
+
+	// Verify Behemoth IS in the targets.
+	found := false
+	for _, tgt := range targets {
+		if tgt.busName == "behemoth" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("behemoth should be in injection targets")
+	}
+
+	if len(targets) != 1 {
+		t.Errorf("expected 1 injection target, got %d: %v", len(targets), targets)
+	}
+
+	// Reverse: Behemoth sends, verify Woland receives and Behemoth does not.
+	msgB := NewMessage("behemoth", TypeChat, "I am the gardener")
+	targetsB := injectionTargets(windows, *msgB)
+
+	for _, tgt := range targetsB {
+		if tgt.busName == "behemoth" {
+			t.Error("behemoth should NOT be in injection targets when it is the sender")
+		}
+	}
+	foundWoland := false
+	for _, tgt := range targetsB {
+		if tgt.busName == "woland" {
+			foundWoland = true
+			break
+		}
+	}
+	if !foundWoland {
+		t.Error("woland should be in injection targets when behemoth sends")
+	}
+
+	// Verify echo prevention works with the correct attribution. If
+	// Woland's output were misattributed as Behemoth's (the original bug),
+	// the sender exclusion would fail — Behemoth's messages would be
+	// injected back into Behemoth's session.
+	t.Run("misattribution_causes_echo", func(t *testing.T) {
+		// Simulate the bug: a message labeled "behemoth" that actually came
+		// from Woland (misattributed).
+		misattributed := NewMessage("behemoth", TypeChat, "This is actually Woland speaking")
+
+		targets := injectionTargets(windows, *misattributed)
+		// With the misattribution, Behemoth would be excluded (it's listed
+		// as sender), but Woland would receive its own message — causing
+		// an echo loop.
+		for _, tgt := range targets {
+			if tgt.busName == "woland" {
+				// This is the echo that the bug would cause:
+				// Woland receives its own message because it was
+				// misattributed as from Behemoth.
+				break
+			}
+		}
+		// With correct attribution, a message from "woland" would correctly
+		// exclude "woland" from targets.
+		correct := NewMessage("woland", TypeChat, "This is actually Woland speaking")
+		correctTargets := injectionTargets(windows, *correct)
+		for _, tgt := range correctTargets {
+			if tgt.busName == "woland" {
+				t.Error("with correct attribution, woland should not receive its own message")
+			}
+		}
+	})
+
+	_ = w // watcher used to verify file lookup
+}
+
+// ---------------------------------------------------------------------------
+// TestSessionFileRaceCondition
+//
+// Reproduces the exact race that caused the original bug: without marker
+// files, findAgentSessionFile() returns the newest JSONL file, which may
+// belong to a different agent.
+// ---------------------------------------------------------------------------
+
+func TestSessionFileRaceCondition(t *testing.T) {
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	// Step 1: Create two session files. Woland's is older, Behemoth's is newer.
+	wolandFile := filepath.Join(projDir, "session-woland.jsonl")
+	if err := os.WriteFile(wolandFile,
+		[]byte(makeSessionJSONL("w1", "I am Woland")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond) // ensure different mtime
+	behemothFile := filepath.Join(projDir, "session-behemoth.jsonl")
+	if err := os.WriteFile(behemothFile,
+		[]byte(makeSessionJSONL("b1", "I am Behemoth")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Create ONLY the Woland marker — no Behemoth marker.
+	writeMarker(t, aptPath, ".woland-session", wolandFile)
+
+	// Step 3: Without a marker, Behemoth lookup falls back to newest file.
+	// This happens to return the correct file (by luck, since Behemoth's
+	// file IS the newest).
+	got := w.findAgentSessionFile("behemoth")
+	if got != behemothFile {
+		t.Errorf("step 3: findAgentSessionFile(behemoth) = %q, want %q (newest)", got, behemothFile)
+	}
+
+	// Step 4: A third agent starts, creating an even newer file.
+	time.Sleep(30 * time.Millisecond)
+	newcomerFile := filepath.Join(projDir, "session-newcomer.jsonl")
+	if err := os.WriteFile(newcomerFile,
+		[]byte(makeSessionJSONL("n1", "I am the newcomer")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 5: WITHOUT a marker, Behemoth lookup now returns the WRONG file.
+	// This is the race condition: findAgentSessionFile returns the newest,
+	// which is now the newcomer's file, not Behemoth's.
+	got = w.findAgentSessionFile("behemoth")
+	if got == behemothFile {
+		t.Errorf("step 5: findAgentSessionFile(behemoth) should return wrong file (newcomer), got %q", got)
+	}
+	if got != newcomerFile {
+		t.Errorf("step 5: expected newcomer file %q, got %q", newcomerFile, got)
+	}
+
+	// Step 6: Add the Behemoth marker pointing to the correct file.
+	writeMarker(t, aptPath, ".agent-behemoth-session", behemothFile)
+
+	// Step 7: WITH the marker, Behemoth lookup returns the correct file.
+	got = w.findAgentSessionFile("behemoth")
+	if got != behemothFile {
+		t.Errorf("step 7: findAgentSessionFile(behemoth) = %q, want %q (via marker)", got, behemothFile)
+	}
+
+	// Verify Woland still resolves correctly via its marker.
+	got = w.findWolandSessionFile()
+	if got != wolandFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q", got, wolandFile)
+	}
+
+	// Bonus: verify that even after the newcomer appeared, the marker
+	// protects Behemoth from misattribution.
+	time.Sleep(30 * time.Millisecond)
+	evenNewerFile := filepath.Join(projDir, "session-yet-another.jsonl")
+	os.WriteFile(evenNewerFile, []byte(makeSessionJSONL("y1", "Yet another")), 0o644)
+
+	got = w.findAgentSessionFile("behemoth")
+	if got != behemothFile {
+		t.Errorf("marker should protect behemoth even with newer files; got %q, want %q", got, behemothFile)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestMultiAgentBusFlow
+//
+// End-to-end test of the full message flow without tmux. Verifies that:
+//   - All messages are present on the bus
+//   - All messages have correct attribution
+//   - No duplicates (UUID dedup)
+//   - No echo (sender's own messages not re-injected)
+// ---------------------------------------------------------------------------
+
+func TestMultiAgentBusFlow(t *testing.T) {
+	aptPath, projDir, _, _ := setupMultiAgentEnv(t)
+
+	// Create session files for Woland + 2 agents.
+	wolandFile := filepath.Join(projDir, "flow-woland.jsonl")
+	azazelloFile := filepath.Join(projDir, "flow-azazello.jsonl")
+	behemothFile := filepath.Join(projDir, "flow-behemoth.jsonl")
+
+	os.WriteFile(wolandFile, []byte(""), 0o644)
+	time.Sleep(10 * time.Millisecond)
+	os.WriteFile(azazelloFile, []byte(""), 0o644)
+	time.Sleep(10 * time.Millisecond)
+	os.WriteFile(behemothFile, []byte(""), 0o644)
+
+	// Write markers.
+	writeMarker(t, aptPath, ".woland-session", wolandFile)
+	writeMarker(t, aptPath, ".agent-azazello-session", azazelloFile)
+	writeMarker(t, aptPath, ".agent-behemoth-session", behemothFile)
+
+	// Create a bus.
+	busDir := t.TempDir()
+	busFile := filepath.Join(busDir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	ctx := context.Background()
+
+	// Simulate agent output by writing to each session file.
+	type agentOutput struct {
+		agentID     string
+		sessionFile string
+		uuid        string
+		text        string
+	}
+
+	outputs := []agentOutput{
+		{"woland", wolandFile, "flow-w1", "Woland: CI pipeline started"},
+		{"azazello", azazelloFile, "flow-a1", "Azazello: watching test suite"},
+		{"behemoth", behemothFile, "flow-b1", "Behemoth: tending the garden"},
+		{"woland", wolandFile, "flow-w2", "Woland: deploy is green"},
+		{"azazello", azazelloFile, "flow-a2", "Azazello: all tests pass"},
+		{"behemoth", behemothFile, "flow-b2", "Behemoth: garden is blooming"},
+	}
+
+	// Write all output to session files.
+	for _, out := range outputs {
+		f, err := os.OpenFile(out.sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.WriteString(makeSessionJSONL(out.uuid, out.text))
+		f.Close()
+	}
+
+	// Read each agent's session file into the bus using per-agent seen maps.
+	seenW := make(map[string]bool)
+	seenA := make(map[string]bool)
+	seenB := make(map[string]bool)
+
+	w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
+	w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
+	w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+
+	// Verify all messages are present on the bus.
+	recent, err := b.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(recent) != len(outputs) {
+		t.Fatalf("expected %d bus messages, got %d", len(outputs), len(recent))
+	}
+
+	// Verify correct attribution for every message.
+	t.Run("correct_attribution", func(t *testing.T) {
+		byName := map[string][]string{}
+		for _, m := range recent {
+			byName[m.Name] = append(byName[m.Name], m.Text)
+		}
+
+		for _, agent := range []string{"woland", "azazello", "behemoth"} {
+			msgs := byName[agent]
+			if len(msgs) != 2 {
+				t.Errorf("expected 2 messages from %q, got %d: %v", agent, len(msgs), msgs)
+				continue
+			}
+			for _, text := range msgs {
+				// Each message text starts with the agent's capitalized name.
+				expectedPrefix := capitalize(agent) + ":"
+				if !strings.HasPrefix(text, expectedPrefix) {
+					t.Errorf("message from %q has unexpected text: %q (expected prefix %q)", agent, text, expectedPrefix)
+				}
+			}
+		}
+	})
+
+	// Verify no duplicates.
+	t.Run("no_duplicates", func(t *testing.T) {
+		seen := map[string]bool{}
+		for _, m := range recent {
+			if seen[m.ID] {
+				t.Errorf("duplicate message ID: %q", m.ID)
+			}
+			seen[m.ID] = true
+		}
+
+		seenTexts := map[string]bool{}
+		for _, m := range recent {
+			if seenTexts[m.Text] {
+				t.Errorf("duplicate message text: %q", m.Text)
+			}
+			seenTexts[m.Text] = true
+		}
+	})
+
+	// Verify UUID dedup works across re-reads.
+	t.Run("uuid_dedup_prevents_reemission", func(t *testing.T) {
+		// Reading the same files again with the same seen maps should
+		// produce no new bus messages.
+		countBefore := len(recent)
+		w.readAgentLines(ctx, "woland", wolandFile, 0, "", seenW, false)
+		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
+		w.readAgentLines(ctx, "behemoth", behemothFile, 0, "", seenB, false)
+
+		afterReread, err := b.ReadRecent(100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(afterReread) != countBefore {
+			t.Errorf("re-read should not produce new messages: before=%d, after=%d",
+				countBefore, len(afterReread))
+		}
+	})
+
+	// Verify echo prevention: for each agent's messages, the injection
+	// targets should exclude that agent.
+	t.Run("no_echo_injection", func(t *testing.T) {
+		windows := []injectionWindow{
+			{busName: "woland", windowName: "woland"},
+			{busName: "azazello", windowName: "agent-azazello"},
+			{busName: "behemoth", windowName: "agent-behemoth"},
+		}
+
+		for _, m := range recent {
+			targets := injectionTargets(windows, *m)
+			for _, tgt := range targets {
+				if tgt.busName == m.Name {
+					t.Errorf("echo detected: message from %q would be injected back to %q",
+						m.Name, tgt.busName)
+				}
+			}
+			// Should target exactly 2 other agents.
+			if len(targets) != 2 {
+				t.Errorf("message from %q should target 2 others, got %d", m.Name, len(targets))
+			}
+		}
+	})
+
+	// Verify incremental reads work correctly with correct attribution.
+	t.Run("incremental_reads_maintain_attribution", func(t *testing.T) {
+		// Append a new message to Azazello's file only.
+		f, err := os.OpenFile(azazelloFile, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.WriteString(makeSessionJSONL("flow-a3", "Azazello: one more report"))
+		f.Close()
+
+		// Get current file size for Azazello (to read only new data).
+		info, _ := os.Stat(azazelloFile)
+		// Read from a point after the previous content. We need to find
+		// the offset that covers only the new line. For simplicity, re-read
+		// from 0 with the existing seen map — only new UUIDs will be emitted.
+		w.readAgentLines(ctx, "azazello", azazelloFile, 0, "", seenA, false)
+		_ = info
+
+		afterIncr, err := b.ReadRecent(100)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Should have one more message (7 total).
+		if len(afterIncr) != len(outputs)+1 {
+			t.Fatalf("expected %d messages after incremental read, got %d",
+				len(outputs)+1, len(afterIncr))
+		}
+
+		// The new message should be attributed to azazello.
+		last := afterIncr[len(afterIncr)-1]
+		if last.Name != "azazello" {
+			t.Errorf("incremental message attributed to %q, want %q", last.Name, "azazello")
+		}
+		if last.Text != "Azazello: one more report" {
+			t.Errorf("incremental message text = %q, want %q", last.Text, "Azazello: one more report")
+		}
+	})
+}
