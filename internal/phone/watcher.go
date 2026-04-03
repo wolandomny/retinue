@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wolandomny/retinue/internal/session"
 )
 
 const (
@@ -75,17 +77,9 @@ func NewWatcher(apartmentPath string, logger *log.Logger) *Watcher {
 }
 
 // claudeProjectDir derives the Claude Code projects directory from an
-// apartment path. For example, /Users/broc.oppler/apt becomes
-// ~/.claude/projects/-Users-broc-oppler-apt/
+// apartment path. Delegates to the shared session.ClaudeProjectDir.
 func claudeProjectDir(aptPath string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
-	}
-	// Replace path separators and dots with hyphens to match Claude Code's convention.
-	mangled := strings.ReplaceAll(aptPath, "/", "-")
-	mangled = strings.ReplaceAll(mangled, ".", "-")
-	return filepath.Join(home, ".claude", "projects", mangled)
+	return session.ClaudeProjectDir(aptPath)
 }
 
 // Watch starts watching for new assistant messages and returns a channel

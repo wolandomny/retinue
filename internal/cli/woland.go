@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -93,58 +92,18 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 // This is called after creating a new Woland tmux window so the phone bridge
 // watcher knows which session file belongs to Woland.
 func writeSessionMarker(aptPath string) {
-	projDir := wolandProjectDir(aptPath)
+	projDir := session.ClaudeProjectDir(aptPath)
 
 	// Wait for the Claude CLI to create its session file.
 	time.Sleep(2 * time.Second)
 
-	newest := newestJSONLFile(projDir)
+	newest := session.NewestJSONLFile(projDir)
 	if newest == "" {
 		return
 	}
 
 	markerPath := filepath.Join(aptPath, ".woland-session")
 	_ = os.WriteFile(markerPath, []byte(newest), 0o644)
-}
-
-// newestJSONLFile returns the path to the most recently modified .jsonl file
-// in the given directory, or "" if none exist.
-func newestJSONLFile(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-
-	var newest string
-	var newestTime time.Time
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newestTime) {
-			newestTime = info.ModTime()
-			newest = filepath.Join(dir, entry.Name())
-		}
-	}
-
-	return newest
-}
-
-// wolandProjectDir derives the Claude Code projects directory from an
-// apartment path, matching the convention used by Claude Code.
-func wolandProjectDir(aptPath string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
-	}
-	mangled := strings.ReplaceAll(aptPath, "/", "-")
-	mangled = strings.ReplaceAll(mangled, ".", "-")
-	return filepath.Join(home, ".claude", "projects", mangled)
 }
 
 // loadPromptInputs loads the workspace tasks, config, and agents YAML needed for prompt building.

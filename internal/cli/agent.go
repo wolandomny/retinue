@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,9 @@ func newAgentStartCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not send kickoff message: %v\n", err)
 			}
 
+			// Write session marker so the bus watcher can find this agent's session file.
+			writeAgentSessionMarker(ws.Path, agentID)
+
 			// Write a system message to the bus announcing the agent joined.
 			b := bus.New(ws.BusPath())
 			if err := b.Append(bus.NewMessage("system", bus.TypeSystem, agent.Name+" has joined")); err != nil {
@@ -218,6 +222,9 @@ func newAgentStopCmd() *cobra.Command {
 			if err := mgr.KillWindow(ctx, session.ApartmentSession, windowName); err != nil {
 				return fmt.Errorf("stopping agent: %w", err)
 			}
+
+			// Clean up the session marker file.
+			removeAgentSessionMarker(ws.Path, agentID)
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Agent %q (%s) stopped.\n", agentID, agent.Name)
 			return nil
@@ -278,6 +285,31 @@ func buildAgentSystemPrompt(ws *workspace.Workspace, agent *standing.Agent) stri
 	}
 
 	return b.String()
+}
+
+// agentSessionMarkerName returns the marker file name for a standing agent.
+func agentSessionMarkerName(agentID string) string {
+	return fmt.Sprintf(".agent-%s-session", agentID)
+}
+
+// writeAgentSessionMarker finds the newest .jsonl session file in the Claude
+// projects directory and writes its path to the agent's marker file. This is
+// called after creating a new agent tmux window so the bus watcher knows which
+// session file belongs to this agent.
+func writeAgentSessionMarker(aptPath, agentID string) {
+	projDir := session.ClaudeProjectDir(aptPath)
+	newest := session.NewestJSONLFile(projDir)
+	if newest == "" {
+		return
+	}
+	markerPath := filepath.Join(aptPath, agentSessionMarkerName(agentID))
+	_ = os.WriteFile(markerPath, []byte(newest), 0o644)
+}
+
+// removeAgentSessionMarker removes the session marker file for an agent.
+func removeAgentSessionMarker(aptPath, agentID string) {
+	markerPath := filepath.Join(aptPath, agentSessionMarkerName(agentID))
+	os.Remove(markerPath)
 }
 
 // sendKickoff sends an initial message to a newly created agent window so that

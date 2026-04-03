@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wolandomny/retinue/internal/session"
 )
 
 func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
@@ -150,22 +152,22 @@ func TestNewestJSONLFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := newestJSONLFile(dir)
+	got := session.NewestJSONLFile(dir)
 	want := filepath.Join(dir, "newest.jsonl")
 	if got != want {
-		t.Errorf("newestJSONLFile() = %q, want %q", got, want)
+		t.Errorf("session.NewestJSONLFile() = %q, want %q", got, want)
 	}
 }
 
 func TestNewestJSONLFile_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	if got := newestJSONLFile(dir); got != "" {
+	if got := session.NewestJSONLFile(dir); got != "" {
 		t.Errorf("expected empty string for empty dir, got %q", got)
 	}
 }
 
 func TestNewestJSONLFile_NonexistentDir(t *testing.T) {
-	if got := newestJSONLFile("/nonexistent/dir"); got != "" {
+	if got := session.NewestJSONLFile("/nonexistent/dir"); got != "" {
 		t.Errorf("expected empty string for nonexistent dir, got %q", got)
 	}
 }
@@ -174,7 +176,7 @@ func TestWriteSessionMarker_WritesNewestFile(t *testing.T) {
 	aptDir := t.TempDir()
 
 	// Create the Claude projects directory where writeSessionMarker will look.
-	projDir := wolandProjectDir(aptDir)
+	projDir := session.ClaudeProjectDir(aptDir)
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +195,7 @@ func TestWriteSessionMarker_WritesNewestFile(t *testing.T) {
 
 	// writeSessionMarker sleeps 2 seconds, which is too slow for tests.
 	// Test the underlying logic directly via newestJSONLFile + marker write.
-	newest := newestJSONLFile(projDir)
+	newest := session.NewestJSONLFile(projDir)
 	if newest == "" {
 		t.Fatal("expected to find a .jsonl file")
 	}
@@ -216,7 +218,7 @@ func TestWriteSessionMarker_WritesNewestFile(t *testing.T) {
 func TestWriteSessionMarker_AgentFileDoesNotOverrideMarker(t *testing.T) {
 	aptDir := t.TempDir()
 
-	projDir := wolandProjectDir(aptDir)
+	projDir := session.ClaudeProjectDir(aptDir)
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -251,8 +253,8 @@ func TestWriteSessionMarker_AgentFileDoesNotOverrideMarker(t *testing.T) {
 }
 
 func TestWolandProjectDir(t *testing.T) {
-	got := wolandProjectDir("/Users/broc.oppler/apt")
+	got := session.ClaudeProjectDir("/Users/broc.oppler/apt")
 	if !strings.HasSuffix(got, ".claude/projects/-Users-broc-oppler-apt") {
-		t.Errorf("wolandProjectDir() = %q, expected suffix .claude/projects/-Users-broc-oppler-apt", got)
+		t.Errorf("session.ClaudeProjectDir() = %q, expected suffix .claude/projects/-Users-broc-oppler-apt", got)
 	}
 }

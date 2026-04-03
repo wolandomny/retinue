@@ -1072,6 +1072,89 @@ func TestFindAgentSessionFile_NoProjDir(t *testing.T) {
 	}
 }
 
+func TestFindAgentSessionFile_UsesMarker(t *testing.T) {
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// Create the session file the marker points to.
+	sessionFile := filepath.Join(dir, "agent-session.jsonl")
+	os.WriteFile(sessionFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write the agent marker.
+	markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+	os.WriteFile(markerPath, []byte(sessionFile+"\n"), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findAgentSessionFile("azazello")
+	if got != sessionFile {
+		t.Errorf("findAgentSessionFile() = %q, want %q", got, sessionFile)
+	}
+}
+
+func TestFindAgentSessionFile_MarkerPointsToMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	// Marker points to a non-existent file.
+	markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+	os.WriteFile(markerPath, []byte("/nonexistent/session.jsonl"), 0o644)
+
+	// Create fallback.
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+	fallbackFile := filepath.Join(projDir, "fallback.jsonl")
+	os.WriteFile(fallbackFile, []byte(`{"type":"human"}`), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findAgentSessionFile("azazello")
+	if got != fallbackFile {
+		t.Errorf("findAgentSessionFile() = %q, want %q (fallback)", got, fallbackFile)
+	}
+}
+
+func TestFindAgentSessionFile_MarkerPreferredOverNewest(t *testing.T) {
+	// When a marker exists, it should be used even if a newer .jsonl exists.
+	dir := t.TempDir()
+	aptPath := filepath.Join(dir, "apt")
+	os.MkdirAll(aptPath, 0o755)
+
+	projDir := claudeProjectDir(aptPath)
+	os.MkdirAll(projDir, 0o755)
+
+	// Create the agent's session file (older).
+	agentFile := filepath.Join(projDir, "agent-session.jsonl")
+	os.WriteFile(agentFile, []byte(`{"type":"human"}`), 0o644)
+	time.Sleep(50 * time.Millisecond)
+
+	// Create a newer file from another agent.
+	otherFile := filepath.Join(projDir, "other-session.jsonl")
+	os.WriteFile(otherFile, []byte(`{"type":"human"}`), 0o644)
+
+	// Write marker pointing to the older (correct) agent file.
+	markerPath := filepath.Join(aptPath, ".agent-azazello-session")
+	os.WriteFile(markerPath, []byte(agentFile), 0o644)
+
+	busFile := filepath.Join(dir, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	got := w.findAgentSessionFile("azazello")
+	if got != agentFile {
+		t.Errorf("findAgentSessionFile() = %q, want %q (marker should win over newest)", got, agentFile)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 5. seekToLineStart
 // ---------------------------------------------------------------------------

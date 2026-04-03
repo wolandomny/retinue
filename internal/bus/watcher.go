@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
 )
 
@@ -233,47 +234,33 @@ func (w *Watcher) startMonitoredWatcher(ctx context.Context, win monitoredWindow
 	}()
 }
 
-// findAgentSessionFile returns the most recently modified .jsonl file in the
-// Claude projects directory. This is the file that was active when the agent
-// started.
+// findAgentSessionFile returns the session file for the given agent. It first
+// checks for a marker file (.agent-<id>-session) in the apartment directory.
+// If the marker exists and points to a valid file, that file is returned.
+// Otherwise it falls back to the newest .jsonl file in the Claude projects
+// directory (legacy behavior).
 func (w *Watcher) findAgentSessionFile(agentID string) string {
-	projDir := claudeProjectDir(w.aptPath)
-	entries, err := os.ReadDir(projDir)
-	if err != nil {
-		w.logger.Printf("error reading Claude projects dir for agent %q: %v", agentID, err)
-		return ""
-	}
-
-	var newest string
-	var newestTime time.Time
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newestTime) {
-			newestTime = info.ModTime()
-			newest = filepath.Join(projDir, entry.Name())
+	// Try marker file first.
+	markerPath := filepath.Join(w.aptPath, fmt.Sprintf(".agent-%s-session", agentID))
+	if data, err := os.ReadFile(markerPath); err == nil {
+		sessionPath := strings.TrimSpace(string(data))
+		if sessionPath != "" {
+			if _, err := os.Stat(sessionPath); err == nil {
+				return sessionPath
+			}
+			w.logger.Printf("agent %q marker points to missing file, falling back", agentID)
 		}
 	}
 
-	return newest
+	// Fallback: newest file (legacy behavior, but log a warning).
+	w.logger.Printf("no session marker for agent %q, using newest JSONL (may be wrong)", agentID)
+	return w.findNewestJSONL(session.ClaudeProjectDir(w.aptPath))
 }
 
 // claudeProjectDir derives the Claude Code projects directory from an
-// apartment path.
+// apartment path. Delegates to the shared session.ClaudeProjectDir.
 func claudeProjectDir(aptPath string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
-	}
-	mangled := strings.ReplaceAll(aptPath, "/", "-")
-	mangled = strings.ReplaceAll(mangled, ".", "-")
-	return filepath.Join(home, ".claude", "projects", mangled)
+	return session.ClaudeProjectDir(aptPath)
 }
 
 // findWolandSessionFile reads the .woland-session marker file to locate
@@ -305,8 +292,6 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 	var partialLine string
 	var offset int64
 
-	projDir := claudeProjectDir(w.aptPath)
-
 	// Wait for a session file if none was found at startup.
 	if sessionFile == "" {
 		for {
@@ -318,7 +303,7 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 			if isWoland {
 				sessionFile = w.findWolandSessionFile()
 			} else {
-				sessionFile = w.findNewestJSONL(projDir)
+				sessionFile = w.findAgentSessionFile(agentID)
 			}
 			if sessionFile != "" {
 				w.logger.Printf("%q: found session file %s", agentID, filepath.Base(sessionFile))
@@ -360,7 +345,7 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 		if isWoland {
 			newest = w.findWolandSessionFile()
 		} else {
-			newest = w.findNewestJSONL(projDir)
+			newest = w.findAgentSessionFile(agentID)
 		}
 		if newest != "" && newest != sessionFile {
 			w.logger.Printf("%q: session file changed to %s", agentID, filepath.Base(newest))
@@ -377,29 +362,9 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 }
 
 // findNewestJSONL returns the most recently modified .jsonl file in the given directory.
+// Delegates to the shared session.NewestJSONLFile.
 func (w *Watcher) findNewestJSONL(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-
-	var newest string
-	var newestTime time.Time
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newestTime) {
-			newestTime = info.ModTime()
-			newest = filepath.Join(dir, entry.Name())
-		}
-	}
-	return newest
+	return session.NewestJSONLFile(dir)
 }
 
 // seekToLineStart finds the first complete line boundary at or after offset.

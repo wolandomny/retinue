@@ -698,3 +698,87 @@ func TestSendKickoffMessageContent(t *testing.T) {
 		})
 	}
 }
+
+// --- Session marker tests ---
+
+func TestAgentSessionMarkerName(t *testing.T) {
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"azazello", ".agent-azazello-session"},
+		{"behemoth", ".agent-behemoth-session"},
+		{"ci-watcher", ".agent-ci-watcher-session"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got := agentSessionMarkerName(tt.id)
+			if got != tt.want {
+				t.Errorf("agentSessionMarkerName(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteAgentSessionMarker(t *testing.T) {
+	aptDir := t.TempDir()
+
+	// Create the Claude projects directory.
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a session file.
+	sessionFile := filepath.Join(projDir, "agent-session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeAgentSessionMarker(aptDir, "azazello")
+
+	// Verify marker was written.
+	markerPath := filepath.Join(aptDir, ".agent-azazello-session")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != sessionFile {
+		t.Errorf("marker = %q, want %q", string(data), sessionFile)
+	}
+}
+
+func TestWriteAgentSessionMarker_NoProjDir(t *testing.T) {
+	aptDir := t.TempDir()
+
+	// No Claude projects dir — should not panic or create a marker.
+	writeAgentSessionMarker(aptDir, "azazello")
+
+	markerPath := filepath.Join(aptDir, ".agent-azazello-session")
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Error("marker should not be created when no projects dir exists")
+	}
+}
+
+func TestRemoveAgentSessionMarker(t *testing.T) {
+	aptDir := t.TempDir()
+
+	// Create a marker file.
+	markerPath := filepath.Join(aptDir, ".agent-azazello-session")
+	if err := os.WriteFile(markerPath, []byte("/some/path.jsonl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeAgentSessionMarker(aptDir, "azazello")
+
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Error("marker file should be removed after removeAgentSessionMarker")
+	}
+}
+
+func TestRemoveAgentSessionMarker_NoFile(t *testing.T) {
+	aptDir := t.TempDir()
+
+	// Should not panic when marker doesn't exist.
+	removeAgentSessionMarker(aptDir, "nonexistent")
+}
