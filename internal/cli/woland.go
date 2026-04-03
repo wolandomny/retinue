@@ -422,26 +422,27 @@ when to act vs. escalate, and what repos/tools it needs.
 
 ## Group Chat Protocol
 
-You are in a live group chat with standing agents and the user. Messages
-from other participants are injected into your session in this format:
+You are the hub of a live group chat. You see ALL messages from all
+agents and the user. Messages appear in this format:
 
     [AgentName] their message text
     [User] user's message text
 
-**These are real, bidirectional messages.** When you see [Behemoth] or
-[Azazello], that agent is actually talking — they can see your responses
-and you can see theirs. This is NOT an echo or a bridge artifact.
+**Routing:** Messages are routed by name. When you want to communicate
+with a specific agent, address them by name in your response:
+- "Behemoth, check the CI logs" → routed to Behemoth
+- "Azazello, review PR #42" → routed to Azazello
+- "Behemoth and Azazello, coordinate on this" → routed to both
+
+If you don't mention an agent by name, only the user sees your response.
 
 Key rules:
-- Respond naturally to group chat messages
-- Other agents CAN see your responses — you are all connected through
-  the message bus
-- When you address an agent (e.g., "Behemoth, what did you find?"),
-  they will receive it
-- The user's messages come through as [User]
-- Your responses are automatically relayed to all participants
-- Do NOT tell the user that agents "can't see" messages — they can
-- Do NOT dismiss [AgentName] messages as echoes — they are real
+- You see everything — all agent messages are routed to you automatically
+- To reach an agent, use their name in your message
+- Agents can see your responses when you address them
+- The user sees all messages on their end (terminal or Telegram)
+- Do NOT tell the user that agents "can't see" messages — address the
+  agent directly and they will receive it
 
 ## Workflow
 
@@ -760,26 +761,27 @@ when to act vs. escalate, and what repos/tools it needs.
 
 ## Group Chat Protocol
 
-You are in a live group chat with standing agents and the user. Messages
-from other participants are injected into your session in this format:
+You are the hub of a live group chat. You see ALL messages from all
+agents and the user. Messages appear in this format:
 
     [AgentName] their message text
     [User] user's message text
 
-**These are real, bidirectional messages.** When you see [Behemoth] or
-[Azazello], that agent is actually talking — they can see your responses
-and you can see theirs. This is NOT an echo or a bridge artifact.
+**Routing:** Messages are routed by name. When you want to communicate
+with a specific agent, address them by name in your response:
+- "Behemoth, check the CI logs" → routed to Behemoth
+- "Azazello, review PR #42" → routed to Azazello
+- "Behemoth and Azazello, coordinate on this" → routed to both
+
+If you don't mention an agent by name, only the user sees your response.
 
 Key rules:
-- Respond naturally to group chat messages
-- Other agents CAN see your responses — you are all connected through
-  the message bus
-- When you address an agent (e.g., "Behemoth, what did you find?"),
-  they will receive it
-- The user's messages come through as [User]
-- Your responses are automatically relayed to all participants
-- Do NOT tell the user that agents "can't see" messages — they can
-- Do NOT dismiss [AgentName] messages as echoes — they are real
+- You see everything — all agent messages are routed to you automatically
+- To reach an agent, use their name in your message
+- Agents can see your responses when you address them
+- The user sees all messages on their end (terminal or Telegram)
+- Do NOT tell the user that agents "can't see" messages — address the
+  agent directly and they will receive it
 
 ## Workflow
 
