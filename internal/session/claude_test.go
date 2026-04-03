@@ -96,3 +96,142 @@ func TestNewestJSONLFile_IgnoresDirectories(t *testing.T) {
 		t.Errorf("NewestJSONLFile() = %q, want %q", got, realFile)
 	}
 }
+
+// --- SnapshotJSONLFiles tests ---
+
+func TestSnapshotJSONLFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 3 .jsonl files and 2 .txt files.
+	jsonlFiles := []string{"a.jsonl", "b.jsonl", "c.jsonl"}
+	txtFiles := []string{"x.txt", "y.txt"}
+
+	for _, name := range jsonlFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range txtFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("text"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snap := session.SnapshotJSONLFiles(dir)
+
+	// Verify snapshot contains exactly the 3 .jsonl files.
+	if len(snap) != 3 {
+		t.Fatalf("SnapshotJSONLFiles() returned %d files, want 3", len(snap))
+	}
+	for _, name := range jsonlFiles {
+		fullPath := filepath.Join(dir, name)
+		if !snap[fullPath] {
+			t.Errorf("SnapshotJSONLFiles() missing %q", fullPath)
+		}
+	}
+	for _, name := range txtFiles {
+		fullPath := filepath.Join(dir, name)
+		if snap[fullPath] {
+			t.Errorf("SnapshotJSONLFiles() should not contain %q", fullPath)
+		}
+	}
+}
+
+func TestSnapshotJSONLFiles_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	snap := session.SnapshotJSONLFiles(dir)
+	if len(snap) != 0 {
+		t.Errorf("SnapshotJSONLFiles(empty) returned %d files, want 0", len(snap))
+	}
+}
+
+func TestSnapshotJSONLFiles_NonexistentDir(t *testing.T) {
+	snap := session.SnapshotJSONLFiles("/nonexistent/dir")
+	if len(snap) != 0 {
+		t.Errorf("SnapshotJSONLFiles(nonexistent) returned %d files, want 0", len(snap))
+	}
+}
+
+// --- WaitForNewJSONL tests ---
+
+func TestWaitForNewJSONL(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 2 existing .jsonl files.
+	for _, name := range []string{"existing1.jsonl", "existing2.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Take snapshot.
+	snap := session.SnapshotJSONLFiles(dir)
+
+	// Start a goroutine that creates a new .jsonl file after 1 second.
+	newFilePath := filepath.Join(dir, "brand-new.jsonl")
+	go func() {
+		time.Sleep(1 * time.Second)
+		os.WriteFile(newFilePath, []byte(`{"new":true}`), 0o644)
+	}()
+
+	// Call WaitForNewJSONL with 5 second timeout.
+	got := session.WaitForNewJSONL(dir, snap, 5*time.Second)
+
+	// Verify it returns the new file, not either existing one.
+	if got != newFilePath {
+		t.Errorf("WaitForNewJSONL() = %q, want %q", got, newFilePath)
+	}
+}
+
+func TestWaitForNewJSONLTimeout(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 2 existing files.
+	for _, name := range []string{"existing1.jsonl", "existing2.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Take snapshot.
+	snap := session.SnapshotJSONLFiles(dir)
+
+	// Call WaitForNewJSONL with 1 second timeout (don't create new file).
+	got := session.WaitForNewJSONL(dir, snap, 1*time.Second)
+
+	// Verify it returns empty string.
+	if got != "" {
+		t.Errorf("WaitForNewJSONL() = %q, want empty string on timeout", got)
+	}
+}
+
+func TestWaitForNewJSONLExistingFilesIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create existing files.
+	existingPath := filepath.Join(dir, "existing.jsonl")
+	if err := os.WriteFile(existingPath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Take snapshot.
+	snap := session.SnapshotJSONLFiles(dir)
+
+	// Modify the existing file (change its mod time) — should NOT be returned.
+	time.Sleep(50 * time.Millisecond)
+	os.WriteFile(existingPath, []byte(`{"updated":true}`), 0o644)
+
+	// Start a goroutine that creates a truly new file after a short delay.
+	newFilePath := filepath.Join(dir, "truly-new.jsonl")
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		os.WriteFile(newFilePath, []byte(`{"new":true}`), 0o644)
+	}()
+
+	got := session.WaitForNewJSONL(dir, snap, 5*time.Second)
+
+	// Verify the modified existing file is NOT returned — the truly new one is.
+	if got != newFilePath {
+		t.Errorf("WaitForNewJSONL() = %q, want %q (should ignore modified existing files)", got, newFilePath)
+	}
+}

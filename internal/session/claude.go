@@ -48,3 +48,43 @@ func NewestJSONLFile(dir string) string {
 
 	return newest
 }
+
+// SnapshotJSONLFiles returns a set of all current .jsonl files in a directory.
+func SnapshotJSONLFiles(dir string) map[string]bool {
+	files := make(map[string]bool)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			files[filepath.Join(dir, entry.Name())] = true
+		}
+	}
+	return files
+}
+
+// WaitForNewJSONL watches the Claude projects directory for a new .jsonl file
+// that doesn't exist in the provided snapshot of existing files. Returns the
+// path of the new file, or empty string if timeout is reached.
+func WaitForNewJSONL(dir string, existingFiles map[string]bool, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			if !existingFiles[fullPath] {
+				return fullPath // This file is NEW
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return ""
+}

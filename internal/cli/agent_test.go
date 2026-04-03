@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wolandomny/retinue/internal/bus"
 	"github.com/wolandomny/retinue/internal/session"
@@ -723,21 +724,12 @@ func TestAgentSessionMarkerName(t *testing.T) {
 func TestWriteAgentSessionMarker(t *testing.T) {
 	aptDir := t.TempDir()
 
-	// Create the Claude projects directory.
-	projDir := session.ClaudeProjectDir(aptDir)
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Create a session file path (simulating what WaitForNewJSONL returns).
+	sessionFile := "/some/projects/dir/agent-session.jsonl"
 
-	// Create a session file.
-	sessionFile := filepath.Join(projDir, "agent-session.jsonl")
-	if err := os.WriteFile(sessionFile, []byte(`{"type":"system"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAgentSessionMarker(aptDir, "azazello", sessionFile)
 
-	writeAgentSessionMarker(aptDir, "azazello")
-
-	// Verify marker was written.
+	// Verify marker was written with the exact session file path.
 	markerPath := filepath.Join(aptDir, ".agent-azazello-session")
 	data, err := os.ReadFile(markerPath)
 	if err != nil {
@@ -748,15 +740,46 @@ func TestWriteAgentSessionMarker(t *testing.T) {
 	}
 }
 
-func TestWriteAgentSessionMarker_NoProjDir(t *testing.T) {
+func TestWriteAgentSessionMarker_DiffBasedDiscovery(t *testing.T) {
 	aptDir := t.TempDir()
 
-	// No Claude projects dir — should not panic or create a marker.
-	writeAgentSessionMarker(aptDir, "azazello")
+	// Create the Claude projects directory with an existing session file
+	// (simulating another agent's session).
+	projDir := session.ClaudeProjectDir(aptDir)
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingFile := filepath.Join(projDir, "woland-session.jsonl")
+	if err := os.WriteFile(existingFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
+	// Snapshot BEFORE the new agent starts.
+	existingFiles := session.SnapshotJSONLFiles(projDir)
+
+	// Simulate the new agent creating its session file.
+	newFile := filepath.Join(projDir, "agent-azazello-session.jsonl")
+	if err := os.WriteFile(newFile, []byte(`{"type":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use WaitForNewJSONL to find the new file.
+	found := session.WaitForNewJSONL(projDir, existingFiles, 1*time.Second)
+	if found != newFile {
+		t.Fatalf("WaitForNewJSONL() = %q, want %q", found, newFile)
+	}
+
+	// Write the marker using the discovered file.
+	writeAgentSessionMarker(aptDir, "azazello", found)
+
+	// Verify marker points to the NEW file, not the existing one.
 	markerPath := filepath.Join(aptDir, ".agent-azazello-session")
-	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
-		t.Error("marker should not be created when no projects dir exists")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if string(data) != newFile {
+		t.Errorf("marker = %q, want %q (should not point to existing file %q)", string(data), newFile, existingFile)
 	}
 }
 

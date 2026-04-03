@@ -69,17 +69,17 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 
 		claudeCmd := "claude " + shell.Join(claudeArgs)
 
+		// Snapshot existing session files BEFORE creating the Woland window.
+		projDir := session.ClaudeProjectDir(ws.Path)
+		existingFiles := session.SnapshotJSONLFiles(projDir)
+
 		if err := mgr.CreateWindow(ctx, aptSession, windowName, ws.Path, claudeCmd); err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
 		}
 
-		// Write the session marker so the phone bridge watcher locks
-		// onto Woland's session file instead of a standing agent's.
-		// We sleep briefly to let the Claude CLI create its .jsonl file,
-		// then record it in the marker. This replaces the old approach
-		// of deleting the marker (which caused a race where the watcher
-		// could lock onto a standing agent's session file).
-		writeSessionMarker(ws.Path)
+		// Wait for Woland's new session file to appear instead of
+		// picking the newest file (which may belong to another agent).
+		writeSessionMarker(ws.Path, projDir, existingFiles)
 	}
 
 	return syscall.Exec(tmuxPath,
@@ -87,23 +87,19 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 		os.Environ())
 }
 
-// writeSessionMarker finds the newest .jsonl session file in the Claude
-// projects directory and writes its path to the .woland-session marker file.
-// This is called after creating a new Woland tmux window so the phone bridge
-// watcher knows which session file belongs to Woland.
-func writeSessionMarker(aptPath string) {
-	projDir := session.ClaudeProjectDir(aptPath)
-
-	// Wait for the Claude CLI to create its session file.
-	time.Sleep(2 * time.Second)
-
-	newest := session.NewestJSONLFile(projDir)
-	if newest == "" {
+// writeSessionMarker waits for a new .jsonl session file to appear in the
+// Claude projects directory and writes its path to the .woland-session marker
+// file. It uses diff-based discovery: only files NOT in existingFiles are
+// considered, avoiding the race where the "newest" file belongs to another agent.
+func writeSessionMarker(aptPath, projDir string, existingFiles map[string]bool) {
+	// Wait for the Claude CLI to create its session file (up to 10 seconds).
+	newFile := session.WaitForNewJSONL(projDir, existingFiles, 10*time.Second)
+	if newFile == "" {
 		return
 	}
 
 	markerPath := filepath.Join(aptPath, ".woland-session")
-	_ = os.WriteFile(markerPath, []byte(newest), 0o644)
+	_ = os.WriteFile(markerPath, []byte(newFile), 0o644)
 }
 
 // loadPromptInputs loads the workspace tasks, config, and agents YAML needed for prompt building.

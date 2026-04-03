@@ -163,6 +163,10 @@ func newAgentStartCmd() *cobra.Command {
 
 			claudeCmd := "claude " + shell.Join(claudeArgs)
 
+			// Snapshot existing session files BEFORE starting the agent.
+			projDir := session.ClaudeProjectDir(ws.Path)
+			existingFiles := session.SnapshotJSONLFiles(projDir)
+
 			if err := mgr.CreateWindow(ctx, session.ApartmentSession, windowName, ws.Path, claudeCmd); err != nil {
 				return fmt.Errorf("creating tmux window: %w", err)
 			}
@@ -177,8 +181,15 @@ func newAgentStartCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not send kickoff message: %v\n", err)
 			}
 
-			// Write session marker so the bus watcher can find this agent's session file.
-			writeAgentSessionMarker(ws.Path, agentID)
+			// Wait for the agent's new session file to appear (up to 10 seconds).
+			newFile := session.WaitForNewJSONL(projDir, existingFiles, 10*time.Second)
+			if newFile != "" {
+				markerPath := filepath.Join(ws.Path, agentSessionMarkerName(agentID))
+				os.WriteFile(markerPath, []byte(newFile), 0o644)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"Warning: could not identify %s's session file\n", agent.Name)
+			}
 
 			// Write a system message to the bus announcing the agent joined.
 			b := bus.New(ws.BusPath())
@@ -316,18 +327,11 @@ func agentSessionMarkerName(agentID string) string {
 	return fmt.Sprintf(".agent-%s-session", agentID)
 }
 
-// writeAgentSessionMarker finds the newest .jsonl session file in the Claude
-// projects directory and writes its path to the agent's marker file. This is
-// called after creating a new agent tmux window so the bus watcher knows which
-// session file belongs to this agent.
-func writeAgentSessionMarker(aptPath, agentID string) {
-	projDir := session.ClaudeProjectDir(aptPath)
-	newest := session.NewestJSONLFile(projDir)
-	if newest == "" {
-		return
-	}
+// writeAgentSessionMarker writes the given session file path to the agent's
+// marker file so the bus watcher knows which session file belongs to this agent.
+func writeAgentSessionMarker(aptPath, agentID, sessionFile string) {
 	markerPath := filepath.Join(aptPath, agentSessionMarkerName(agentID))
-	_ = os.WriteFile(markerPath, []byte(newest), 0o644)
+	_ = os.WriteFile(markerPath, []byte(sessionFile), 0o644)
 }
 
 // removeAgentSessionMarker removes the session marker file for an agent.
