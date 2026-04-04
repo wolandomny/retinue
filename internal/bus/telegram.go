@@ -147,7 +147,9 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 				return nil
 			}
 			// Write user message to bus.
-			if err := t.bus.Append(NewMessage("user", TypeUser, text)); err != nil {
+			msg := NewMessage("user", TypeUser, text)
+			msg.To = []string{"woland"}
+			if err := t.bus.Append(msg); err != nil {
 				t.logger.Printf("error writing user message to bus: %v", err)
 			}
 

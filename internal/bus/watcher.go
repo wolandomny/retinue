@@ -34,16 +34,6 @@ const (
 	// session file before attempting to re-discover via the marker file.
 	watcherStaleness = 30 * time.Second
 
-	// responseSuppressWindow is how long after an agent's message is injected
-	// into Woland before we suppress routing Woland's response back to that
-	// agent. This prevents the immediate bounce-back (Woland acknowledging
-	// an agent's message being routed back to the agent).
-	responseSuppressWindow = 10 * time.Second
-
-	// maxExchangesPerTurn is the maximum number of times Woland can route a
-	// message to a given agent between user messages. This is a safety net
-	// against infinite Woland↔Agent ping-pong loops.
-	maxExchangesPerTurn = 2
 )
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
@@ -110,34 +100,16 @@ type Watcher struct {
 
 	mu       sync.Mutex
 	watchers map[string]*agentWatcher // windowName → watcher
-
-	// Loop prevention state (protected by mu).
-
-	// lastInjectedToWoland tracks when each agent's message was last injected
-	// into Woland's window. Used to suppress routing Woland's immediate
-	// acknowledgment back to the originating agent.
-	lastInjectedToWoland map[string]time.Time // agent busName → timestamp
-
-	// exchangeCount tracks how many times Woland has routed a message to each
-	// agent since the last user message. Capped at maxExchangesPerTurn.
-	exchangeCount map[string]int // agent busName → count
-
-	// timeNow is a function that returns the current time. It defaults to
-	// time.Now but can be overridden in tests.
-	timeNow func() time.Time
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
 func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher {
 	return &Watcher{
-		bus:                  b,
-		tmuxSocket:           tmuxSocket,
-		aptPath:              aptPath,
-		logger:               logger,
-		watchers:             make(map[string]*agentWatcher),
-		lastInjectedToWoland: make(map[string]time.Time),
-		exchangeCount:        make(map[string]int),
-		timeNow:              time.Now,
+		bus:        b,
+		tmuxSocket: tmuxSocket,
+		aptPath:    aptPath,
+		logger:     logger,
+		watchers:   make(map[string]*agentWatcher),
 	}
 }
 
@@ -639,7 +611,19 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 
 		switch msgType {
 		case "assistant":
-			if err := w.bus.Append(NewMessage(agentID, TypeChat, text)); err != nil {
+			msg := NewMessage(agentID, TypeChat, text)
+			if isWoland {
+				// Woland's output: parse → convention for explicit agent routing.
+				if recipients, stripped, ok := parseArrowRouting(text); ok {
+					msg.To = recipients
+					msg.Text = stripped
+				}
+				// No arrow prefix = no agent routing (user-facing only).
+			} else {
+				// Standing agent messages always go to Woland (the hub).
+				msg.To = []string{"woland"}
+			}
+			if err := w.bus.Append(msg); err != nil {
 				w.logger.Printf("error writing agent %q message to bus: %v", agentID, err)
 			}
 		case "human":
@@ -652,7 +636,9 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 			if isInjectedMessage(text) {
 				continue
 			}
-			if err := w.bus.Append(NewMessage("user", TypeUser, text)); err != nil {
+			msg := NewMessage("user", TypeUser, text)
+			msg.To = []string{"woland"}
+			if err := w.bus.Append(msg); err != nil {
 				w.logger.Printf("error writing user message from Woland session to bus: %v", err)
 			}
 		}
@@ -708,10 +694,9 @@ type injectionWindow struct {
 	isWoland   bool   // true for woland/babytalk windows (hub: receives all messages)
 }
 
-// injectMessage sends a bus message to all active monitored tmux sessions
-// except the sender.
+// injectMessage sends a bus message to the appropriate monitored tmux
+// sessions using explicit To-based routing (via routeMessage).
 func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
-	// Don't inject system messages into agent sessions.
 	if msg.Type == TypeSystem {
 		return
 	}
@@ -719,22 +704,7 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	formatted := FormatForInjection(&msg)
 	escaped := shell.EscapeTmux(formatted)
 
-	now := w.timeNow()
-
 	w.mu.Lock()
-
-	// When a user message arrives, reset exchange counts only for agents
-	// mentioned by name. This prevents echo loops from restarting when
-	// the user sends an unrelated message.
-	if msg.Type == TypeUser {
-		textLower := strings.ToLower(msg.Text)
-		for k := range w.exchangeCount {
-			if strings.Contains(textLower, strings.ToLower(k)) {
-				delete(w.exchangeCount, k)
-			}
-		}
-	}
-
 	windows := make([]injectionWindow, 0, len(w.watchers))
 	for _, aw := range w.watchers {
 		windows = append(windows, injectionWindow{
@@ -743,111 +713,28 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 			isWoland:   aw.isWoland,
 		})
 	}
-
-	// Compute base routing targets (pure function, no loop-prevention).
-	baseTargets := injectionTargets(windows, msg)
-
-	// Apply loop prevention: filter Woland→Agent routing through the
-	// suppression window and exchange limiter. User messages bypass all
-	// loop prevention entirely.
-	var targets []injectionWindow
-	for _, t := range baseTargets {
-		if t.isWoland {
-			// Hub rule: Woland always receives all messages.
-			// When injecting into Woland from a standing agent, record
-			// the timestamp for suppression window tracking.
-			if msg.Type != TypeUser && msg.Type != TypeSystem && msg.Name != "woland" {
-				w.lastInjectedToWoland[msg.Name] = now
-			}
-			targets = append(targets, t)
-			continue
-		}
-
-		// For agent targets: if this is a Woland→Agent route, check
-		// loop prevention. User messages bypass all checks.
-		if msg.Name == "woland" && msg.Type != TypeUser {
-			// Layer 1: exchange limiter (check and increment FIRST).
-			// This ensures the exchange limit is a hard cap on routing
-			// attempts, regardless of whether the suppression window
-			// also suppresses them.
-			if w.exchangeCount[t.busName] >= maxExchangesPerTurn {
-				w.logger.Printf("suppressing Woland→%s route: exchange limit reached (%d/%d)",
-					t.busName, w.exchangeCount[t.busName], maxExchangesPerTurn)
-				continue
-			}
-			w.exchangeCount[t.busName]++
-
-			// Layer 2: suppression window (checked AFTER counter increment).
-			if lastInj, ok := w.lastInjectedToWoland[t.busName]; ok {
-				if now.Sub(lastInj) < responseSuppressWindow {
-					w.logger.Printf("suppressing Woland→%s route: agent message injected %s ago (within %s window)",
-						t.busName, now.Sub(lastInj).Round(time.Millisecond), responseSuppressWindow)
-					continue
-				}
-			}
-		}
-
-		targets = append(targets, t)
-	}
 	w.mu.Unlock()
+
+	targets := routeMessage(windows, msg)
 
 	if len(targets) > 0 {
 		names := make([]string, len(targets))
 		for i, t := range targets {
 			names[i] = t.busName
 		}
-		w.logger.Printf("routing message from %q to %d targets: %v", msg.Name, len(targets), names)
+		w.logger.Printf("routing message from %q to %d targets: %v",
+			msg.Name, len(targets), names)
 	}
 
 	for _, t := range targets {
 		target := fmt.Sprintf("retinue:%s", t.windowName)
 		args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
-
 		cmd := exec.CommandContext(ctx, "tmux", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			w.logger.Printf("error injecting message to %q (window %s): %v: %s", t.busName, t.windowName, err, string(out))
+			w.logger.Printf("error injecting message to %q (window %s): %v: %s",
+				t.busName, t.windowName, err, string(out))
 		}
 	}
-}
-
-// injectionTargets returns the subset of monitored windows that should
-// receive a given message. It uses hub-and-spoke routing:
-//   - System messages are never injected.
-//   - The sender never receives its own message (echo prevention).
-//   - Woland (the hub/orchestrator) always receives all messages.
-//   - Standing agents only receive messages from the user or from Woland
-//     that mention their busName (case-insensitive substring match).
-//   - Agent-to-agent communication always goes through Woland (the hub),
-//     preventing echo loops where agent A mentions agent B, B responds
-//     mentioning A, and so on.
-func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
-	if msg.Type == TypeSystem {
-		return nil
-	}
-
-	textLower := strings.ToLower(msg.Text)
-	var targets []injectionWindow
-
-	for _, w := range windows {
-		// Never echo to sender.
-		if w.busName == msg.Name {
-			continue
-		}
-		// Woland always sees everything (he's the orchestrator/hub).
-		if w.isWoland {
-			targets = append(targets, w)
-			continue
-		}
-		// Standing agents only receive messages from user or Woland
-		// that mention their name. Agent-to-agent goes through Woland.
-		if msg.Type == TypeUser || msg.Name == "woland" {
-			if strings.Contains(textLower, strings.ToLower(w.busName)) {
-				targets = append(targets, w)
-			}
-		}
-	}
-
-	return targets
 }
 
 // tmuxArgs builds a tmux argument list, prepending -L <socket> when configured.
