@@ -619,12 +619,16 @@ func (w *Watcher) readAgentLines(ctx context.Context, agentID, path string, offs
 				if recipients, stripped, ok := parseArrowRouting(text); ok {
 					msg.To = recipients
 					msg.Text = stripped
+					w.logger.Printf("arrow routing parsed: To=%v text=%q", msg.To, stripped[:min(50, len(stripped))])
+				} else {
+					w.logger.Printf("no arrow routing for woland message (first 80 chars): %q", text[:min(80, len(text))])
 				}
 				// No arrow prefix = no agent routing (user-facing only).
 			} else {
 				// Standing agent messages always go to Woland (the hub).
 				msg.To = []string{"woland"}
 			}
+			w.logger.Printf("appending to bus: name=%q type=%q to=%v", msg.Name, msg.Type, msg.To)
 			if err := w.bus.Append(msg); err != nil {
 				w.logger.Printf("error writing agent %q message to bus: %v", agentID, err)
 			}
@@ -719,6 +723,12 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 
 	targets := routeMessage(windows, msg)
 
+	// Debug: log routing decision details
+	w.logger.Printf("routing decision: msg.Name=%q msg.Type=%q msg.To=%v targets=%d windows=%d",
+		msg.Name, msg.Type, msg.To, len(targets), len(windows))
+	for _, win := range windows {
+		w.logger.Printf("  window: busName=%q isWoland=%v", win.busName, win.isWoland)
+	}
 
 	if len(targets) > 0 {
 		names := make([]string, len(targets))
