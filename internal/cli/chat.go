@@ -45,6 +45,7 @@ Usage:
 
 				message := strings.Join(args, " ")
 				msg := bus.NewMessage("user", bus.TypeUser, message)
+				msg.To = []string{"woland"}
 
 				if err := busInstance.Append(msg); err != nil {
 					return fmt.Errorf("failed to send message: %w", err)
@@ -116,6 +117,7 @@ Usage:
 							}
 
 							msg := bus.NewMessage("user", bus.TypeUser, text)
+							msg.To = []string{"woland"}
 							if err := busInstance.Append(msg); err != nil {
 								fmt.Fprintf(cmd.ErrOrStderr(), "Failed to send message: %v\n", err)
 							}
