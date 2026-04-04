@@ -739,10 +739,10 @@ func TestReadAgentLines_MissingFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Message injection filtering (injectionTargets)
+// 3. Message routing (routeMessage)
 // ---------------------------------------------------------------------------
 
-func TestInjectionTargets(t *testing.T) {
+func TestRouteMessage(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "azazello", windowName: "agent-azazello"},
@@ -763,16 +763,16 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name: "user addresses woland only - woland gets it as hub",
-			msg:  Message{Name: "user", Type: TypeUser, Text: "Woland are you there?"},
+			name: "user message with To woland - woland gets it as hub",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "Woland are you there?", To: []string{"woland"}},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 			},
 			wantLen: 1,
 		},
 		{
-			name: "user addresses behemoth - woland and behemoth get it",
-			msg:  Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs"},
+			name: "user message with behemoth in To - woland and behemoth get it",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs", To: []string{"behemoth"}},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -780,7 +780,7 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name: "user no agent mentioned - woland only",
+			name: "user message with empty To - woland only (hub)",
 			msg:  Message{Name: "user", Type: TypeUser, Text: "How's everyone doing?"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -788,15 +788,15 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "woland addresses behemoth - behemoth only",
-			msg:  Message{Name: "woland", Type: TypeChat, Text: "Behemoth, you are a good kitty"},
+			name: "woland sends to behemoth via To - behemoth only",
+			msg:  Message{Name: "woland", Type: TypeChat, Text: "You are a good kitty", To: []string{"behemoth"}},
 			want: []injectionWindow{
 				{busName: "behemoth", windowName: "agent-behemoth"},
 			},
 			wantLen: 1,
 		},
 		{
-			name: "agent sends no mention - woland only as hub",
+			name: "agent sends with empty To - woland only as hub",
 			msg:  Message{Name: "behemoth", Type: TypeChat, Text: "Done with the sweep"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -804,8 +804,8 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "woland addresses two agents - both get it",
-			msg:  Message{Name: "woland", Type: TypeChat, Text: "Behemoth and Azazello, coordinate"},
+			name: "woland sends to two agents via To - both get it",
+			msg:  Message{Name: "woland", Type: TypeChat, Text: "Coordinate", To: []string{"azazello", "behemoth"}},
 			want: []injectionWindow{
 				{busName: "azazello", windowName: "agent-azazello"},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -813,8 +813,8 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name: "case insensitive matching",
-			msg:  Message{Name: "user", Type: TypeUser, Text: "BEHEMOTH check status"},
+			name: "case insensitive To matching",
+			msg:  Message{Name: "user", Type: TypeUser, Text: "check status", To: []string{"BEHEMOTH"}},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -822,7 +822,7 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name: "agent mentions another agent - hub-and-spoke: woland only",
+			name: "agent sends with empty To - woland only (hub-and-spoke)",
 			msg:  Message{Name: "behemoth", Type: TypeChat, Text: "I talked to Azazello about it"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -830,7 +830,7 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "action from agent no mention - woland only",
+			name: "action from agent no To - woland only",
 			msg:  Message{Name: "behemoth", Type: TypeAction, Text: "fixing CI"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -838,7 +838,7 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "result from agent no mention - woland only",
+			name: "result from agent no To - woland only",
 			msg:  Message{Name: "koroviev", Type: TypeResult, Text: "PR opened"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -846,7 +846,7 @@ func TestInjectionTargets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "message from unknown sender no mention - woland only",
+			name: "message from unknown sender no To - woland only",
 			msg:  Message{Name: "stranger", Type: TypeChat, Text: "who am I?"},
 			want: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
@@ -857,80 +857,80 @@ func TestInjectionTargets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := injectionTargets(windows, tt.msg)
+			got := routeMessage(windows, tt.msg)
 			if len(got) != tt.wantLen {
-				t.Fatalf("injectionTargets() returned %d results, want %d\n  got:  %v\n  want: %v",
+				t.Fatalf("routeMessage() returned %d results, want %d\n  got:  %v\n  want: %v",
 					len(got), tt.wantLen, got, tt.want)
 			}
 			for i, w := range got {
 				if w != tt.want[i] {
-					t.Errorf("injectionTargets()[%d] = %+v, want %+v", i, w, tt.want[i])
+					t.Errorf("routeMessage()[%d] = %+v, want %+v", i, w, tt.want[i])
 				}
 			}
 		})
 	}
 }
 
-func TestInjectionTargets_EmptyWindowList(t *testing.T) {
+func TestRouteMessage_EmptyWindowList(t *testing.T) {
 	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
-	got := injectionTargets(nil, msg)
+	got := routeMessage(nil, msg)
 	if len(got) != 0 {
 		t.Errorf("expected 0 targets with no windows, got %d", len(got))
 	}
 }
 
-func TestInjectionTargets_SingleAgent_IsSender(t *testing.T) {
+func TestRouteMessage_SingleAgent_IsSender(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 	}
 	msg := Message{Name: "azazello", Type: TypeChat, Text: "solo"}
-	got := injectionTargets(windows, msg)
+	got := routeMessage(windows, msg)
 	if len(got) != 0 {
 		t.Errorf("expected 0 targets when single agent is sender, got %d: %v", len(got), got)
 	}
 }
 
-func TestInjectionTargets_SingleAgent_NotSender(t *testing.T) {
-	// Non-woland agent only receives messages mentioning their name.
+func TestRouteMessage_SingleAgent_NotSender(t *testing.T) {
+	// Non-woland agent only receives messages where their name is in To.
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 	}
-	msg := Message{Name: "user", Type: TypeUser, Text: "hello azazello"}
-	got := injectionTargets(windows, msg)
+	msg := Message{Name: "user", Type: TypeUser, Text: "hello azazello", To: []string{"azazello"}}
+	got := routeMessage(windows, msg)
 	if len(got) != 1 || got[0].busName != "azazello" {
 		t.Errorf("expected [{azazello agent-azazello}], got %v", got)
 	}
 }
 
-func TestInjectionTargets_SingleAgent_NotMentioned(t *testing.T) {
-	// Non-woland agent does NOT receive messages that don't mention them.
+func TestRouteMessage_SingleAgent_NotInTo(t *testing.T) {
+	// Non-woland agent does NOT receive messages where they are not in To.
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 	}
 	msg := Message{Name: "user", Type: TypeUser, Text: "hello"}
-	got := injectionTargets(windows, msg)
+	got := routeMessage(windows, msg)
 	if len(got) != 0 {
-		t.Errorf("expected 0 targets when agent is not mentioned, got %d: %v", len(got), got)
+		t.Errorf("expected 0 targets when agent is not in To, got %d: %v", len(got), got)
 	}
 }
 
-func TestInjectionTargets_WolandExcludedWhenSender(t *testing.T) {
+func TestRouteMessage_WolandSenderMultiWindow(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "behemoth", windowName: "agent-behemoth"},
 	}
-	// Woland sends a message that doesn't mention any agent —
-	// no one receives it (woland excluded as sender, agents not mentioned).
+	// Woland sends a message with empty To —
+	// no one receives it (woland excluded as sender, agents not in To).
 	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything"}
-	got := injectionTargets(windows, msg)
+	got := routeMessage(windows, msg)
 	if len(got) != 0 {
-		t.Fatalf("expected 0 targets (woland sender, no agents mentioned), got %d: %v", len(got), got)
+		t.Fatalf("expected 0 targets (woland sender, no agents in To), got %d: %v", len(got), got)
 	}
 
-	// Woland sends a message mentioning azazello — only azazello receives.
-	msg2 := Message{Name: "woland", Type: TypeChat, Text: "Azazello, report status"}
-	got2 := injectionTargets(windows, msg2)
+	// Woland sends a message with azazello in To — only azazello receives.
+	msg2 := Message{Name: "woland", Type: TypeChat, Text: "Report status", To: []string{"azazello"}}
+	got2 := routeMessage(windows, msg2)
 	if len(got2) != 1 || got2[0].busName != "azazello" {
 		t.Fatalf("expected [azazello], got %v", got2)
 	}
@@ -941,34 +941,34 @@ func TestInjectionTargets_WolandExcludedWhenSender(t *testing.T) {
 	}
 }
 
-func TestInjectionTargets_WolandIncludedWhenNotSender(t *testing.T) {
+func TestRouteMessage_WolandIncludedWhenNotSender(t *testing.T) {
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 		{busName: "woland", windowName: "woland", isWoland: true},
 	}
 	msg := Message{Name: "azazello", Type: TypeChat, Text: "reporting in"}
-	got := injectionTargets(windows, msg)
+	got := routeMessage(windows, msg)
 	if len(got) != 1 || got[0].busName != "woland" {
 		t.Errorf("expected woland as sole target (hub), got %v", got)
 	}
 }
 
-func TestInjectionTargets_BabytalkExcludedWhenWolandSends(t *testing.T) {
+func TestRouteMessage_BabytalkExcludedWhenWolandSends(t *testing.T) {
 	// "babytalk" window has busName "woland", so it should be excluded
 	// when the sender is "woland".
 	windows := []injectionWindow{
 		{busName: "azazello", windowName: "agent-azazello"},
 		{busName: "woland", windowName: "babytalk", isWoland: true},
 	}
-	// Woland mentions azazello → azazello gets it, babytalk (woland) excluded as sender.
-	msg := Message{Name: "woland", Type: TypeChat, Text: "Azazello, I see everything"}
-	got := injectionTargets(windows, msg)
+	// Woland sends to azazello via To → azazello gets it, babytalk (woland) excluded as sender.
+	msg := Message{Name: "woland", Type: TypeChat, Text: "I see everything", To: []string{"azazello"}}
+	got := routeMessage(windows, msg)
 	if len(got) != 1 || got[0].busName != "azazello" {
 		t.Errorf("expected only azazello, got %v", got)
 	}
 }
 
-func TestInjectionTargets_SmartRouting(t *testing.T) {
+func TestRouteMessage_ExplicitRouting(t *testing.T) {
 	// Standard window setup with woland, behemoth, and azazello.
 	windows := []injectionWindow{
 		{busName: "woland", windowName: "woland", isWoland: true},
@@ -983,26 +983,26 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 		expected []injectionWindow
 	}{
 		{
-			name:    "UserAddressesWoland",
+			name:    "UserToWoland",
 			windows: windows,
-			msg:     Message{Name: "user", Type: TypeUser, Text: "Woland are you there?"},
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Woland are you there?", To: []string{"woland"}},
 			expected: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 			},
 		},
 		{
-			name:    "UserAddressesBehemoth",
+			name:    "UserToBehemoth",
 			windows: windows,
-			msg:     Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs"},
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Behemoth, check the logs", To: []string{"behemoth"}},
 			expected: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
 			},
 		},
 		{
-			name:    "UserAddressesBothAgents",
+			name:    "UserToBothAgents",
 			windows: windows,
-			msg:     Message{Name: "user", Type: TypeUser, Text: "Behemoth and Azazello, coordinate"},
+			msg:     Message{Name: "user", Type: TypeUser, Text: "Coordinate", To: []string{"behemoth", "azazello"}},
 			expected: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -1018,9 +1018,9 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			},
 		},
 		{
-			name:    "WolandAddressesBehemoth",
+			name:    "WolandToBehemoth",
 			windows: windows,
-			msg:     Message{Name: "woland", Type: TypeChat, Text: "Behemoth, you did great"},
+			msg:     Message{Name: "woland", Type: TypeChat, Text: "You did great", To: []string{"behemoth"}},
 			expected: []injectionWindow{
 				{busName: "behemoth", windowName: "agent-behemoth"},
 			},
@@ -1034,7 +1034,7 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			},
 		},
 		{
-			name:    "BehemothMentionsAzazello",
+			name:    "BehemothMentionsAzazelloInText",
 			windows: windows,
 			msg:     Message{Name: "behemoth", Type: TypeChat, Text: "I coordinated with Azazello on this"},
 			expected: []injectionWindow{
@@ -1042,7 +1042,7 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			},
 		},
 		{
-			name:    "AgentMessageToWolandOnly",
+			name:    "AgentNoTo",
 			windows: windows,
 			msg:     Message{Name: "azazello", Type: TypeChat, Text: "Behemoth and I finished the task"},
 			expected: []injectionWindow{
@@ -1050,9 +1050,9 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			},
 		},
 		{
-			name:    "WolandAddressesTester",
+			name:    "WolandToTester",
 			windows: append(windows, injectionWindow{busName: "tester", windowName: "agent-tester"}),
-			msg:     Message{Name: "woland", Type: TypeChat, Text: "Tester's joke was funny"},
+			msg:     Message{Name: "woland", Type: TypeChat, Text: "Good joke", To: []string{"tester"}},
 			expected: []injectionWindow{
 				{busName: "tester", windowName: "agent-tester"},
 			},
@@ -1064,9 +1064,9 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name:    "CaseInsensitive",
+			name:    "CaseInsensitiveTo",
 			windows: windows,
-			msg:     Message{Name: "user", Type: TypeUser, Text: "BEHEMOTH check this"},
+			msg:     Message{Name: "user", Type: TypeUser, Text: "check this", To: []string{"BEHEMOTH"}},
 			expected: []injectionWindow{
 				{busName: "woland", windowName: "woland", isWoland: true},
 				{busName: "behemoth", windowName: "agent-behemoth"},
@@ -1086,11 +1086,11 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := injectionTargets(tt.windows, tt.msg)
+			got := routeMessage(tt.windows, tt.msg)
 
 			// Check length first.
 			if len(got) != len(tt.expected) {
-				t.Errorf("injectionTargets() length = %d, expected %d\nGot: %v\nExpected: %v",
+				t.Errorf("routeMessage() length = %d, expected %d\nGot: %v\nExpected: %v",
 					len(got), len(tt.expected), got, tt.expected)
 				return
 			}
@@ -1103,7 +1103,7 @@ func TestInjectionTargets_SmartRouting(t *testing.T) {
 			// Check each window.
 			for i, expected := range tt.expected {
 				if got[i] != expected {
-					t.Errorf("injectionTargets()[%d] = %+v, expected %+v", i, got[i], expected)
+					t.Errorf("routeMessage()[%d] = %+v, expected %+v", i, got[i], expected)
 				}
 			}
 		})
@@ -2206,36 +2206,36 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		{busName: "behemoth", windowName: "agent-behemoth"},
 	}
 
-	// Get injection targets for this message ("I see all" from woland).
-	// Woland is sender (excluded), "I see all" doesn't mention behemoth,
-	// so no targets with smart routing.
-	targets := injectionTargets(windows, *msg)
+	// Get route targets for this message ("I see all" from woland).
+	// Woland is sender (excluded), behemoth not in To → no targets.
+	targets := routeMessage(windows, *msg)
 
 	// Verify Woland is NOT in the targets (sender excluded).
 	for _, tgt := range targets {
 		if tgt.busName == "woland" {
-			t.Error("woland should NOT be in injection targets — it is the sender")
+			t.Error("woland should NOT be in route targets — it is the sender")
 		}
 	}
 
 	if len(targets) != 0 {
-		t.Errorf("expected 0 injection targets (no agent mentioned), got %d: %v", len(targets), targets)
+		t.Errorf("expected 0 route targets (behemoth not in To), got %d: %v", len(targets), targets)
 	}
 
-	// Woland sends a message mentioning Behemoth — Behemoth should receive.
+	// Woland sends a message with behemoth in To — Behemoth should receive.
 	msgMention := NewMessage("woland", TypeChat, "Behemoth, report status")
-	targetsMention := injectionTargets(windows, *msgMention)
+	msgMention.To = []string{"behemoth"}
+	targetsMention := routeMessage(windows, *msgMention)
 	if len(targetsMention) != 1 || targetsMention[0].busName != "behemoth" {
-		t.Errorf("expected [behemoth] when mentioned, got %v", targetsMention)
+		t.Errorf("expected [behemoth] when in To, got %v", targetsMention)
 	}
 
 	// Reverse: Behemoth sends, verify Woland receives (hub) and Behemoth does not.
 	msgB := NewMessage("behemoth", TypeChat, "I am the gardener")
-	targetsB := injectionTargets(windows, *msgB)
+	targetsB := routeMessage(windows, *msgB)
 
 	for _, tgt := range targetsB {
 		if tgt.busName == "behemoth" {
-			t.Error("behemoth should NOT be in injection targets when it is the sender")
+			t.Error("behemoth should NOT be in route targets when it is the sender")
 		}
 	}
 	foundWoland := false
@@ -2246,7 +2246,7 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		}
 	}
 	if !foundWoland {
-		t.Error("woland should be in injection targets when behemoth sends (hub rule)")
+		t.Error("woland should be in route targets when behemoth sends (hub rule)")
 	}
 
 	// Verify echo prevention works with the correct attribution. If
@@ -2258,7 +2258,7 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		// from Woland (misattributed).
 		misattributed := NewMessage("behemoth", TypeChat, "This is actually Woland speaking")
 
-		targets := injectionTargets(windows, *misattributed)
+		targets := routeMessage(windows, *misattributed)
 		// With the misattribution, Behemoth would be excluded (it's listed
 		// as sender), but Woland would receive its own message — causing
 		// an echo loop. Woland receives because it's the hub.
@@ -2273,7 +2273,7 @@ func TestEchoPreventionWithCorrectAttribution(t *testing.T) {
 		// With correct attribution, a message from "woland" would correctly
 		// exclude "woland" from targets.
 		correct := NewMessage("woland", TypeChat, "This is actually Woland speaking")
-		correctTargets := injectionTargets(windows, *correct)
+		correctTargets := routeMessage(windows, *correct)
 		for _, tgt := range correctTargets {
 			if tgt.busName == "woland" {
 				t.Error("with correct attribution, woland should not receive its own message")
@@ -2510,9 +2510,8 @@ func TestMultiAgentBusFlow(t *testing.T) {
 		}
 	})
 
-	// Verify echo prevention: for each agent's messages, the injection
-	// targets should exclude that agent. With smart routing, targets
-	// depend on whether agent names are mentioned in the text.
+	// Verify echo prevention: for each agent's messages, the route
+	// targets should exclude that agent.
 	t.Run("no_echo_injection", func(t *testing.T) {
 		windows := []injectionWindow{
 			{busName: "woland", windowName: "woland", isWoland: true},
@@ -2521,16 +2520,16 @@ func TestMultiAgentBusFlow(t *testing.T) {
 		}
 
 		for _, m := range recent {
-			targets := injectionTargets(windows, *m)
+			targets := routeMessage(windows, *m)
 			for _, tgt := range targets {
 				if tgt.busName == m.Name {
-					t.Errorf("echo detected: message from %q would be injected back to %q",
+					t.Errorf("echo detected: message from %q would be routed back to %q",
 						m.Name, tgt.busName)
 				}
 			}
-			// With smart routing: messages from agents go to woland (hub)
-			// plus any mentioned agents. Messages from woland go only to
-			// mentioned agents. No one ever gets their own message.
+			// With To-based routing: messages without To go to woland (hub) only.
+			// Agents only receive messages with explicit To containing their name.
+			// No one ever gets their own message.
 		}
 	})
 
@@ -2667,609 +2666,6 @@ func TestWatcherDetectsStaleness(t *testing.T) {
 	watcher.stopAllWatchers()
 }
 
-// ---------------------------------------------------------------------------
-// Loop prevention: Woland↔Agent ping-pong suppression
-// ---------------------------------------------------------------------------
-
-// newTestWatcherWithTime creates a test watcher with a controllable time function.
-func newTestWatcherWithTime(t *testing.T, busDir string, nowFn func() time.Time) *Watcher {
-	t.Helper()
-	w := newTestWatcher(t, busDir)
-	w.timeNow = nowFn
-	return w
-}
-
-// setupWatcherWithAgents creates a watcher with fake agent watchers registered,
-// suitable for testing injectMessage loop prevention. The watcher has no real
-// tmux connection, so tmux send-keys will fail silently — that's fine, we're
-// testing routing decisions via the log output and state changes.
-func setupWatcherWithAgents(t *testing.T, agents []injectionWindow, nowFn func() time.Time) *Watcher {
-	t.Helper()
-	dir := t.TempDir()
-	w := newTestWatcherWithTime(t, dir, nowFn)
-
-	ctx := context.Background()
-	for _, a := range agents {
-		childCtx, childCancel := context.WithCancel(ctx)
-		done := make(chan struct{})
-		w.watchers[a.windowName] = &agentWatcher{
-			cancel:     childCancel,
-			done:       done,
-			busName:    a.busName,
-			windowName: a.windowName,
-			isWoland:   a.isWoland,
-		}
-		go func(c context.Context, d chan struct{}) {
-			defer close(d)
-			<-c.Done()
-		}(childCtx, done)
-	}
-	t.Cleanup(func() { w.stopAllWatchers() })
-	return w
-}
-
-func TestLoopPrevention_SuppressionWindow(t *testing.T) {
-	// Scenario: agent "tester" sends a joke → injected to woland (records timestamp).
-	// Woland responds mentioning "tester" within 10s → NOT routed to tester.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Step 1: Agent "tester" sends a message → injected to woland.
-	testerMsg := Message{
-		ID:        "t1",
-		Name:      "tester",
-		Timestamp: currentTime,
-		Type:      TypeChat,
-		Text:      "Here's a joke for you!",
-	}
-	w.injectMessage(ctx, testerMsg)
-
-	// Verify timestamp was recorded.
-	w.mu.Lock()
-	lastInj, ok := w.lastInjectedToWoland["tester"]
-	w.mu.Unlock()
-	if !ok {
-		t.Fatal("expected lastInjectedToWoland entry for 'tester'")
-	}
-	if lastInj != now {
-		t.Errorf("lastInjectedToWoland[tester] = %v, want %v", lastInj, now)
-	}
-
-	// Step 2: Woland responds mentioning "tester" 2 seconds later (within window).
-	currentTime = now.Add(2 * time.Second)
-	wolandMsg := Message{
-		ID:        "w1",
-		Name:      "woland",
-		Timestamp: currentTime,
-		Type:      TypeChat,
-		Text:      "Looks like Tester's warmed up with a good one!",
-	}
-	w.injectMessage(ctx, wolandMsg)
-
-	// Verify that the exchange count for tester WAS incremented even though
-	// the message was suppressed by the window. The exchange counter must
-	// always increment so suppressed messages count toward the limit.
-	w.mu.Lock()
-	count := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if count != 1 {
-		t.Errorf("expected exchangeCount[tester] = 1 (incremented despite suppression), got %d", count)
-	}
-}
-
-func TestLoopPrevention_SuppressionWindowStillIncrementsExchange(t *testing.T) {
-	// Verify that messages suppressed by the window still count toward the
-	// exchange limit. After enough suppressed messages exhaust the budget,
-	// the exchange limit blocks further routing even after the window expires.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Agent "tester" sends a message → injected to woland (records timestamp).
-	w.injectMessage(ctx, Message{
-		ID: "t1", Name: "tester", Type: TypeChat,
-		Text: "Hello from tester",
-	})
-
-	// Send maxExchangesPerTurn Woland messages within the suppression window.
-	// Each should be suppressed by the window but still increment the counter.
-	for i := 0; i < maxExchangesPerTurn; i++ {
-		currentTime = now.Add(time.Duration(i+1) * time.Second) // 1s, 2s — within 10s window
-		w.injectMessage(ctx, Message{
-			ID:   fmt.Sprintf("w%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Tester, message %d", i),
-		})
-	}
-
-	// Exchange counter should be at the limit.
-	w.mu.Lock()
-	count := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if count != maxExchangesPerTurn {
-		t.Errorf("expected exchangeCount[tester] = %d after %d suppressed messages, got %d",
-			maxExchangesPerTurn, maxExchangesPerTurn, count)
-	}
-
-	// Now advance past the suppression window. Even though the window has
-	// expired, the exchange limit should still block further routing.
-	currentTime = now.Add(20 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "w-after-window", Name: "woland", Type: TypeChat,
-		Text: "Tester, are you there?",
-	})
-
-	w.mu.Lock()
-	countAfter := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if countAfter != maxExchangesPerTurn {
-		t.Errorf("expected exchangeCount[tester] still at %d (blocked by limit after window expired), got %d",
-			maxExchangesPerTurn, countAfter)
-	}
-}
-
-func TestLoopPrevention_SuppressionWindowExpired(t *testing.T) {
-	// Woland can address agent after the suppression window expires.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Agent sends message → injected to woland.
-	testerMsg := Message{
-		ID:   "t1",
-		Name: "tester",
-		Type: TypeChat,
-		Text: "Here's a joke!",
-	}
-	w.injectMessage(ctx, testerMsg)
-
-	// Woland responds 15 seconds later (OUTSIDE the 10s window).
-	currentTime = now.Add(15 * time.Second)
-	wolandMsg := Message{
-		ID:   "w1",
-		Name: "woland",
-		Type: TypeChat,
-		Text: "Hey Tester, that was funny",
-	}
-	w.injectMessage(ctx, wolandMsg)
-
-	// The message SHOULD have been routed (exchange count incremented).
-	w.mu.Lock()
-	count := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if count != 1 {
-		t.Errorf("expected exchangeCount[tester] = 1 (routed after window expired), got %d", count)
-	}
-}
-
-func TestLoopPrevention_ExchangeLimit(t *testing.T) {
-	// Simulate 3+ Woland messages mentioning tester with no user message between.
-	// First 2 route, 3rd is suppressed.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Send 3 Woland messages mentioning tester, each well outside the
-	// suppression window (so only the exchange limiter can stop them).
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
-		msg := Message{
-			ID:   fmt.Sprintf("w%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Tester, do thing %d", i),
-		}
-		w.injectMessage(ctx, msg)
-	}
-
-	// Exchange count should be capped at maxExchangesPerTurn (2).
-	w.mu.Lock()
-	count := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if count != maxExchangesPerTurn {
-		t.Errorf("expected exchangeCount[tester] = %d (capped), got %d", maxExchangesPerTurn, count)
-	}
-}
-
-func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
-	// Hit exchange limit → user sends message mentioning agent → only that
-	// agent's count resets → routing works again for mentioned agent only.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-		{busName: "monitor", windowName: "agent-monitor"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Exhaust the exchange limit for tester (2 messages outside suppression window).
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
-		msg := Message{
-			ID:   fmt.Sprintf("w%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Tester, message %d", i),
-		}
-		w.injectMessage(ctx, msg)
-	}
-
-	// Also exhaust the exchange limit for monitor.
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+4) * 20 * time.Second)
-		msg := Message{
-			ID:   fmt.Sprintf("wm%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Monitor, message %d", i),
-		}
-		w.injectMessage(ctx, msg)
-	}
-
-	w.mu.Lock()
-	countBefore := w.exchangeCount["tester"]
-	monitorBefore := w.exchangeCount["monitor"]
-	w.mu.Unlock()
-	if countBefore != maxExchangesPerTurn {
-		t.Fatalf("expected tester exchange count at limit (%d), got %d", maxExchangesPerTurn, countBefore)
-	}
-	if monitorBefore != maxExchangesPerTurn {
-		t.Fatalf("expected monitor exchange count at limit (%d), got %d", maxExchangesPerTurn, monitorBefore)
-	}
-
-	// User sends a message mentioning only tester → only tester's count resets.
-	currentTime = now.Add(200 * time.Second)
-	userMsg := Message{
-		ID:   "u1",
-		Name: "user",
-		Type: TypeUser,
-		Text: "Hey tester, try again please",
-	}
-	w.injectMessage(ctx, userMsg)
-
-	w.mu.Lock()
-	countAfterReset := w.exchangeCount["tester"]
-	monitorAfterReset := w.exchangeCount["monitor"]
-	w.mu.Unlock()
-	if countAfterReset != 0 {
-		t.Errorf("expected exchangeCount[tester] = 0 after user message mentioning tester, got %d", countAfterReset)
-	}
-	if monitorAfterReset != maxExchangesPerTurn {
-		t.Errorf("expected exchangeCount[monitor] = %d (unchanged), got %d", maxExchangesPerTurn, monitorAfterReset)
-	}
-
-	// Now Woland can route to tester again.
-	currentTime = now.Add(220 * time.Second)
-	wolandMsg := Message{
-		ID:   "w-after-reset",
-		Name: "woland",
-		Type: TypeChat,
-		Text: "Tester, try again please",
-	}
-	w.injectMessage(ctx, wolandMsg)
-
-	w.mu.Lock()
-	countAfterRoute := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if countAfterRoute != 1 {
-		t.Errorf("expected exchangeCount[tester] = 1 after reset + new route, got %d", countAfterRoute)
-	}
-}
-
-func TestLoopPrevention_UserMessageDoesNotResetUnmentionedAgent(t *testing.T) {
-	// Two agents hit their exchange limit. User sends a message mentioning
-	// only one agent. The other agent's counter must remain at the limit.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-		{busName: "monitor", windowName: "agent-monitor"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Exhaust exchange limit for both tester and monitor.
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
-		w.injectMessage(ctx, Message{
-			ID:   fmt.Sprintf("wt%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Tester, message %d", i),
-		})
-	}
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+4) * 20 * time.Second)
-		w.injectMessage(ctx, Message{
-			ID:   fmt.Sprintf("wm%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Monitor, message %d", i),
-		})
-	}
-
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != maxExchangesPerTurn {
-		t.Fatalf("expected tester at limit, got %d", w.exchangeCount["tester"])
-	}
-	if w.exchangeCount["monitor"] != maxExchangesPerTurn {
-		t.Fatalf("expected monitor at limit, got %d", w.exchangeCount["monitor"])
-	}
-	w.mu.Unlock()
-
-	// User message mentions only "tester".
-	currentTime = now.Add(200 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID:   "u1",
-		Name: "user",
-		Type: TypeUser,
-		Text: "tester, please run it again",
-	})
-
-	w.mu.Lock()
-	testerCount := w.exchangeCount["tester"]
-	monitorCount := w.exchangeCount["monitor"]
-	w.mu.Unlock()
-
-	if testerCount != 0 {
-		t.Errorf("expected tester counter reset to 0, got %d", testerCount)
-	}
-	if monitorCount != maxExchangesPerTurn {
-		t.Errorf("expected monitor counter still at limit (%d), got %d", maxExchangesPerTurn, monitorCount)
-	}
-
-	// Woland tries to route to both — only tester should accept.
-	currentTime = now.Add(220 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID:   "w-post",
-		Name: "woland",
-		Type: TypeChat,
-		Text: "Tester and Monitor, here's an update",
-	})
-
-	w.mu.Lock()
-	testerAfter := w.exchangeCount["tester"]
-	monitorAfter := w.exchangeCount["monitor"]
-	w.mu.Unlock()
-
-	if testerAfter != 1 {
-		t.Errorf("expected tester counter = 1 after new route, got %d", testerAfter)
-	}
-	if monitorAfter != maxExchangesPerTurn {
-		t.Errorf("expected monitor counter still at limit (%d), got %d", maxExchangesPerTurn, monitorAfter)
-	}
-}
-
-func TestLoopPrevention_UserMessagesBypassAllPrevention(t *testing.T) {
-	// TypeUser messages mentioning an agent should always route, regardless
-	// of suppression window or exchange count.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Set up suppression state: pretend tester just sent a message.
-	w.mu.Lock()
-	w.lastInjectedToWoland["tester"] = now
-	// Also max out the exchange count.
-	w.exchangeCount["tester"] = maxExchangesPerTurn + 10
-	w.mu.Unlock()
-
-	// User message mentioning tester 1 second later (within suppression window,
-	// over exchange limit) → should still route to tester.
-	currentTime = now.Add(1 * time.Second)
-	userMsg := Message{
-		ID:   "u1",
-		Name: "user",
-		Type: TypeUser,
-		Text: "Tester, run the suite please",
-	}
-	w.injectMessage(ctx, userMsg)
-
-	// The user message should have reset the exchange count (it's a TypeUser).
-	// And the routing to tester should have happened via injectionTargets
-	// (TypeUser messages route based on simple substring match).
-	// Verify exchange count was reset by the user message.
-	w.mu.Lock()
-	count := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if count != 0 {
-		t.Errorf("expected exchangeCount[tester] = 0 (reset by user message), got %d", count)
-	}
-}
-
-func TestLoopPrevention_OnlySuppressesOriginatingAgent(t *testing.T) {
-	// When agent "tester" sends a message to Woland, the suppression window
-	// should only affect routing back to "tester", not to other agents.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-		{busName: "builder", windowName: "agent-builder"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Agent "tester" sends message → injected to woland.
-	testerMsg := Message{
-		ID:   "t1",
-		Name: "tester",
-		Type: TypeChat,
-		Text: "Tests passed!",
-	}
-	w.injectMessage(ctx, testerMsg)
-
-	// Woland responds mentioning both tester and builder within window.
-	currentTime = now.Add(2 * time.Second)
-	wolandMsg := Message{
-		ID:   "w1",
-		Name: "woland",
-		Type: TypeChat,
-		Text: "Great! Tester passed, Builder can deploy now",
-	}
-	w.injectMessage(ctx, wolandMsg)
-
-	// "tester" should be suppressed (within window) but exchange count still
-	// incremented. "builder" should route normally.
-	w.mu.Lock()
-	testerCount := w.exchangeCount["tester"]
-	builderCount := w.exchangeCount["builder"]
-	w.mu.Unlock()
-
-	if testerCount != 1 {
-		t.Errorf("expected tester exchange count 1 (incremented despite suppression), got %d", testerCount)
-	}
-	if builderCount != 1 {
-		t.Errorf("expected builder routed (count 1), got %d", builderCount)
-	}
-}
-
-func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
-	// Simulate the exact bug scenario from the issue:
-	// 1. Agent "tester" sends a joke → bus captures → injected to woland
-	// 2. Woland responds mentioning tester → suppressed by window BUT counter
-	//    still increments (this is the fix!)
-	// 3. Exchange limit caps at 2, reached faster because suppressed messages count
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Round 1: tester sends joke.
-	currentTime = now
-	w.injectMessage(ctx, Message{
-		ID: "t1", Name: "tester", Type: TypeChat,
-		Text: "Why did the chicken cross the road?",
-	})
-
-	// Round 2: Woland acknowledges (within suppression window) → suppressed,
-	// but exchange counter STILL increments to 1.
-	currentTime = now.Add(3 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "w1", Name: "woland", Type: TypeChat,
-		Text: "Ha! Tester's got jokes today",
-	})
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != 1 {
-		t.Errorf("round 2: expected count 1 (incremented despite suppression), got %d", w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-
-	// Simulate tester responding again (as if this got through somehow in
-	// a different timeline). Record new injection timestamp.
-	currentTime = now.Add(15 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "t2", Name: "tester", Type: TypeChat,
-		Text: "To get to the other side!",
-	})
-
-	// Woland responds after suppression window expires → routed (exchange 2,
-	// which hits the limit).
-	currentTime = now.Add(30 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "w2", Name: "woland", Type: TypeChat,
-		Text: "Classic, Tester. Very classic.",
-	})
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != 2 {
-		t.Errorf("round 4: expected count 2 (limit reached), got %d", w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-
-	// Tester responds again, then Woland → blocked by exchange limit.
-	currentTime = now.Add(45 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "t3", Name: "tester", Type: TypeChat,
-		Text: "I've got more!",
-	})
-
-	currentTime = now.Add(60 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "w3", Name: "woland", Type: TypeChat,
-		Text: "Tester, please focus on work",
-	})
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != 2 {
-		t.Errorf("round 6: expected count still 2 (blocked by limit), got %d", w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-
-	// Woland tries one more time → still blocked by exchange limit.
-	currentTime = now.Add(75 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "w4", Name: "woland", Type: TypeChat,
-		Text: "Tester, seriously stop",
-	})
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != 2 {
-		t.Errorf("round 7: expected count still 2 (blocked), got %d", w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-
-	// User intervenes → resets everything.
-	currentTime = now.Add(90 * time.Second)
-	w.injectMessage(ctx, Message{
-		ID: "u1", Name: "user", Type: TypeUser,
-		Text: "Tester, run the actual tests",
-	})
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != 0 {
-		t.Errorf("after user: expected count 0, got %d", w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-}
 
 // ===========================================================================
 // Woland user input propagation tests
@@ -3732,80 +3128,6 @@ func TestReadAgentLines_WolandHumanDraining(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Exchange counter reset via propagated user messages
-// ---------------------------------------------------------------------------
-
-func TestLoopPrevention_WolandTerminalUserInputResetsExchangeCount(t *testing.T) {
-	// Scenario: Woland↔Agent routing hits the exchange limit, then the user
-	// types directly into Woland's terminal. The human message should propagate
-	// to the bus as TypeUser, which resets the exchange counter.
-	now := time.Now()
-	currentTime := now
-	nowFn := func() time.Time { return currentTime }
-
-	agents := []injectionWindow{
-		{busName: "woland", windowName: "woland", isWoland: true},
-		{busName: "tester", windowName: "agent-tester"},
-	}
-	w := setupWatcherWithAgents(t, agents, nowFn)
-	ctx := context.Background()
-
-	// Exhaust the exchange limit.
-	for i := 0; i < 3; i++ {
-		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
-		msg := Message{
-			ID:   fmt.Sprintf("w%d", i),
-			Name: "woland",
-			Type: TypeChat,
-			Text: fmt.Sprintf("Tester, do thing %d", i),
-		}
-		w.injectMessage(ctx, msg)
-	}
-
-	w.mu.Lock()
-	if w.exchangeCount["tester"] != maxExchangesPerTurn {
-		t.Fatalf("expected exchange count at limit (%d), got %d", maxExchangesPerTurn, w.exchangeCount["tester"])
-	}
-	w.mu.Unlock()
-
-	// Simulate a user message arriving on the bus (as would happen when
-	// readAgentLines propagates a human message from Woland's session).
-	// The message mentions "tester" so its counter gets reset.
-	currentTime = now.Add(100 * time.Second)
-	userMsg := Message{
-		ID:   "user-from-terminal",
-		Name: "user",
-		Type: TypeUser,
-		Text: "Tester, keep going",
-	}
-	w.injectMessage(ctx, userMsg)
-
-	// Exchange count should be reset for tester (mentioned in user message).
-	w.mu.Lock()
-	countAfterReset := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if countAfterReset != 0 {
-		t.Errorf("expected exchangeCount[tester] = 0 after user message from terminal, got %d", countAfterReset)
-	}
-
-	// Woland can now route to tester again.
-	currentTime = now.Add(120 * time.Second)
-	wolandMsg := Message{
-		ID:   "w-after-reset",
-		Name: "woland",
-		Type: TypeChat,
-		Text: "Tester, try again please",
-	}
-	w.injectMessage(ctx, wolandMsg)
-
-	w.mu.Lock()
-	countAfterRoute := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if countAfterRoute != 1 {
-		t.Errorf("expected exchangeCount[tester] = 1 after reset + new route, got %d", countAfterRoute)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // End-to-end: Woland session with mixed messages
