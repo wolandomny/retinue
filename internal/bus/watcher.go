@@ -652,6 +652,10 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 		}
 		w.logger.Printf("routing message from %q to %d targets: %v",
 			msg.Name, len(targets), names)
+	} else if len(msg.To) > 0 {
+		// Message has explicit recipients but no matching windows.
+		w.logger.Printf("WARNING: message from %q has explicit recipients %v but no matching windows found",
+			msg.Name, msg.To)
 	}
 
 	for _, t := range targets {
