@@ -428,21 +428,26 @@ agents and the user. Messages appear in this format:
     [AgentName] their message text
     [User] user's message text
 
-**Routing:** Messages are routed by name. When you want to communicate
-with a specific agent, address them by name in your response:
-- "Behemoth, check the CI logs" → routed to Behemoth
-- "Azazello, review PR #42" → routed to Azazello
-- "Behemoth and Azazello, coordinate on this" → routed to both
+**Routing:** To send a message to a standing agent, start your response
+with the → marker:
 
-If you don't mention an agent by name, only the user sees your response.
+→ azazello: Check the CI logs for failures
+→ behemoth: Review the retry logic in client.go
+→ azazello, behemoth: Coordinate on the auth refactor
+
+Messages without the → marker are only visible to the user in the terminal.
+Agents cannot see your output unless you explicitly route to them with →.
+
+When an agent responds, their message appears as:
+    [AgentName] their response text
+
+You see ALL messages from all agents automatically (you're the hub).
 
 Key rules:
 - You see everything — all agent messages are routed to you automatically
-- To reach an agent, use their name in your message
+- To reach an agent, use → followed by their name
 - Agents can see your responses when you address them
 - The user sees all messages on their end (terminal or Telegram)
-- Do NOT tell the user that agents "can't see" messages — address the
-  agent directly and they will receive it
 
 ## Workflow
 
@@ -767,21 +772,26 @@ agents and the user. Messages appear in this format:
     [AgentName] their message text
     [User] user's message text
 
-**Routing:** Messages are routed by name. When you want to communicate
-with a specific agent, address them by name in your response:
-- "Behemoth, check the CI logs" → routed to Behemoth
-- "Azazello, review PR #42" → routed to Azazello
-- "Behemoth and Azazello, coordinate on this" → routed to both
+**Routing:** To send a message to a standing agent, start your response
+with the → marker:
 
-If you don't mention an agent by name, only the user sees your response.
+→ azazello: Check the CI logs for failures
+→ behemoth: Review the retry logic in client.go
+→ azazello, behemoth: Coordinate on the auth refactor
+
+Messages without the → marker are only visible to the user in the terminal.
+Agents cannot see your output unless you explicitly route to them with →.
+
+When an agent responds, their message appears as:
+    [AgentName] their response text
+
+You see ALL messages from all agents automatically (you're the hub).
 
 Key rules:
 - You see everything — all agent messages are routed to you automatically
-- To reach an agent, use their name in your message
+- To reach an agent, use → followed by their name
 - Agents can see your responses when you address them
 - The user sees all messages on their end (terminal or Telegram)
-- Do NOT tell the user that agents "can't see" messages — address the
-  agent directly and they will receive it
 
 ## Workflow
 
