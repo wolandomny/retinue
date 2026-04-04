@@ -16,9 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wolandomny/retinue/internal/bus"
-	"github.com/wolandomny/retinue/internal/phone"
 	"github.com/wolandomny/retinue/internal/session"
-	"github.com/wolandomny/retinue/internal/standing"
 	"github.com/wolandomny/retinue/internal/telegram"
 )
 
@@ -118,12 +116,9 @@ func newPhoneServeCmd() *cobra.Command {
 		Short: "Run the Telegram phone bridge daemon",
 		Long: `Runs a persistent daemon that bridges Telegram to the retinue apartment.
 
-In group mode (when standing agents are defined in agents.yaml), it starts
-the bus watcher internally and uses the Telegram bus adapter for a group chat
+Uses the bus watcher and Telegram bus adapter to provide a group chat
 experience — the user sees messages from Woland and all standing agents.
-
-In legacy mode (no agents defined), it falls back to the direct Woland-only
-bridge that watches a single session file and injects into the Woland tmux pane.
+The bus watcher gracefully handles zero agents.
 
 Requires:
   - telegram.token in retinue.yaml or RETINUE_TELEGRAM_TOKEN environment variable (bot token)
@@ -191,49 +186,28 @@ Requires:
 				}
 			}()
 
-			// Check if standing agents are defined to decide the mode.
-			agentStore := standing.NewFileStore(ws.AgentsPath())
-			agents, _ := agentStore.Load()
-			hasAgents := len(agents) > 0
-
-			if hasAgents {
-				// GROUP CHAT MODE: use bus watcher + telegram adapter.
-				logger.Printf("starting group chat bridge (workspace=%s, chat_id=%d, socket=%s, agents=%d)",
-					ws.Config.Name, chatID, tmuxSocket, len(agents))
-				logger.Printf("apartment path: %s", ws.Path)
-				logger.Printf("📱 Group chat bridge active. Monitoring Woland + %d agents.", len(agents))
-
-				b := bus.New(ws.BusPath())
-
-				// Only start bus watcher if not already running in tmux.
-				// Use the same tmux-window mechanism as agent.go so that both
-				// phone serve and agent start detect each other's bus watcher.
-				mgr := session.NewTmuxManager(tmuxSocket)
-				if shouldStartBusWatcher(ctx, mgr) {
-					bwCmd := busWatcherCommand(ws)
-					if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
-						logger.Printf("warning: could not start bus watcher: %v", err)
-					} else {
-						logger.Printf("bus watcher started as tmux window")
-					}
-				} else {
-					logger.Printf("bus watcher already running in tmux, skipping")
-				}
-
-				// Run telegram adapter on the bus (blocks).
-				adapter := bus.NewTelegramAdapter(b, bot, chatID, logger, cancel)
-				return adapter.Run(ctx)
-			}
-
-			// LEGACY MODE: direct Woland bridge (no agents).
+			// Always use bus watcher + telegram adapter.
+			// The bus watcher gracefully handles zero agents.
 			logger.Printf("starting phone bridge (workspace=%s, chat_id=%d, socket=%s)",
 				ws.Config.Name, chatID, tmuxSocket)
 			logger.Printf("apartment path: %s", ws.Path)
-			logger.Printf("📱 Phone bridge active. Connected to Woland.")
 
-			watcher := phone.NewWatcher(ws.Path, logger)
-			bridge := phone.NewBridge(bot, chatID, tmuxSocket, watcher, logger, cancel)
-			return bridge.Run(ctx)
+			b := bus.New(ws.BusPath())
+
+			mgr := session.NewTmuxManager(tmuxSocket)
+			if shouldStartBusWatcher(ctx, mgr) {
+				bwCmd := busWatcherCommand(ws)
+				if err := mgr.CreateWindow(ctx, session.ApartmentSession, busWatcherWindow, ws.Path, bwCmd); err != nil {
+					logger.Printf("warning: could not start bus watcher: %v", err)
+				} else {
+					logger.Printf("bus watcher started as tmux window")
+				}
+			} else {
+				logger.Printf("bus watcher already running in tmux, skipping")
+			}
+
+			adapter := bus.NewTelegramAdapter(b, bot, chatID, logger, cancel)
+			return adapter.Run(ctx)
 		},
 	}
 }
