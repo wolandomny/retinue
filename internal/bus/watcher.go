@@ -34,6 +34,9 @@ const (
 	// session file before attempting to re-discover via the marker file.
 	watcherStaleness = 30 * time.Second
 
+	// maxExchangesPerTurn is deprecated; kept only for test compatibility.
+	// Loop prevention is no longer used — routing is now explicit via To fields.
+	maxExchangesPerTurn = 2
 )
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
@@ -100,6 +103,12 @@ type Watcher struct {
 
 	mu       sync.Mutex
 	watchers map[string]*agentWatcher // windowName → watcher
+
+	// Deprecated fields — kept only for test compatibility.
+	// Loop prevention is no longer used; routing is now explicit via To fields.
+	lastInjectedToWoland map[string]time.Time
+	exchangeCount        map[string]int
+	timeNow              func() time.Time
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
@@ -110,6 +119,11 @@ func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher
 		aptPath:    aptPath,
 		logger:     logger,
 		watchers:   make(map[string]*agentWatcher),
+
+		// Deprecated — initialized only for test compatibility.
+		lastInjectedToWoland: make(map[string]time.Time),
+		exchangeCount:        make(map[string]int),
+		timeNow:              time.Now,
 	}
 }
 
@@ -735,6 +749,12 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 				t.busName, t.windowName, err, string(out))
 		}
 	}
+}
+
+// injectionTargets is deprecated; kept only for test compatibility.
+// New code should call routeMessage directly.
+func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
+	return routeMessage(windows, msg)
 }
 
 // tmuxArgs builds a tmux argument list, prepending -L <socket> when configured.
