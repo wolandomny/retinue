@@ -23,6 +23,7 @@ type Message struct {
 	Name      string                 `json:"name"`
 	Type      MessageType            `json:"type"`
 	Text      string                 `json:"text"`
+	To        []string               `json:"to,omitempty"`
 	Timestamp time.Time              `json:"timestamp"`
 	Meta      map[string]interface{} `json:"meta,omitempty"`
 }
