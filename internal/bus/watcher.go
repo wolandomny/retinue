@@ -30,10 +30,9 @@ const (
 	// discovering an agent's session file (to drain for dedup, not forward).
 	agentStartupWindow = 4096
 
-	// watcherStaleness is how long the watcher tolerates no new content from a
-	// session file before attempting to re-discover via the marker file.
-	watcherStaleness = 30 * time.Second
-
+	// rediscoveryInterval is how long the watcher waits before re-reading the
+	// marker file to check if the agent restarted with a new session.
+	rediscoveryInterval = 30 * time.Second
 )
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
@@ -244,6 +243,20 @@ func parseMonitoredWindows(tmuxOutput string) []monitoredWindow {
 // JSONL file. Works for both agent windows and Woland windows.
 // Must be called with w.mu held.
 func (w *Watcher) startMonitoredWatcher(ctx context.Context, win monitoredWindow) {
+	// Snapshot the session file at the time the window appears.
+	var sessionFile string
+	if win.isWoland {
+		sessionFile = w.findWolandSessionFile()
+	} else {
+		sessionFile = w.findAgentSessionFile(win.busName)
+	}
+
+	if sessionFile == "" {
+		w.logger.Printf("no valid session file for %q, skipping", win.busName)
+		// Don't add to watchers — will be retried on next poll.
+		return
+	}
+
 	childCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
@@ -256,14 +269,6 @@ func (w *Watcher) startMonitoredWatcher(ctx context.Context, win monitoredWindow
 	}
 	w.watchers[win.windowName] = aw
 
-	// Snapshot the session file at the time the window appears.
-	var sessionFile string
-	if win.isWoland {
-		sessionFile = w.findWolandSessionFile()
-	} else {
-		sessionFile = w.findAgentSessionFile(win.busName)
-	}
-
 	w.logger.Printf("starting output watcher for %q (window: %s, session: %s)", win.busName, win.windowName, filepath.Base(sessionFile))
 
 	go func() {
@@ -272,41 +277,27 @@ func (w *Watcher) startMonitoredWatcher(ctx context.Context, win monitoredWindow
 	}()
 }
 
-// findAgentSessionFile returns the session file for the given agent. It first
-// checks for a marker file (.agent-<id>-session) in the apartment directory.
-// If the marker exists and points to a valid, fresh file, that file is returned.
-// If the marker target is stale (not modified within watcherStaleness), it falls
-// through to the newest .jsonl file. Otherwise it falls back to the newest .jsonl
-// file in the Claude projects directory (legacy behavior).
+// findAgentSessionFile returns the session file for the given agent by reading
+// the marker file (.agent-<id>-session) in the apartment directory. The marker
+// is set at startup using reliable diff-based detection and is always trusted.
+// Returns "" if the marker is missing, empty, or points to a nonexistent file.
 func (w *Watcher) findAgentSessionFile(agentID string) string {
-	// Try marker file first.
 	markerPath := filepath.Join(w.aptPath, fmt.Sprintf(".agent-%s-session", agentID))
-	if data, err := os.ReadFile(markerPath); err == nil {
-		sessionPath := strings.TrimSpace(string(data))
-		if sessionPath != "" {
-			info, err := os.Stat(sessionPath)
-			if err != nil {
-				w.logger.Printf("agent %q marker points to missing file, falling back", agentID)
-			} else if time.Since(info.ModTime()) > watcherStaleness {
-				// Marker target is stale — try to find a newer file.
-				w.logger.Printf("agent %q marker target %s is stale (modified %s ago), checking for newer session",
-					agentID, filepath.Base(sessionPath), time.Since(info.ModTime()).Round(time.Second))
-				newest := session.NewestJSONLFile(session.ClaudeProjectDir(w.aptPath))
-				if newest != "" && newest != sessionPath {
-					w.logger.Printf("agent %q: found newer session file %s, ignoring stale marker", agentID, filepath.Base(newest))
-					return newest
-				}
-				// No better file; return the stale marker target.
-				return sessionPath
-			} else {
-				return sessionPath
-			}
-		}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		w.logger.Printf("no session marker for agent %q", agentID)
+		return ""
 	}
-
-	// Fallback: newest file (legacy behavior, but log a warning).
-	w.logger.Printf("no session marker for agent %q, using newest JSONL (may be wrong)", agentID)
-	return w.findNewestJSONL(session.ClaudeProjectDir(w.aptPath))
+	sessionPath := strings.TrimSpace(string(data))
+	if sessionPath == "" {
+		w.logger.Printf("empty session marker for agent %q", agentID)
+		return ""
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		w.logger.Printf("agent %q marker points to missing file %s", agentID, filepath.Base(sessionPath))
+		return ""
+	}
+	return sessionPath
 }
 
 // claudeProjectDir derives the Claude Code projects directory from an
@@ -316,43 +307,28 @@ func claudeProjectDir(aptPath string) string {
 }
 
 // findWolandSessionFile reads the .woland-session marker file to locate
-// Woland's active Claude session JSONL. Falls back to the newest JSONL
-// in the Claude projects directory if the marker is absent or stale.
+// Woland's active Claude session JSONL. The marker is set at startup using
+// reliable diff-based detection and is always trusted. Returns "" if the
+// marker is missing, empty, or points to a nonexistent file.
 func (w *Watcher) findWolandSessionFile() string {
 	markerPath := filepath.Join(w.aptPath, ".woland-session")
 	data, err := os.ReadFile(markerPath)
 	if err != nil {
-		w.logger.Printf("no .woland-session marker found, falling back to newest JSONL")
-		return w.findAgentSessionFile("woland")
+		w.logger.Printf("no .woland-session marker found")
+		return ""
 	}
 	sessionPath := strings.TrimSpace(string(data))
 	if sessionPath == "" {
-		return w.findAgentSessionFile("woland")
+		w.logger.Printf("empty .woland-session marker")
+		return ""
 	}
-	// Verify the file exists and log diagnostics.
 	info, err := os.Stat(sessionPath)
 	if err != nil {
-		w.logger.Printf(".woland-session marker points to missing file %q, falling back", sessionPath)
-		return w.findAgentSessionFile("woland")
+		w.logger.Printf(".woland-session marker points to missing file %q", sessionPath)
+		return ""
 	}
-	w.logger.Printf("found .woland-session marker pointing to %s", filepath.Base(sessionPath))
-	w.logger.Printf("marker file modified %s ago", time.Since(info.ModTime()).Round(time.Second))
-
-	// If the marker target hasn't been modified within watcherStaleness,
-	// it's stale — fall through to the newest JSONL file instead of
-	// blindly trusting the marker.
-	if time.Since(info.ModTime()) > watcherStaleness {
-		w.logger.Printf(".woland-session marker target %s is stale (modified %s ago, threshold %s), falling back to newest JSONL",
-			filepath.Base(sessionPath), time.Since(info.ModTime()).Round(time.Second), watcherStaleness)
-		newest := session.NewestJSONLFile(session.ClaudeProjectDir(w.aptPath))
-		if newest != "" && newest != sessionPath {
-			w.logger.Printf("found newer session file %s, ignoring stale marker", filepath.Base(newest))
-			return newest
-		}
-		// No better file found; return the stale one as last resort.
-		w.logger.Printf("no newer session file found, using stale marker target")
-	}
-
+	w.logger.Printf("using .woland-session marker: %s (modified %s ago)",
+		filepath.Base(sessionPath), time.Since(info.ModTime()).Round(time.Second))
 	return sessionPath
 }
 
@@ -412,25 +388,6 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 		case <-time.After(agentPollInterval):
 		}
 
-		// Check if a newer session file has appeared (the agent/Woland
-		// may have restarted its Claude session).
-		var newest string
-		if isWoland {
-			newest = w.findWolandSessionFile()
-		} else {
-			newest = w.findAgentSessionFile(agentID)
-		}
-		if newest != "" && newest != sessionFile {
-			w.logger.Printf("%q: session file changed to %s", agentID, filepath.Base(newest))
-			sessionFile = newest
-			offset = 0
-			partialLine = ""
-			lastNewContent = time.Now()
-			// Drain the new file.
-			offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
-			continue
-		}
-
 		prevOffset := offset
 		offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, false, isWoland)
 
@@ -438,68 +395,26 @@ func (w *Watcher) watchAgentOutput(ctx context.Context, agentID, sessionFile str
 			lastNewContent = time.Now()
 		}
 
-		// Staleness detection: if no new content for watcherStaleness and the
-		// file's ModTime is also older than watcherStaleness, attempt to
-		// re-discover the session file via the marker.
-		if time.Since(lastNewContent) > watcherStaleness {
-			if info, err := os.Stat(sessionFile); err != nil || time.Since(info.ModTime()) > watcherStaleness {
-				w.logger.Printf("%q: session file %s appears stale (no new content for %s), re-discovering",
-					agentID, filepath.Base(sessionFile), time.Since(lastNewContent).Round(time.Second))
-				var rediscovered string
-				if isWoland {
-					rediscovered = w.findWolandSessionFile()
-				} else {
-					rediscovered = w.findAgentSessionFile(agentID)
-				}
-				if rediscovered != "" && rediscovered != sessionFile {
-					w.logger.Printf("%q: re-discovered session file %s", agentID, filepath.Base(rediscovered))
-					sessionFile = rediscovered
-					offset = 0
-					partialLine = ""
-					lastNewContent = time.Now()
-					offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
-				} else {
-					// Re-discovery returned the same stale file (or empty).
-					// The marker is stale and points back to the same file.
-					// Bypass markers entirely and try newest JSONL directly.
-					projDir := session.ClaudeProjectDir(w.aptPath)
-					newest := session.NewestJSONLFile(projDir)
-					if newest != "" && newest != sessionFile {
-						w.logger.Printf("%q: marker returned same stale file, bypassing marker — switching to newest JSONL %s",
-							agentID, filepath.Base(newest))
-						sessionFile = newest
-						offset = 0
-						partialLine = ""
-						lastNewContent = time.Now()
-						offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
-
-						// Update the marker so subsequent lookups benefit.
-						var markerName string
-						if isWoland {
-							markerName = ".woland-session"
-						} else {
-							markerName = fmt.Sprintf(".agent-%s-session", agentID)
-						}
-						markerPath := filepath.Join(w.aptPath, markerName)
-						if err := os.WriteFile(markerPath, []byte(newest), 0o644); err != nil {
-							w.logger.Printf("%q: failed to update marker %s: %v", agentID, markerName, err)
-						} else {
-							w.logger.Printf("%q: updated marker %s → %s", agentID, markerName, filepath.Base(newest))
-						}
-					} else {
-						// Reset timer to avoid spamming re-discovery.
-						lastNewContent = time.Now()
-					}
-				}
+		// Re-read marker to check if it was updated (e.g., agent restarted).
+		if time.Since(lastNewContent) > rediscoveryInterval {
+			var rediscovered string
+			if isWoland {
+				rediscovered = w.findWolandSessionFile()
+			} else {
+				rediscovered = w.findAgentSessionFile(agentID)
 			}
+			if rediscovered != "" && rediscovered != sessionFile {
+				w.logger.Printf("%q: marker updated, switching to %s", agentID, filepath.Base(rediscovered))
+				sessionFile = rediscovered
+				offset = 0
+				partialLine = ""
+				seen = make(map[string]bool)
+				// Drain existing content in the new file.
+				offset, partialLine = w.readAgentLines(ctx, agentID, sessionFile, offset, partialLine, seen, true, isWoland)
+			}
+			lastNewContent = time.Now()
 		}
 	}
-}
-
-// findNewestJSONL returns the most recently modified .jsonl file in the given directory.
-// Delegates to the shared session.NewestJSONLFile.
-func (w *Watcher) findNewestJSONL(dir string) string {
-	return session.NewestJSONLFile(dir)
 }
 
 // seekToLineStart finds the first complete line boundary at or after offset.
