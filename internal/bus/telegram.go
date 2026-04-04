@@ -118,6 +118,12 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 			if msg.Type == TypeUser {
 				continue
 			}
+			// Only forward messages from Woland to Telegram.
+			// In the hub-and-spoke model, agents communicate with Woland
+			// internally. The Telegram user sees only Woland's curated output.
+			if msg.Name != "woland" {
+				continue
+			}
 			formatted := FormatForTelegram(*msg)
 			if _, err := t.bot.SendMessage(ctx, t.chatID, formatted); err != nil {
 				t.logger.Printf("error sending to telegram: %v", err)
