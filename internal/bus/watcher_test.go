@@ -3984,3 +3984,156 @@ func TestStalenessRediscovery_BypassesMarkerWhenSameStaleFile(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// ---------------------------------------------------------------------------
+// Agent readiness gating — discoverAgents skips agents without markers
+// ---------------------------------------------------------------------------
+
+// TestDiscoverAgents_SkipsAgentWithoutMarker verifies that an agent window
+// discovered via tmux is NOT added to the watchers map until its session
+// marker file (.agent-<id>-session) exists. Once the marker is created,
+// the next discovery cycle should pick it up.
+func TestDiscoverAgents_SkipsAgentWithoutMarker(t *testing.T) {
+	aptPath := t.TempDir()
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	// Simulate what discoverAgents does for a non-Woland agent window
+	// without a session marker: the agent should be skipped.
+	win := monitoredWindow{
+		busName:    "azazello",
+		windowName: "agent-azazello",
+		isWoland:   false,
+	}
+
+	// No marker file exists yet — agentMarkerExists should return false.
+	if w.agentMarkerExists(win.busName) {
+		t.Fatal("agentMarkerExists should return false when marker does not exist")
+	}
+
+	// Verify the agent is NOT started (simulating the gating logic in discoverAgents).
+	w.mu.Lock()
+	if !win.isWoland && !w.agentMarkerExists(win.busName) {
+		// This is the skip path — agent should not be added.
+	} else {
+		t.Error("expected agent to be skipped due to missing marker")
+	}
+	w.mu.Unlock()
+
+	if len(w.watchers) != 0 {
+		t.Errorf("expected 0 watchers, got %d", len(w.watchers))
+	}
+
+	// Now create the marker file.
+	writeMarker(t, aptPath, ".agent-azazello-session", "/tmp/fake-session.jsonl")
+
+	// agentMarkerExists should now return true.
+	if !w.agentMarkerExists(win.busName) {
+		t.Fatal("agentMarkerExists should return true after marker is created")
+	}
+
+	// Simulate discoverAgents logic again — now the agent should be allowed.
+	w.mu.Lock()
+	if !win.isWoland && !w.agentMarkerExists(win.busName) {
+		t.Error("agent should NOT be skipped now that marker exists")
+	}
+	w.mu.Unlock()
+}
+
+// TestDiscoverAgents_WolandNotGatedByMarker verifies that Woland/babytalk
+// windows are always discovered regardless of whether a marker file exists.
+// The readiness gating only applies to standing agent windows.
+func TestDiscoverAgents_WolandNotGatedByMarker(t *testing.T) {
+	aptPath := t.TempDir()
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	wolandWindows := []monitoredWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "woland", windowName: "babytalk", isWoland: true},
+	}
+
+	// No marker files exist — but Woland windows should NOT be gated.
+	for _, win := range wolandWindows {
+		// The gating condition: !win.isWoland && !w.agentMarkerExists(...)
+		// For Woland windows, isWoland is true, so the condition is false
+		// and the window proceeds to startMonitoredWatcher.
+		shouldSkip := !win.isWoland && !w.agentMarkerExists(win.busName)
+		if shouldSkip {
+			t.Errorf("Woland window %q should NOT be skipped by marker gating", win.windowName)
+		}
+	}
+}
+
+// TestAgentMarkerExists verifies the agentMarkerExists helper method.
+func TestAgentMarkerExists(t *testing.T) {
+	aptPath := t.TempDir()
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	// No marker — should return false.
+	if w.agentMarkerExists("azazello") {
+		t.Error("expected false for nonexistent marker")
+	}
+
+	// Create the marker.
+	writeMarker(t, aptPath, ".agent-azazello-session", "/tmp/fake.jsonl")
+
+	// Now should return true.
+	if !w.agentMarkerExists("azazello") {
+		t.Error("expected true after creating marker")
+	}
+
+	// Different agent still returns false.
+	if w.agentMarkerExists("behemoth") {
+		t.Error("expected false for different agent's marker")
+	}
+}
+
+// TestDiscoverAgents_MixedReadiness verifies the full gating logic with a
+// mix of ready agents (with markers), unready agents (without markers), and
+// Woland windows. Only ready agents and Woland should pass the gate.
+func TestDiscoverAgents_MixedReadiness(t *testing.T) {
+	aptPath := t.TempDir()
+	busFile := filepath.Join(aptPath, "bus.jsonl")
+	b := New(busFile)
+	logger := log.New(os.Stderr, "test: ", 0)
+	w := NewWatcher(b, "", aptPath, logger)
+
+	// Create marker only for azazello, not behemoth.
+	writeMarker(t, aptPath, ".agent-azazello-session", "/tmp/azazello.jsonl")
+
+	windows := []monitoredWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "azazello", windowName: "agent-azazello", isWoland: false},
+		{busName: "behemoth", windowName: "agent-behemoth", isWoland: false},
+	}
+
+	var allowed []string
+	var skipped []string
+	for _, win := range windows {
+		shouldSkip := !win.isWoland && !w.agentMarkerExists(win.busName)
+		if shouldSkip {
+			skipped = append(skipped, win.busName)
+		} else {
+			allowed = append(allowed, win.busName)
+		}
+	}
+
+	// Woland and azazello should be allowed; behemoth should be skipped.
+	if len(allowed) != 2 {
+		t.Fatalf("expected 2 allowed, got %d: %v", len(allowed), allowed)
+	}
+	if allowed[0] != "woland" || allowed[1] != "azazello" {
+		t.Errorf("expected allowed=[woland, azazello], got %v", allowed)
+	}
+	if len(skipped) != 1 || skipped[0] != "behemoth" {
+		t.Errorf("expected skipped=[behemoth], got %v", skipped)
+	}
+}

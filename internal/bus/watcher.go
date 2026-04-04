@@ -189,6 +189,15 @@ func (w *Watcher) discoverAgents(ctx context.Context) {
 	// Start watchers for new windows.
 	for _, win := range windows {
 		if _, exists := w.watchers[win.windowName]; !exists {
+			// Gate non-Woland agent windows on their session marker file.
+			// The marker (.agent-<id>-session) is written by `retinue agent start`
+			// only after the Claude session is fully initialized. Without this
+			// check, the bus watcher can route messages to an agent before it's
+			// ready, causing echo loops.
+			if !win.isWoland && !w.agentMarkerExists(win.busName) {
+				w.logger.Printf("skipping agent %q: session marker not yet present (agent still starting)", win.busName)
+				continue
+			}
 			w.startMonitoredWatcher(ctx, win)
 		}
 	}
@@ -202,6 +211,15 @@ func (w *Watcher) discoverAgents(ctx context.Context) {
 			delete(w.watchers, windowName)
 		}
 	}
+}
+
+// agentMarkerExists returns true if the session marker file for the given
+// agent ID exists in the apartment directory. The marker file is written by
+// `retinue agent start` after the agent's Claude session is fully initialized.
+func (w *Watcher) agentMarkerExists(agentID string) bool {
+	markerPath := filepath.Join(w.aptPath, fmt.Sprintf(".agent-%s-session", agentID))
+	_, err := os.Stat(markerPath)
+	return err == nil
 }
 
 // listMonitoredWindows returns the monitored windows extracted from tmux,
