@@ -766,7 +766,18 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 		// For agent targets: if this is a Woland→Agent route, check
 		// loop prevention. User messages bypass all checks.
 		if msg.Name == "woland" && msg.Type != TypeUser {
-			// Layer 1: suppression window.
+			// Layer 1: exchange limiter (check and increment FIRST).
+			// This ensures the exchange limit is a hard cap on routing
+			// attempts, regardless of whether the suppression window
+			// also suppresses them.
+			if w.exchangeCount[t.busName] >= maxExchangesPerTurn {
+				w.logger.Printf("suppressing Woland→%s route: exchange limit reached (%d/%d)",
+					t.busName, w.exchangeCount[t.busName], maxExchangesPerTurn)
+				continue
+			}
+			w.exchangeCount[t.busName]++
+
+			// Layer 2: suppression window (checked AFTER counter increment).
 			if lastInj, ok := w.lastInjectedToWoland[t.busName]; ok {
 				if now.Sub(lastInj) < responseSuppressWindow {
 					w.logger.Printf("suppressing Woland→%s route: agent message injected %s ago (within %s window)",
@@ -774,16 +785,6 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 					continue
 				}
 			}
-
-			// Layer 2: exchange limiter.
-			if w.exchangeCount[t.busName] >= maxExchangesPerTurn {
-				w.logger.Printf("suppressing Woland→%s route: exchange limit reached (%d/%d)",
-					t.busName, w.exchangeCount[t.busName], maxExchangesPerTurn)
-				continue
-			}
-
-			// Routing allowed — increment exchange count.
-			w.exchangeCount[t.busName]++
 		}
 
 		targets = append(targets, t)

@@ -2754,13 +2754,73 @@ func TestLoopPrevention_SuppressionWindow(t *testing.T) {
 	}
 	w.injectMessage(ctx, wolandMsg)
 
-	// Verify that the exchange count for tester was NOT incremented
-	// (message was suppressed by the window).
+	// Verify that the exchange count for tester WAS incremented even though
+	// the message was suppressed by the window. The exchange counter must
+	// always increment so suppressed messages count toward the limit.
 	w.mu.Lock()
 	count := w.exchangeCount["tester"]
 	w.mu.Unlock()
-	if count != 0 {
-		t.Errorf("expected exchangeCount[tester] = 0 (suppressed), got %d", count)
+	if count != 1 {
+		t.Errorf("expected exchangeCount[tester] = 1 (incremented despite suppression), got %d", count)
+	}
+}
+
+func TestLoopPrevention_SuppressionWindowStillIncrementsExchange(t *testing.T) {
+	// Verify that messages suppressed by the window still count toward the
+	// exchange limit. After enough suppressed messages exhaust the budget,
+	// the exchange limit blocks further routing even after the window expires.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Agent "tester" sends a message → injected to woland (records timestamp).
+	w.injectMessage(ctx, Message{
+		ID: "t1", Name: "tester", Type: TypeChat,
+		Text: "Hello from tester",
+	})
+
+	// Send maxExchangesPerTurn Woland messages within the suppression window.
+	// Each should be suppressed by the window but still increment the counter.
+	for i := 0; i < maxExchangesPerTurn; i++ {
+		currentTime = now.Add(time.Duration(i+1) * time.Second) // 1s, 2s — within 10s window
+		w.injectMessage(ctx, Message{
+			ID:   fmt.Sprintf("w%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Tester, message %d", i),
+		})
+	}
+
+	// Exchange counter should be at the limit.
+	w.mu.Lock()
+	count := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if count != maxExchangesPerTurn {
+		t.Errorf("expected exchangeCount[tester] = %d after %d suppressed messages, got %d",
+			maxExchangesPerTurn, maxExchangesPerTurn, count)
+	}
+
+	// Now advance past the suppression window. Even though the window has
+	// expired, the exchange limit should still block further routing.
+	currentTime = now.Add(20 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID: "w-after-window", Name: "woland", Type: TypeChat,
+		Text: "Tester, are you there?",
+	})
+
+	w.mu.Lock()
+	countAfter := w.exchangeCount["tester"]
+	w.mu.Unlock()
+	if countAfter != maxExchangesPerTurn {
+		t.Errorf("expected exchangeCount[tester] still at %d (blocked by limit after window expired), got %d",
+			maxExchangesPerTurn, countAfter)
 	}
 }
 
@@ -3095,14 +3155,15 @@ func TestLoopPrevention_OnlySuppressesOriginatingAgent(t *testing.T) {
 	}
 	w.injectMessage(ctx, wolandMsg)
 
-	// "tester" should be suppressed (within window), "builder" should route.
+	// "tester" should be suppressed (within window) but exchange count still
+	// incremented. "builder" should route normally.
 	w.mu.Lock()
 	testerCount := w.exchangeCount["tester"]
 	builderCount := w.exchangeCount["builder"]
 	w.mu.Unlock()
 
-	if testerCount != 0 {
-		t.Errorf("expected tester suppressed (count 0), got %d", testerCount)
+	if testerCount != 1 {
+		t.Errorf("expected tester exchange count 1 (incremented despite suppression), got %d", testerCount)
 	}
 	if builderCount != 1 {
 		t.Errorf("expected builder routed (count 1), got %d", builderCount)
@@ -3112,8 +3173,9 @@ func TestLoopPrevention_OnlySuppressesOriginatingAgent(t *testing.T) {
 func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
 	// Simulate the exact bug scenario from the issue:
 	// 1. Agent "tester" sends a joke → bus captures → injected to woland
-	// 2. Woland responds mentioning tester → should NOT route back to tester
-	// 3. Even if suppression window expires, exchange limit caps at 2
+	// 2. Woland responds mentioning tester → suppressed by window BUT counter
+	//    still increments (this is the fix!)
+	// 3. Exchange limit caps at 2, reached faster because suppressed messages count
 	now := time.Now()
 	currentTime := now
 	nowFn := func() time.Time { return currentTime }
@@ -3132,15 +3194,16 @@ func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
 		Text: "Why did the chicken cross the road?",
 	})
 
-	// Round 2: Woland acknowledges (within suppression window) → suppressed.
+	// Round 2: Woland acknowledges (within suppression window) → suppressed,
+	// but exchange counter STILL increments to 1.
 	currentTime = now.Add(3 * time.Second)
 	w.injectMessage(ctx, Message{
 		ID: "w1", Name: "woland", Type: TypeChat,
 		Text: "Ha! Tester's got jokes today",
 	})
 	w.mu.Lock()
-	if w.exchangeCount["tester"] != 0 {
-		t.Errorf("round 2: expected suppression, got count %d", w.exchangeCount["tester"])
+	if w.exchangeCount["tester"] != 1 {
+		t.Errorf("round 2: expected count 1 (incremented despite suppression), got %d", w.exchangeCount["tester"])
 	}
 	w.mu.Unlock()
 
@@ -3152,19 +3215,20 @@ func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
 		Text: "To get to the other side!",
 	})
 
-	// Woland responds after suppression window expires → routed (exchange 1).
+	// Woland responds after suppression window expires → routed (exchange 2,
+	// which hits the limit).
 	currentTime = now.Add(30 * time.Second)
 	w.injectMessage(ctx, Message{
 		ID: "w2", Name: "woland", Type: TypeChat,
 		Text: "Classic, Tester. Very classic.",
 	})
 	w.mu.Lock()
-	if w.exchangeCount["tester"] != 1 {
-		t.Errorf("round 4: expected count 1, got %d", w.exchangeCount["tester"])
+	if w.exchangeCount["tester"] != 2 {
+		t.Errorf("round 4: expected count 2 (limit reached), got %d", w.exchangeCount["tester"])
 	}
 	w.mu.Unlock()
 
-	// Tester responds again, then Woland → exchange 2.
+	// Tester responds again, then Woland → blocked by exchange limit.
 	currentTime = now.Add(45 * time.Second)
 	w.injectMessage(ctx, Message{
 		ID: "t3", Name: "tester", Type: TypeChat,
@@ -3178,11 +3242,11 @@ func TestLoopPrevention_FullPingPongScenario(t *testing.T) {
 	})
 	w.mu.Lock()
 	if w.exchangeCount["tester"] != 2 {
-		t.Errorf("round 6: expected count 2 (limit), got %d", w.exchangeCount["tester"])
+		t.Errorf("round 6: expected count still 2 (blocked by limit), got %d", w.exchangeCount["tester"])
 	}
 	w.mu.Unlock()
 
-	// Woland tries one more time → should be blocked by exchange limit.
+	// Woland tries one more time → still blocked by exchange limit.
 	currentTime = now.Add(75 * time.Second)
 	w.injectMessage(ctx, Message{
 		ID: "w4", Name: "woland", Type: TypeChat,
