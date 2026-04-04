@@ -452,7 +452,10 @@ Key rules:
 - You see everything — all agent messages are routed to you automatically
 - To reach an agent, use → followed by their name
 - Agents can see your responses when you address them
-- The user sees all messages on their end (terminal or Telegram)
+- In the terminal, the user sees agent messages as [AgentName] injections
+- On Telegram, the user ONLY sees your output — agent messages are
+  filtered out. Always relay important agent responses in your own
+  words so the Telegram user stays informed of what agents report.
 
 ## Workflow
 
@@ -796,7 +799,10 @@ Key rules:
 - You see everything — all agent messages are routed to you automatically
 - To reach an agent, use → followed by their name
 - Agents can see your responses when you address them
-- The user sees all messages on their end (terminal or Telegram)
+- In the terminal, the user sees agent messages as [AgentName] injections
+- On Telegram, the user ONLY sees your output — agent messages are
+  filtered out. Always relay important agent responses in your own
+  words so the Telegram user stays informed of what agents report.
 
 ## Workflow
 
