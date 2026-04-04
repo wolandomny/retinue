@@ -723,11 +723,15 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 
 	w.mu.Lock()
 
-	// When a user message arrives, reset all exchange counts so that
-	// Woland can address agents again.
+	// When a user message arrives, reset exchange counts only for agents
+	// mentioned by name. This prevents echo loops from restarting when
+	// the user sends an unrelated message.
 	if msg.Type == TypeUser {
+		textLower := strings.ToLower(msg.Text)
 		for k := range w.exchangeCount {
-			delete(w.exchangeCount, k)
+			if strings.Contains(textLower, strings.ToLower(k)) {
+				delete(w.exchangeCount, k)
+			}
 		}
 	}
 

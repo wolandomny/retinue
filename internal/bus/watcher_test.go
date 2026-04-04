@@ -2842,7 +2842,8 @@ func TestLoopPrevention_ExchangeLimit(t *testing.T) {
 }
 
 func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
-	// Hit exchange limit → user sends message → count resets → routing works again.
+	// Hit exchange limit → user sends message mentioning agent → only that
+	// agent's count resets → routing works again for mentioned agent only.
 	now := time.Now()
 	currentTime := now
 	nowFn := func() time.Time { return currentTime }
@@ -2850,11 +2851,12 @@ func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
 	agents := []injectionWindow{
 		{busName: "woland", windowName: "woland", isWoland: true},
 		{busName: "tester", windowName: "agent-tester"},
+		{busName: "monitor", windowName: "agent-monitor"},
 	}
 	w := setupWatcherWithAgents(t, agents, nowFn)
 	ctx := context.Background()
 
-	// Exhaust the exchange limit (2 messages outside suppression window).
+	// Exhaust the exchange limit for tester (2 messages outside suppression window).
 	for i := 0; i < 3; i++ {
 		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
 		msg := Message{
@@ -2866,32 +2868,52 @@ func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
 		w.injectMessage(ctx, msg)
 	}
 
-	w.mu.Lock()
-	countBefore := w.exchangeCount["tester"]
-	w.mu.Unlock()
-	if countBefore != maxExchangesPerTurn {
-		t.Fatalf("expected exchange count at limit (%d), got %d", maxExchangesPerTurn, countBefore)
+	// Also exhaust the exchange limit for monitor.
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+4) * 20 * time.Second)
+		msg := Message{
+			ID:   fmt.Sprintf("wm%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Monitor, message %d", i),
+		}
+		w.injectMessage(ctx, msg)
 	}
 
-	// User sends a message → resets exchange counts.
-	currentTime = now.Add(100 * time.Second)
+	w.mu.Lock()
+	countBefore := w.exchangeCount["tester"]
+	monitorBefore := w.exchangeCount["monitor"]
+	w.mu.Unlock()
+	if countBefore != maxExchangesPerTurn {
+		t.Fatalf("expected tester exchange count at limit (%d), got %d", maxExchangesPerTurn, countBefore)
+	}
+	if monitorBefore != maxExchangesPerTurn {
+		t.Fatalf("expected monitor exchange count at limit (%d), got %d", maxExchangesPerTurn, monitorBefore)
+	}
+
+	// User sends a message mentioning only tester → only tester's count resets.
+	currentTime = now.Add(200 * time.Second)
 	userMsg := Message{
 		ID:   "u1",
 		Name: "user",
 		Type: TypeUser,
-		Text: "Hey everyone, what's up?",
+		Text: "Hey tester, try again please",
 	}
 	w.injectMessage(ctx, userMsg)
 
 	w.mu.Lock()
 	countAfterReset := w.exchangeCount["tester"]
+	monitorAfterReset := w.exchangeCount["monitor"]
 	w.mu.Unlock()
 	if countAfterReset != 0 {
-		t.Errorf("expected exchangeCount[tester] = 0 after user message, got %d", countAfterReset)
+		t.Errorf("expected exchangeCount[tester] = 0 after user message mentioning tester, got %d", countAfterReset)
+	}
+	if monitorAfterReset != maxExchangesPerTurn {
+		t.Errorf("expected exchangeCount[monitor] = %d (unchanged), got %d", maxExchangesPerTurn, monitorAfterReset)
 	}
 
 	// Now Woland can route to tester again.
-	currentTime = now.Add(120 * time.Second)
+	currentTime = now.Add(220 * time.Second)
 	wolandMsg := Message{
 		ID:   "w-after-reset",
 		Name: "woland",
@@ -2905,6 +2927,93 @@ func TestLoopPrevention_UserMessageResetsExchangeCount(t *testing.T) {
 	w.mu.Unlock()
 	if countAfterRoute != 1 {
 		t.Errorf("expected exchangeCount[tester] = 1 after reset + new route, got %d", countAfterRoute)
+	}
+}
+
+func TestLoopPrevention_UserMessageDoesNotResetUnmentionedAgent(t *testing.T) {
+	// Two agents hit their exchange limit. User sends a message mentioning
+	// only one agent. The other agent's counter must remain at the limit.
+	now := time.Now()
+	currentTime := now
+	nowFn := func() time.Time { return currentTime }
+
+	agents := []injectionWindow{
+		{busName: "woland", windowName: "woland", isWoland: true},
+		{busName: "tester", windowName: "agent-tester"},
+		{busName: "monitor", windowName: "agent-monitor"},
+	}
+	w := setupWatcherWithAgents(t, agents, nowFn)
+	ctx := context.Background()
+
+	// Exhaust exchange limit for both tester and monitor.
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+1) * 20 * time.Second)
+		w.injectMessage(ctx, Message{
+			ID:   fmt.Sprintf("wt%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Tester, message %d", i),
+		})
+	}
+	for i := 0; i < 3; i++ {
+		currentTime = now.Add(time.Duration(i+4) * 20 * time.Second)
+		w.injectMessage(ctx, Message{
+			ID:   fmt.Sprintf("wm%d", i),
+			Name: "woland",
+			Type: TypeChat,
+			Text: fmt.Sprintf("Monitor, message %d", i),
+		})
+	}
+
+	w.mu.Lock()
+	if w.exchangeCount["tester"] != maxExchangesPerTurn {
+		t.Fatalf("expected tester at limit, got %d", w.exchangeCount["tester"])
+	}
+	if w.exchangeCount["monitor"] != maxExchangesPerTurn {
+		t.Fatalf("expected monitor at limit, got %d", w.exchangeCount["monitor"])
+	}
+	w.mu.Unlock()
+
+	// User message mentions only "tester".
+	currentTime = now.Add(200 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID:   "u1",
+		Name: "user",
+		Type: TypeUser,
+		Text: "tester, please run it again",
+	})
+
+	w.mu.Lock()
+	testerCount := w.exchangeCount["tester"]
+	monitorCount := w.exchangeCount["monitor"]
+	w.mu.Unlock()
+
+	if testerCount != 0 {
+		t.Errorf("expected tester counter reset to 0, got %d", testerCount)
+	}
+	if monitorCount != maxExchangesPerTurn {
+		t.Errorf("expected monitor counter still at limit (%d), got %d", maxExchangesPerTurn, monitorCount)
+	}
+
+	// Woland tries to route to both — only tester should accept.
+	currentTime = now.Add(220 * time.Second)
+	w.injectMessage(ctx, Message{
+		ID:   "w-post",
+		Name: "woland",
+		Type: TypeChat,
+		Text: "Tester and Monitor, here's an update",
+	})
+
+	w.mu.Lock()
+	testerAfter := w.exchangeCount["tester"]
+	monitorAfter := w.exchangeCount["monitor"]
+	w.mu.Unlock()
+
+	if testerAfter != 1 {
+		t.Errorf("expected tester counter = 1 after new route, got %d", testerAfter)
+	}
+	if monitorAfter != maxExchangesPerTurn {
+		t.Errorf("expected monitor counter still at limit (%d), got %d", maxExchangesPerTurn, monitorAfter)
 	}
 }
 
@@ -3598,16 +3707,17 @@ func TestLoopPrevention_WolandTerminalUserInputResetsExchangeCount(t *testing.T)
 
 	// Simulate a user message arriving on the bus (as would happen when
 	// readAgentLines propagates a human message from Woland's session).
+	// The message mentions "tester" so its counter gets reset.
 	currentTime = now.Add(100 * time.Second)
 	userMsg := Message{
 		ID:   "user-from-terminal",
 		Name: "user",
 		Type: TypeUser,
-		Text: "Everyone, keep going",
+		Text: "Tester, keep going",
 	}
 	w.injectMessage(ctx, userMsg)
 
-	// Exchange count should be reset.
+	// Exchange count should be reset for tester (mentioned in user message).
 	w.mu.Lock()
 	countAfterReset := w.exchangeCount["tester"]
 	w.mu.Unlock()
