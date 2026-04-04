@@ -157,6 +157,52 @@ func TestParseArrowRouting_TrailingSpacesInName(t *testing.T) {
 	}
 }
 
+func TestParseArrowRouting_LeadingNewlines(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("\n\n→ azazello: message")
+	if !ok {
+		t.Fatal("expected ok=true for arrow with leading newlines")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "message" {
+		t.Errorf("text = %q, want %q", text, "message")
+	}
+}
+
+func TestParseArrowRouting_LeadingSpacesAndNewlines(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("  \n  \n→ azazello: message")
+	if !ok {
+		t.Fatal("expected ok=true for arrow with leading spaces and newlines")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "message" {
+		t.Errorf("text = %q, want %q", text, "message")
+	}
+}
+
+func TestParseArrowRouting_LeadingWhitespaceSameLine(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("  → azazello: message")
+	if !ok {
+		t.Fatal("expected ok=true for arrow with leading whitespace on same line")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "message" {
+		t.Errorf("text = %q, want %q", text, "message")
+	}
+}
+
+func TestParseArrowRouting_PreambleBeforeArrow(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("Some preamble\n→ azazello: message")
+	if ok {
+		t.Errorf("expected ok=false when preamble text precedes arrow, got recipients=%v, text=%q", recipients, text)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // routeMessage
 // ---------------------------------------------------------------------------

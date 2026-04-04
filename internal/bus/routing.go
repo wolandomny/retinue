@@ -16,7 +16,9 @@ func firstLineOf(text string) string {
 // Returns (recipients, stripped text, ok).
 // Recipients are lowercased. If the format doesn't match, returns (nil, "", false).
 func parseArrowRouting(text string) ([]string, string, bool) {
-	first := firstLineOf(text)
+	// Strip leading blank lines — Claude often starts with whitespace.
+	trimmed := strings.TrimLeft(text, " \t\n\r")
+	first := firstLineOf(trimmed)
 
 	if !strings.HasPrefix(first, "→ ") {
 		return nil, "", false
@@ -48,9 +50,9 @@ func parseArrowRouting(text string) ([]string, string, bool) {
 	firstLineMsg := strings.TrimSpace(first[colonIdx+1:])
 
 	var msgText string
-	if i := strings.IndexByte(text, '\n'); i >= 0 {
+	if i := strings.IndexByte(trimmed, '\n'); i >= 0 {
 		// There are subsequent lines — append them.
-		msgText = firstLineMsg + text[i:]
+		msgText = firstLineMsg + trimmed[i:]
 	} else {
 		msgText = firstLineMsg
 	}
