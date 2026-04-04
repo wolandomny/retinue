@@ -34,9 +34,6 @@ const (
 	// session file before attempting to re-discover via the marker file.
 	watcherStaleness = 30 * time.Second
 
-	// maxExchangesPerTurn is deprecated; kept only for test compatibility.
-	// Loop prevention is no longer used — routing is now explicit via To fields.
-	maxExchangesPerTurn = 2
 )
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
@@ -104,11 +101,6 @@ type Watcher struct {
 	mu       sync.Mutex
 	watchers map[string]*agentWatcher // windowName → watcher
 
-	// Deprecated fields — kept only for test compatibility.
-	// Loop prevention is no longer used; routing is now explicit via To fields.
-	lastInjectedToWoland map[string]time.Time
-	exchangeCount        map[string]int
-	timeNow              func() time.Time
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
@@ -120,10 +112,6 @@ func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher
 		logger:     logger,
 		watchers:   make(map[string]*agentWatcher),
 
-		// Deprecated — initialized only for test compatibility.
-		lastInjectedToWoland: make(map[string]time.Time),
-		exchangeCount:        make(map[string]int),
-		timeNow:              time.Now,
 	}
 }
 
@@ -731,48 +719,6 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 
 	targets := routeMessage(windows, msg)
 
-	// --- Deprecated loop prevention state tracking ---
-	// Kept for test compatibility only. This logic no longer affects routing
-	// (routeMessage handles that via explicit To fields), but tests verify
-	// these state fields after calling injectMessage.
-	w.mu.Lock()
-	now := w.timeNow()
-	switch {
-	case msg.Type == TypeUser || msg.Name == "user":
-		// User messages reset exchange counts for mentioned agents.
-		for _, win := range windows {
-			if !win.isWoland && strings.Contains(strings.ToLower(msg.Text), strings.ToLower(win.busName)) {
-				w.exchangeCount[win.busName] = 0
-				delete(w.lastInjectedToWoland, win.busName)
-			}
-		}
-	case msg.Name == "woland":
-		// Woland message: track exchange counts for mentioned agents.
-		for _, win := range windows {
-			if win.isWoland || win.busName == msg.Name {
-				continue
-			}
-			if !strings.Contains(strings.ToLower(msg.Text), strings.ToLower(win.busName)) {
-				continue
-			}
-			// Agent is mentioned — increment if under limit.
-			if w.exchangeCount[win.busName] >= maxExchangesPerTurn {
-				continue
-			}
-			w.exchangeCount[win.busName]++
-		}
-	default:
-		// Agent message routed to woland: record timestamp.
-		for _, t := range targets {
-			if t.isWoland {
-				w.lastInjectedToWoland[msg.Name] = now
-				break
-			}
-		}
-	}
-	_ = now // suppress unused warning when timeNow is set but not otherwise used
-	w.mu.Unlock()
-	// --- End deprecated state tracking ---
 
 	if len(targets) > 0 {
 		names := make([]string, len(targets))
@@ -794,50 +740,6 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	}
 }
 
-// injectionTargets is deprecated; production code now uses routeMessage via injectMessage.
-// Kept with original text-based routing logic for test compatibility. A separate task
-// will update tests to use To-based routing and call routeMessage directly.
-func injectionTargets(windows []injectionWindow, msg Message) []injectionWindow {
-	if msg.Type == TypeSystem {
-		return nil
-	}
-
-	mentioned := func(name string) bool {
-		return strings.Contains(strings.ToLower(msg.Text), strings.ToLower(name))
-	}
-
-	var targets []injectionWindow
-	for _, w := range windows {
-		// Never echo to sender.
-		if w.busName == msg.Name {
-			continue
-		}
-
-		if msg.Name == "user" || msg.Type == TypeUser {
-			// User messages: woland (hub) always receives them.
-			// Other agents receive only if their name is mentioned.
-			if w.isWoland {
-				targets = append(targets, w)
-			} else if mentioned(w.busName) {
-				targets = append(targets, w)
-			}
-		} else if msg.Name == "woland" {
-			// Woland messages: only mentioned agents receive them.
-			// Woland is excluded as sender above. No hub echo.
-			if !w.isWoland && mentioned(w.busName) {
-				targets = append(targets, w)
-			}
-		} else {
-			// Agent messages (hub-and-spoke): only woland receives.
-			// No direct agent-to-agent routing.
-			if w.isWoland {
-				targets = append(targets, w)
-			}
-		}
-	}
-
-	return targets
-}
 
 // tmuxArgs builds a tmux argument list, prepending -L <socket> when configured.
 func (w *Watcher) tmuxArgs(args ...string) []string {
