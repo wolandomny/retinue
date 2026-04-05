@@ -347,15 +347,25 @@ func (w *Watcher) findWolandSessionFile() string {
 	agentSessions := w.knownAgentSessionFiles()
 
 	for _, candidate := range session.SortedJSONLFiles(projDir) {
-		if candidate == sessionPath {
+		cleanCandidate := filepath.Clean(candidate)
+		if cleanCandidate == filepath.Clean(sessionPath) {
 			// Same file as current marker — still stale, skip.
 			continue
 		}
-		if agentSessions[candidate] {
+		if agentSessions[cleanCandidate] {
 			// This file belongs to a known agent session, skip.
+			w.logger.Printf("auto-discovery: skipping %s (claimed by agent)", filepath.Base(candidate))
 			continue
 		}
-		// Found a newer file not claimed by any agent — auto-switch.
+		// Only switch to files that have been modified recently.
+		candidateInfo, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		if time.Since(candidateInfo.ModTime()) > wolandStaleThreshold {
+			continue
+		}
+		// Found a fresh file not claimed by any agent — auto-switch.
 		if err := atomicWriteMarker(markerPath, candidate); err != nil {
 			w.logger.Printf("failed to update .woland-session marker: %v", err)
 		}
@@ -372,6 +382,7 @@ func (w *Watcher) findWolandSessionFile() string {
 // knownAgentSessionFiles returns a set of session file paths currently
 // referenced by agent marker files (.agent-*-session) in the apartment
 // directory. Used to avoid auto-switching Woland to an agent's session.
+// Paths are normalized to absolute clean paths for reliable comparison.
 func (w *Watcher) knownAgentSessionFiles() map[string]bool {
 	result := make(map[string]bool)
 	pattern := filepath.Join(w.aptPath, ".agent-*-session")
@@ -386,6 +397,11 @@ func (w *Watcher) knownAgentSessionFiles() map[string]bool {
 		}
 		path := strings.TrimSpace(string(data))
 		if path != "" {
+			// Normalize to absolute clean path for reliable comparison.
+			if abs, err := filepath.Abs(path); err == nil {
+				path = abs
+			}
+			path = filepath.Clean(path)
 			result[path] = true
 		}
 	}

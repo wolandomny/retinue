@@ -3601,3 +3601,167 @@ func TestDiscoverAgents_MixedReadiness(t *testing.T) {
 		t.Errorf("expected skipped=[behemoth], got %v", skipped)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Path normalization and freshness tests for auto-discovery
+// ---------------------------------------------------------------------------
+
+func TestFindWolandSessionFile_AgentFilterNormalizedPath(t *testing.T) {
+	// Agent marker file contains a non-normalized path (e.g., with extra
+	// slashes or "./" components). Auto-discovery should STILL filter it
+	// out after normalization.
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	// Create a stale Woland session.
+	staleFile := filepath.Join(projDir, "stale-woland.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"old"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create a fresh file that belongs to an agent.
+	agentFile := filepath.Join(projDir, "agent-behemoth.jsonl")
+	os.WriteFile(agentFile, []byte(`{"type":"agent"}`), 0o644)
+
+	writeMarker(t, aptPath, ".woland-session", staleFile)
+
+	// Write the agent marker with a non-normalized path (extra "./").
+	nonNormalizedPath := filepath.Join(projDir, ".", "agent-behemoth.jsonl")
+	writeMarker(t, aptPath, ".agent-behemoth-session", nonNormalizedPath)
+
+	got := w.findWolandSessionFile()
+	// The agent file should be filtered out even with the non-normalized marker.
+	// With no other fresh candidates, the stale file should be returned.
+	if got != staleFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (agent file with non-normalized path should be filtered)", got, staleFile)
+	}
+}
+
+func TestFindWolandSessionFile_AgentFilterTrailingSlash(t *testing.T) {
+	// Agent marker contains a path with trailing whitespace/newlines that
+	// gets trimmed, but test path normalization also handles edge cases.
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	staleFile := filepath.Join(projDir, "stale.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"old"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	agentFile := filepath.Join(projDir, "behemoth.jsonl")
+	os.WriteFile(agentFile, []byte(`{"type":"agent"}`), 0o644)
+
+	writeMarker(t, aptPath, ".woland-session", staleFile)
+	// Marker with trailing newline and whitespace.
+	markerFile := filepath.Join(aptPath, ".agent-behemoth-session")
+	os.WriteFile(markerFile, []byte(agentFile+"  \n\n"), 0o644)
+
+	got := w.findWolandSessionFile()
+	if got != staleFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (agent with whitespace in marker should be filtered)", got, staleFile)
+	}
+}
+
+func TestFindWolandSessionFile_StaleCandidatesSkipped(t *testing.T) {
+	// When the marker is stale and ALL other candidates are also stale,
+	// auto-discovery should return the current marker target (no switch).
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	staleFile := filepath.Join(projDir, "stale-woland.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"old-woland"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create another candidate that is also stale.
+	otherStale := filepath.Join(projDir, "other-stale.jsonl")
+	os.WriteFile(otherStale, []byte(`{"type":"also-old"}`), 0o644)
+	otherStaleTime := time.Now().Add(-90 * time.Second)
+	os.Chtimes(otherStale, otherStaleTime, otherStaleTime)
+
+	writeMarker(t, aptPath, ".woland-session", staleFile)
+
+	got := w.findWolandSessionFile()
+	if got != staleFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (all candidates stale, should return marker target)", got, staleFile)
+	}
+}
+
+func TestFindWolandSessionFile_FreshUnclaimedCandidateDiscovered(t *testing.T) {
+	// When the marker is stale and a fresh unclaimed candidate exists,
+	// auto-discovery should switch to it.
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	staleFile := filepath.Join(projDir, "old-session.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"old"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// Create a fresh candidate that is NOT claimed by any agent.
+	freshFile := filepath.Join(projDir, "new-session.jsonl")
+	os.WriteFile(freshFile, []byte(`{"type":"new"}`), 0o644)
+	// freshFile is just-created, so it has a current mod time.
+
+	writeMarker(t, aptPath, ".woland-session", staleFile)
+
+	got := w.findWolandSessionFile()
+	if got != freshFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (fresh unclaimed candidate should be auto-discovered)", got, freshFile)
+	}
+
+	// Verify marker was updated.
+	data, err := os.ReadFile(filepath.Join(aptPath, ".woland-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != freshFile {
+		t.Errorf("marker = %q, want %q (marker should point to discovered file)", strings.TrimSpace(string(data)), freshFile)
+	}
+}
+
+func TestFindWolandSessionFile_AllCandidatesAgentOrStale(t *testing.T) {
+	// When all candidates are either agent-claimed or stale, auto-discovery
+	// should return the current marker target.
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	staleFile := filepath.Join(projDir, "woland-old.jsonl")
+	os.WriteFile(staleFile, []byte(`{"type":"woland-old"}`), 0o644)
+	staleTime := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(staleFile, staleTime, staleTime)
+
+	// A fresh file, but claimed by an agent.
+	agentFile := filepath.Join(projDir, "agent-active.jsonl")
+	os.WriteFile(agentFile, []byte(`{"type":"agent"}`), 0o644)
+
+	// An unclaimed file, but stale.
+	oldUnclaimed := filepath.Join(projDir, "old-unclaimed.jsonl")
+	os.WriteFile(oldUnclaimed, []byte(`{"type":"old-unclaimed"}`), 0o644)
+	oldTime := time.Now().Add(-3 * time.Minute)
+	os.Chtimes(oldUnclaimed, oldTime, oldTime)
+
+	writeMarker(t, aptPath, ".woland-session", staleFile)
+	writeMarker(t, aptPath, ".agent-azazello-session", agentFile)
+
+	got := w.findWolandSessionFile()
+	if got != staleFile {
+		t.Errorf("findWolandSessionFile() = %q, want %q (no valid candidate: agent+stale should fall back to marker)", got, staleFile)
+	}
+}
+
+func TestKnownAgentSessionFiles_NormalizesRelativePath(t *testing.T) {
+	// Verify that knownAgentSessionFiles normalizes relative paths to
+	// absolute paths so they match SortedJSONLFiles output.
+	aptPath, projDir, _, w := setupMultiAgentEnv(t)
+
+	agentFile := filepath.Join(projDir, "agent-session.jsonl")
+	os.WriteFile(agentFile, []byte(`{"type":"agent"}`), 0o644)
+
+	// Write a marker with a relative-style non-clean path.
+	nonCleanPath := filepath.Join(projDir, "..", filepath.Base(projDir), "agent-session.jsonl")
+	writeMarker(t, aptPath, ".agent-test-session", nonCleanPath)
+
+	result := w.knownAgentSessionFiles()
+
+	// The cleaned/absolute version of the path should be in the result.
+	cleanPath := filepath.Clean(agentFile)
+	if !result[cleanPath] {
+		t.Errorf("knownAgentSessionFiles() missing normalized path %q; got keys: %v", cleanPath, result)
+	}
+}
