@@ -33,6 +33,11 @@ const (
 	// rediscoveryInterval is how long the watcher waits before re-reading the
 	// marker file to check if the agent restarted with a new session.
 	rediscoveryInterval = 30 * time.Second
+
+	// wolandStaleThreshold is the maximum time since last modification before
+	// a Woland session file is considered stale. When stale, the watcher
+	// scans for a newer JSONL file to auto-discover a new session.
+	wolandStaleThreshold = 60 * time.Second
 )
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
@@ -307,9 +312,11 @@ func claudeProjectDir(aptPath string) string {
 }
 
 // findWolandSessionFile reads the .woland-session marker file to locate
-// Woland's active Claude session JSONL. The marker is set at startup using
-// reliable diff-based detection and is always trusted. Returns "" if the
-// marker is missing, empty, or points to a nonexistent file.
+// Woland's active Claude session JSONL. If the marker points to a stale
+// file (not modified within wolandStaleThreshold), it scans the Claude
+// project directory for a newer JSONL file that doesn't belong to any
+// known agent session. Returns "" if the marker is missing, empty, or
+// points to a nonexistent file and no newer file can be auto-discovered.
 func (w *Watcher) findWolandSessionFile() string {
 	markerPath := filepath.Join(w.aptPath, ".woland-session")
 	data, err := os.ReadFile(markerPath)
@@ -327,9 +334,72 @@ func (w *Watcher) findWolandSessionFile() string {
 		w.logger.Printf(".woland-session marker points to missing file %q", sessionPath)
 		return ""
 	}
-	w.logger.Printf("using .woland-session marker: %s (modified %s ago)",
+
+	// If the file is still being actively written to, trust the marker.
+	if time.Since(info.ModTime()) <= wolandStaleThreshold {
+		w.logger.Printf("using .woland-session marker: %s (modified %s ago)",
+			filepath.Base(sessionPath), time.Since(info.ModTime()).Round(time.Second))
+		return sessionPath
+	}
+
+	// Session file is stale — attempt auto-discovery.
+	projDir := session.ClaudeProjectDir(w.aptPath)
+	agentSessions := w.knownAgentSessionFiles()
+
+	for _, candidate := range session.SortedJSONLFiles(projDir) {
+		if candidate == sessionPath {
+			// Same file as current marker — still stale, skip.
+			continue
+		}
+		if agentSessions[candidate] {
+			// This file belongs to a known agent session, skip.
+			continue
+		}
+		// Found a newer file not claimed by any agent — auto-switch.
+		if err := atomicWriteMarker(markerPath, candidate); err != nil {
+			w.logger.Printf("failed to update .woland-session marker: %v", err)
+		}
+		w.logger.Printf("woland session stale, auto-discovered: %s", filepath.Base(candidate))
+		return candidate
+	}
+
+	// No better candidate found; return the stale file.
+	w.logger.Printf("using .woland-session marker: %s (modified %s ago, stale but no newer candidate)",
 		filepath.Base(sessionPath), time.Since(info.ModTime()).Round(time.Second))
 	return sessionPath
+}
+
+// knownAgentSessionFiles returns a set of session file paths currently
+// referenced by agent marker files (.agent-*-session) in the apartment
+// directory. Used to avoid auto-switching Woland to an agent's session.
+func (w *Watcher) knownAgentSessionFiles() map[string]bool {
+	result := make(map[string]bool)
+	pattern := filepath.Join(w.aptPath, ".agent-*-session")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return result
+	}
+	for _, markerPath := range matches {
+		data, err := os.ReadFile(markerPath)
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(data))
+		if path != "" {
+			result[path] = true
+		}
+	}
+	return result
+}
+
+// atomicWriteMarker updates a marker file atomically by writing to a
+// temporary file and renaming it into place.
+func atomicWriteMarker(markerPath, content string) error {
+	tmpPath := markerPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, markerPath)
 }
 
 // watchAgentOutput tails an agent's (or Woland's) Claude session JSONL file

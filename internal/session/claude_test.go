@@ -97,6 +97,57 @@ func TestNewestJSONLFile_IgnoresDirectories(t *testing.T) {
 	}
 }
 
+// --- SortedJSONLFiles tests ---
+
+func TestSortedJSONLFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files with staggered modification times.
+	files := []string{"old.jsonl", "middle.jsonl", "newest.jsonl"}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Also create a non-.jsonl file (should be excluded).
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := session.SortedJSONLFiles(dir)
+	if len(got) != 3 {
+		t.Fatalf("SortedJSONLFiles() returned %d files, want 3", len(got))
+	}
+
+	// Newest first.
+	if got[0] != filepath.Join(dir, "newest.jsonl") {
+		t.Errorf("got[0] = %q, want newest.jsonl", filepath.Base(got[0]))
+	}
+	if got[1] != filepath.Join(dir, "middle.jsonl") {
+		t.Errorf("got[1] = %q, want middle.jsonl", filepath.Base(got[1]))
+	}
+	if got[2] != filepath.Join(dir, "old.jsonl") {
+		t.Errorf("got[2] = %q, want old.jsonl", filepath.Base(got[2]))
+	}
+}
+
+func TestSortedJSONLFiles_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	got := session.SortedJSONLFiles(dir)
+	if len(got) != 0 {
+		t.Errorf("SortedJSONLFiles(empty) returned %d files, want 0", len(got))
+	}
+}
+
+func TestSortedJSONLFiles_NonexistentDir(t *testing.T) {
+	got := session.SortedJSONLFiles("/nonexistent/dir")
+	if got != nil {
+		t.Errorf("SortedJSONLFiles(nonexistent) = %v, want nil", got)
+	}
+}
+
 // --- SnapshotJSONLFiles tests ---
 
 func TestSnapshotJSONLFiles(t *testing.T) {

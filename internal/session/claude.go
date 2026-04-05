@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,14 +25,28 @@ func ClaudeProjectDir(aptPath string) string {
 // NewestJSONLFile returns the most recently modified .jsonl file in a directory,
 // or "" if none exist or the directory cannot be read.
 func NewestJSONLFile(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	files := SortedJSONLFiles(dir)
+	if len(files) == 0 {
 		return ""
 	}
+	return files[0]
+}
 
-	var newest string
-	var newestTime time.Time
+// SortedJSONLFiles returns all .jsonl files in a directory sorted by
+// modification time (newest first). Returns nil if the directory cannot
+// be read or contains no .jsonl files.
+func SortedJSONLFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
 
+	type fileWithTime struct {
+		path    string
+		modTime time.Time
+	}
+
+	var files []fileWithTime
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -40,13 +55,21 @@ func NewestJSONLFile(dir string) string {
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(newestTime) {
-			newestTime = info.ModTime()
-			newest = filepath.Join(dir, entry.Name())
-		}
+		files = append(files, fileWithTime{
+			path:    filepath.Join(dir, entry.Name()),
+			modTime: info.ModTime(),
+		})
 	}
 
-	return newest
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+
+	result := make([]string, len(files))
+	for i, f := range files {
+		result[i] = f.path
+	}
+	return result
 }
 
 // SnapshotJSONLFiles returns a set of all current .jsonl files in a directory.
