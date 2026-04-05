@@ -198,8 +198,86 @@ func TestParseArrowRouting_LeadingWhitespaceSameLine(t *testing.T) {
 
 func TestParseArrowRouting_PreambleBeforeArrow(t *testing.T) {
 	recipients, text, ok := parseArrowRouting("Some preamble\n→ azazello: message")
-	if ok {
-		t.Errorf("expected ok=false when preamble text precedes arrow, got recipients=%v, text=%q", recipients, text)
+	if !ok {
+		t.Fatal("expected ok=true when arrow appears after preamble text")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "message" {
+		t.Errorf("text = %q, want %q", text, "message")
+	}
+}
+
+func TestParseArrowRouting_PreambleMultipleLines(t *testing.T) {
+	input := "Let me route this to tester.\n\n→ tester: Tell us a joke!"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true when arrow appears after multiple preamble lines")
+	}
+	if len(recipients) != 1 || recipients[0] != "tester" {
+		t.Errorf("recipients = %v, want [tester]", recipients)
+	}
+	if text != "Tell us a joke!" {
+		t.Errorf("text = %q, want %q", text, "Tell us a joke!")
+	}
+}
+
+func TestParseArrowRouting_PreambleWithBlankLinesAndText(t *testing.T) {
+	input := "Here is some context.\n\nI will route now.\n\n→ behemoth: Please investigate"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 1 || recipients[0] != "behemoth" {
+		t.Errorf("recipients = %v, want [behemoth]", recipients)
+	}
+	if text != "Please investigate" {
+		t.Errorf("text = %q, want %q", text, "Please investigate")
+	}
+}
+
+func TestParseArrowRouting_MultipleArrowLines(t *testing.T) {
+	input := "Preamble\n→ tester: First directive\n→ builder: Second directive"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 1 || recipients[0] != "tester" {
+		t.Errorf("recipients = %v, want [tester] (first arrow only)", recipients)
+	}
+	want := "First directive\n→ builder: Second directive"
+	if text != want {
+		t.Errorf("text = %q, want %q", text, want)
+	}
+}
+
+func TestParseArrowRouting_ArrowWithLeadingWhitespaceAfterPreamble(t *testing.T) {
+	input := "Some text\n  → azazello: indented arrow"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true for indented arrow after preamble")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "indented arrow" {
+		t.Errorf("text = %q, want %q", text, "indented arrow")
+	}
+}
+
+func TestParseArrowRouting_PreambleWithSubsequentLines(t *testing.T) {
+	input := "Routing now.\n→ azazello: Do this\nand also this\nand this too"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	want := "Do this\nand also this\nand this too"
+	if text != want {
+		t.Errorf("text = %q, want %q", text, want)
 	}
 }
 

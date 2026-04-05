@@ -15,23 +15,39 @@ func firstLineOf(text string) string {
 // Format: "→ agent1, agent2: message text"
 // Returns (recipients, stripped text, ok).
 // Recipients are lowercased. If the format doesn't match, returns (nil, "", false).
+//
+// The arrow directive may appear on any line of the text — Woland often
+// produces explanatory prose before the routing line. We scan all lines
+// and use the FIRST one that starts with "→ " (after trimming leading
+// whitespace on that line). Text before the arrow line is discarded;
+// everything after it (including subsequent arrow lines) becomes the
+// routed message body.
 func parseArrowRouting(text string) ([]string, string, bool) {
-	// Strip leading blank lines — Claude often starts with whitespace.
-	trimmed := strings.TrimLeft(text, " \t\n\r")
-	first := firstLineOf(trimmed)
+	lines := strings.Split(text, "\n")
 
-	if !strings.HasPrefix(first, "→ ") {
+	// Find the first line starting with "→ " (ignoring leading whitespace).
+	arrowIdx := -1
+	for i, line := range lines {
+		trimmedLine := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmedLine, "→ ") {
+			arrowIdx = i
+			break
+		}
+	}
+	if arrowIdx < 0 {
 		return nil, "", false
 	}
 
-	// Find the colon separator on the first line.
-	colonIdx := strings.IndexByte(first, ':')
+	arrowLine := strings.TrimLeft(lines[arrowIdx], " \t")
+
+	// Find the colon separator on the arrow line.
+	colonIdx := strings.IndexByte(arrowLine, ':')
 	if colonIdx < 0 {
 		return nil, "", false
 	}
 
 	// Extract agent names between "→ " and ":".
-	namesPart := first[len("→ "):colonIdx]
+	namesPart := arrowLine[len("→ "):colonIdx]
 
 	// Parse comma-separated names.
 	var recipients []string
@@ -45,19 +61,16 @@ func parseArrowRouting(text string) ([]string, string, bool) {
 		return nil, "", false
 	}
 
-	// Build the message text: trimmed text after colon on first line,
+	// Build the message text: trimmed text after colon on the arrow line,
 	// plus any subsequent lines preserved exactly.
-	firstLineMsg := strings.TrimSpace(first[colonIdx+1:])
+	arrowLineMsg := strings.TrimSpace(arrowLine[colonIdx+1:])
 
-	var msgText string
-	if i := strings.IndexByte(trimmed, '\n'); i >= 0 {
-		// There are subsequent lines — append them.
-		msgText = firstLineMsg + trimmed[i:]
-	} else {
-		msgText = firstLineMsg
+	remaining := lines[arrowIdx+1:]
+	if len(remaining) > 0 {
+		return recipients, arrowLineMsg + "\n" + strings.Join(remaining, "\n"), true
 	}
 
-	return recipients, msgText, true
+	return recipients, arrowLineMsg, true
 }
 
 // routeMessage returns the subset of windows that should receive msg.
