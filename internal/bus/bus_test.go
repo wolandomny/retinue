@@ -863,6 +863,167 @@ func TestAppendToNonexistentDirectory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. TailFromEnd — skip existing messages
+// ---------------------------------------------------------------------------
+
+func TestTailFromEndSkipsExistingMessages(t *testing.T) {
+	t.Parallel()
+
+	path := tempBusPath(t)
+	b := New(path)
+
+	// Write some existing messages before calling TailFromEnd.
+	for i := 0; i < 5; i++ {
+		msg := NewMessage("agent", TypeChat, fmt.Sprintf("old-%d", i))
+		if err := b.Append(msg); err != nil {
+			t.Fatalf("append old message %d: %v", i, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch := b.TailFromEnd(ctx)
+
+	// Wait for the tailer to start and observe the existing file size.
+	time.Sleep(700 * time.Millisecond)
+
+	// Verify no existing messages are emitted.
+	select {
+	case got := <-ch:
+		t.Fatalf("received old message that should have been skipped: %+v", got)
+	case <-time.After(1200 * time.Millisecond):
+		// Good — no old messages emitted.
+	}
+
+	// Append a new message after TailFromEnd started.
+	newMsg := NewMessage("agent", TypeChat, "new-message")
+	if err := b.Append(newMsg); err != nil {
+		t.Fatalf("append new message: %v", err)
+	}
+
+	// Verify the new message IS emitted.
+	select {
+	case got, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before receiving new message")
+		}
+		if got.ID != newMsg.ID {
+			t.Errorf("expected ID %q, got %q", newMsg.ID, got.ID)
+		}
+		if got.Text != "new-message" {
+			t.Errorf("expected Text %q, got %q", "new-message", got.Text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for new message from TailFromEnd")
+	}
+}
+
+func TestTailFromEndFileNotExistYet(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-yet.jsonl")
+	b := New(path)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch := b.TailFromEnd(ctx)
+
+	// Wait a bit — file doesn't exist, nothing should arrive.
+	select {
+	case got := <-ch:
+		t.Fatalf("received message before file exists: %+v", got)
+	case <-time.After(100 * time.Millisecond):
+		// Good — nothing received.
+	}
+
+	// Create the file with an initial message. Because Append creates the
+	// file and writes atomically, TailFromEnd will see the file with content
+	// already present and set offset = fileSize, skipping this message.
+	initialMsg := NewMessage("agent", TypeChat, "initial-at-creation")
+	if err := b.Append(initialMsg); err != nil {
+		t.Fatalf("append initial: %v", err)
+	}
+
+	// Wait for TailFromEnd to discover the file and set its offset.
+	time.Sleep(1200 * time.Millisecond)
+
+	// The initial message should NOT have been emitted — it was present when
+	// the file was first observed.
+	select {
+	case got := <-ch:
+		t.Fatalf("received message that was present at file discovery: %+v", got)
+	case <-time.After(1200 * time.Millisecond):
+		// Good — initial message correctly skipped.
+	}
+
+	// Now append a truly new message.
+	newMsg := NewMessage("agent", TypeChat, "after-discovery")
+	if err := b.Append(newMsg); err != nil {
+		t.Fatalf("append new: %v", err)
+	}
+
+	// The new message should arrive.
+	select {
+	case got, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before receiving message")
+		}
+		if got.ID != newMsg.ID {
+			t.Errorf("expected ID %q, got %q", newMsg.ID, got.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for new message after file creation")
+	}
+}
+
+func TestTailFromEndMultipleNewMessages(t *testing.T) {
+	t.Parallel()
+
+	path := tempBusPath(t)
+	b := New(path)
+
+	// Write existing messages.
+	for i := 0; i < 3; i++ {
+		if err := b.Append(NewMessage("agent", TypeChat, fmt.Sprintf("old-%d", i))); err != nil {
+			t.Fatalf("append old: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch := b.TailFromEnd(ctx)
+
+	// Wait for tailer to initialize.
+	time.Sleep(700 * time.Millisecond)
+
+	// Append several new messages.
+	newMsgs := make([]*Message, 3)
+	for i := 0; i < 3; i++ {
+		newMsgs[i] = NewMessage("agent", TypeChat, fmt.Sprintf("new-%d", i))
+		if err := b.Append(newMsgs[i]); err != nil {
+			t.Fatalf("append new[%d]: %v", i, err)
+		}
+	}
+
+	// Collect exactly 3 messages.
+	received := collectMessages(t, ch, 3, 5*time.Second)
+	if len(received) != 3 {
+		t.Fatalf("expected 3 new messages, got %d", len(received))
+	}
+
+	// Verify all received messages are the new ones, not old ones.
+	for i, got := range received {
+		if got.ID != newMsgs[i].ID {
+			t.Errorf("message %d: expected ID %q, got %q", i, newMsgs[i].ID, got.ID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

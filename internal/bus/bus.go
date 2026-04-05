@@ -93,19 +93,39 @@ func (b *Bus) ReadRecent(n int) ([]*Message, error) {
 // the bus file. A background goroutine polls the file every 500ms for new
 // content. The channel is closed when ctx is cancelled. If the file does
 // not yet exist, Tail waits for it to appear.
+//
+// Tail starts reading from the beginning of the file, so all existing
+// messages will be emitted first.
 func (b *Bus) Tail(ctx context.Context) <-chan *Message {
 	out := make(chan *Message, 16)
 
 	go func() {
 		defer close(out)
-		b.tailLoop(ctx, out)
+		b.tailLoop(ctx, out, false)
 	}()
 
 	return out
 }
 
-// tailLoop is the internal polling loop for Tail.
-func (b *Bus) tailLoop(ctx context.Context, out chan<- *Message) {
+// TailFromEnd returns a channel that emits only messages appended AFTER the
+// call. Existing file content is skipped by initializing the read offset to
+// the current file size. If the file does not yet exist, TailFromEnd waits
+// for it to appear and then only emits messages written after creation.
+func (b *Bus) TailFromEnd(ctx context.Context) <-chan *Message {
+	out := make(chan *Message, 16)
+
+	go func() {
+		defer close(out)
+		b.tailLoop(ctx, out, true)
+	}()
+
+	return out
+}
+
+// tailLoop is the internal polling loop for Tail and TailFromEnd.
+// When fromEnd is true the initial offset is set to the current file size
+// so that only newly appended messages are emitted.
+func (b *Bus) tailLoop(ctx context.Context, out chan<- *Message, fromEnd bool) {
 	var offset int64
 	var partialLine string
 	fileExists := false
@@ -119,7 +139,8 @@ func (b *Bus) tailLoop(ctx context.Context, out chan<- *Message) {
 
 		// Wait for the file to appear.
 		if !fileExists {
-			if _, err := os.Stat(b.filePath); err != nil {
+			info, err := os.Stat(b.filePath)
+			if err != nil {
 				select {
 				case <-ctx.Done():
 					return
@@ -128,7 +149,11 @@ func (b *Bus) tailLoop(ctx context.Context, out chan<- *Message) {
 				}
 			}
 			fileExists = true
-			offset = 0
+			if fromEnd {
+				offset = info.Size()
+			} else {
+				offset = 0
+			}
 			partialLine = ""
 		}
 

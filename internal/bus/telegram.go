@@ -91,7 +91,7 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 	t.logger.Printf("drained pending telegram updates, offset=%d", offset)
 
 	// Start tailing the bus.
-	busCh := t.bus.Tail(ctx)
+	busCh := t.bus.TailFromEnd(ctx)
 
 	// Error channel for the telegram listener goroutine.
 	errCh := make(chan error, 1)
