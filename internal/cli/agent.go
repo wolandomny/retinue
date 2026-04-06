@@ -119,6 +119,15 @@ func newAgentStartCmd() *cobra.Command {
 				return fmt.Errorf("agent %q not found in agents.yaml", agentID)
 			}
 
+			// Validate agents.yaml before starting the agent
+			agents, err := store.Load()
+			if err != nil {
+				return fmt.Errorf("loading agents.yaml for validation: %w", err)
+			}
+			if err := standing.Validate(agents); err != nil {
+				return fmt.Errorf("agents.yaml validation failed: %w", err)
+			}
+
 			if !agent.Enabled {
 				return fmt.Errorf("agent %q is disabled; set enabled: true in agents.yaml to start it", agentID)
 			}

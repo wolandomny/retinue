@@ -398,16 +398,17 @@ thematic suggestions, not requirements.
 ### Agent YAML Schema
 ~~~yaml
 agents:
-  - id: short-kebab-id        # unique identifier
-    name: Display Name         # human-readable name
-    role: Brief Role           # e.g. "CI Watcher"
-    repos: [repo-name]         # repos from retinue.yaml this agent accesses
-    schedule: "on_event"       # trigger type (not yet functional)
+  - id: short-kebab-id        # unique kebab-case identifier (required)
+    name: Display Name         # human-readable name (required)
+    role: Brief Role           # e.g. "CI Watcher" (optional)
+    repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
+    schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
     model: claude-sonnet-4-20250514  # optional model override
-    prompt: |                  # the agent's mandate
+    prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,
       what it watches for, and how it should respond.
-    enabled: true              # must be true to start
+      For scheduled agents, include how to handle heartbeat messages.
+    enabled: true              # must be true to start (default: false)
 ~~~
 
 ### Agent Commands
@@ -738,16 +739,17 @@ thematic suggestions, not requirements.
 ### Agent YAML Schema
 ~~~yaml
 agents:
-  - id: short-kebab-id        # unique identifier
-    name: Display Name         # human-readable name
-    role: Brief Role           # e.g. "CI Watcher"
-    repos: [repo-name]         # repos from retinue.yaml this agent accesses
-    schedule: "on_event"       # trigger type (not yet functional)
+  - id: short-kebab-id        # unique kebab-case identifier (required)
+    name: Display Name         # human-readable name (required)
+    role: Brief Role           # e.g. "CI Watcher" (optional)
+    repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
+    schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
     model: claude-sonnet-4-20250514  # optional model override
-    prompt: |                  # the agent's mandate
+    prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,
       what it watches for, and how it should respond.
-    enabled: true              # must be true to start
+      For scheduled agents, include how to handle heartbeat messages.
+    enabled: true              # must be true to start (default: false)
 ~~~
 
 ### Agent Commands

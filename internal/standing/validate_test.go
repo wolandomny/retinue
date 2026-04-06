@@ -143,3 +143,59 @@ func TestValidate_MultipleErrors_ReportsFirst(t *testing.T) {
 		t.Errorf("expected empty ID error first, got: %v", err)
 	}
 }
+
+func TestValidate_ValidSchedule(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule string
+	}{
+		{"empty", ""},
+		{"on_event", "on_event"},
+		{"every 30s", "every 30s"},
+		{"every 5m", "every 5m"},
+		{"every 2h", "every 2h"},
+		{"every 1h30m", "every 1h30m"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			agents := []Agent{
+				{ID: "test-agent", Prompt: "Test prompt", Schedule: tc.schedule},
+			}
+
+			if err := Validate(agents); err != nil {
+				t.Errorf("Validate() unexpected error for valid schedule %q: %v", tc.schedule, err)
+			}
+		})
+	}
+}
+
+func TestValidate_InvalidSchedule(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule string
+	}{
+		{"invalid format", "invalid"},
+		{"cron format", "0 9 * * 1-5"},
+		{"missing every", "5m"},
+		{"invalid duration", "every invalid"},
+		{"too short", "every 15s"},
+		{"negative duration", "every -5m"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			agents := []Agent{
+				{ID: "test-agent", Prompt: "Test prompt", Schedule: tc.schedule},
+			}
+
+			err := Validate(agents)
+			if err == nil {
+				t.Errorf("Validate() expected error for invalid schedule %q", tc.schedule)
+			}
+			if err != nil && !strings.Contains(err.Error(), "schedule") {
+				t.Errorf("error should mention 'schedule', got: %v", err)
+			}
+		})
+	}
+}

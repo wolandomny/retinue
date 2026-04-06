@@ -138,23 +138,34 @@ Top-level structure:
 
 Agent fields:
 
-  id              string      Unique kebab-case identifier
-  name            string      Human-readable display name
-  role            string      Brief role description (e.g. "CI Watcher")
-  repos           []string    Repo keys from retinue.yaml this agent accesses
-  schedule        string      Trigger type (see below)
-  model           string      Claude model override (falls back to workspace model)
-  prompt          string      The agent's mandate — detailed operating instructions
-  enabled         bool        Must be true to start (default: false)
-
-Schedule values:
-
-  "on_event"      Triggered by events (CI failures, file changes, etc.)
-  "every 2h"      Periodic execution at the given interval
-  "0 9 * * 1-5"   Cron expression for precise scheduling
-
-  Note: schedule execution is not yet implemented. Currently, agents
-  are started and stopped manually via retinue agent start/stop.
+  id              string      (required) Unique kebab-case identifier for the agent.
+                              Must be lowercase alphanumeric with hyphens. Used in CLI
+                              commands and file naming.
+  name            string      (required) Human-readable display name shown in agent
+                              list and group chat messages.
+  role            string      (optional) Brief role description (e.g., "CI Watcher",
+                              "Notion Watcher"). Shown in agent list output.
+  repos           []string    (optional) List of repo keys from retinue.yaml that
+                              this agent accesses. Included in the agent's system
+                              prompt for context.
+  schedule        string      (optional) Controls when the agent receives heartbeat
+                              triggers. Values:
+                              - "on_event" or empty — Agent only responds to explicit
+                                messages. This is the default.
+                              - "every <duration>" — Agent receives a "[Heartbeat]
+                                Scheduled check" message at the specified interval.
+                                Duration uses Go syntax: "30s", "5m", "2h".
+                                Minimum interval is 30 seconds.
+                              Examples: "every 5m", "every 2h", "every 30s"
+  model           string      (optional) Claude model override for this agent.
+                              Falls back to the workspace-level model from
+                              retinue.yaml.
+  prompt          string      (required) The agent's mandate. Detailed instructions
+                              defining what the agent does, what it watches for, and
+                              how it responds. For scheduled agents, include
+                              instructions for handling heartbeat messages.
+  enabled         bool        (optional, default: false) Must be true before the
+                              agent can be started with "retinue agent start".
 
 The enabled field:
 
@@ -193,14 +204,20 @@ Example agents.yaml:
       repos: [backend]
       schedule: "every 2h"
       prompt: |
-        You are Behemoth, the scholarly cat. Periodically review the
-        codebase for quality issues:
-        - Dead code and unused imports
-        - Missing or outdated tests
-        - Documentation gaps
-        - TODO/FIXME comments that should be resolved
-        Report findings as a summary. For clear improvements, submit
-        them as tasks. Do not refactor working code without cause.
+        You are Behemoth, the scholarly cat. You run on a 2-hour schedule
+        to periodically review the codebase for quality issues.
+
+        When you receive a "[Heartbeat] Scheduled check" message:
+        1. Review the codebase for:
+           - Dead code and unused imports
+           - Missing or outdated tests
+           - Documentation gaps
+           - TODO/FIXME comments that should be resolved
+        2. Report findings as a summary
+        3. For clear improvements, submit them as tasks
+
+        Do not refactor working code without cause. Focus on the repos
+        listed above.
       enabled: false
 `
 
