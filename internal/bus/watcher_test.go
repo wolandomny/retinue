@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3763,5 +3764,325 @@ func TestKnownAgentSessionFiles_NormalizesRelativePath(t *testing.T) {
 	cleanPath := filepath.Clean(agentFile)
 	if !result[cleanPath] {
 		t.Errorf("knownAgentSessionFiles() missing normalized path %q; got keys: %v", cleanPath, result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat scheduling tests
+// ---------------------------------------------------------------------------
+
+// injectionRecord captures a single heartbeat injection call.
+type injectionRecord struct {
+	windowName string
+	text       string
+}
+
+// newTestWatcherWithSchedule creates a Watcher with a mock heartbeat injector
+// for testing. Returns the watcher and a channel that receives injection records.
+func newTestWatcherWithSchedule(t *testing.T) (*Watcher, *[]injectionRecord, *sync.Mutex) {
+	t.Helper()
+	aptPath := t.TempDir()
+	busDir := t.TempDir()
+	logger := log.New(os.Stderr, "test: ", log.LstdFlags)
+
+	b := New(filepath.Join(busDir, "bus.jsonl"))
+	w := NewWatcher(b, "", aptPath, logger)
+
+	var mu sync.Mutex
+	var records []injectionRecord
+	w.injectHeartbeatFn = func(_ context.Context, windowName, text string) error {
+		mu.Lock()
+		records = append(records, injectionRecord{windowName: windowName, text: text})
+		mu.Unlock()
+		return nil
+	}
+
+	return w, &records, &mu
+}
+
+// writeAgentsYAML writes an agents.yaml file to the given directory.
+func writeAgentsYAML(t *testing.T, dir string, content string) {
+	t.Helper()
+	path := filepath.Join(dir, "agents.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing agents.yaml: %v", err)
+	}
+}
+
+func TestHeartbeatInjectedForScheduledAgent(t *testing.T) {
+	w, records, mu := newTestWatcherWithSchedule(t)
+
+	// Write agents.yaml with a scheduled agent.
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: poller
+    name: Poller
+    schedule: "every 30s"
+    prompt: "Poll things"
+    enabled: true
+`)
+
+	// Simulate an active agent window.
+	windows := []monitoredWindow{
+		{busName: "poller", windowName: "agent-poller"},
+	}
+	activeAgents := map[string]bool{"poller": true}
+
+	// Load schedules and sync heartbeats.
+	w.refreshSchedules()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	w.mu.Unlock()
+
+	// Verify a heartbeat ticker was started.
+	w.mu.Lock()
+	_, hasHB := w.heartbeats["poller"]
+	w.mu.Unlock()
+	if !hasHB {
+		t.Fatal("expected heartbeat ticker for agent 'poller'")
+	}
+
+	// Wait for at least one heartbeat to fire (ticker is 30s, but we use
+	// a very short interval for testing by overriding the schedule).
+	// Instead, let's directly test the injector by waiting briefly.
+	// The ticker is set at 30s which is too long for a test, so let's
+	// stop the existing heartbeat and start one with a short interval.
+	w.mu.Lock()
+	hb := w.heartbeats["poller"]
+	hb.cancel()
+	<-hb.done
+	delete(w.heartbeats, "poller")
+	w.startHeartbeat(ctx, "poller", "agent-poller", 50*time.Millisecond)
+	w.mu.Unlock()
+
+	// Wait for heartbeat to fire.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count := len(*records)
+	mu.Unlock()
+
+	if count == 0 {
+		t.Fatal("expected at least one heartbeat injection, got 0")
+	}
+
+	mu.Lock()
+	rec := (*records)[0]
+	mu.Unlock()
+
+	if rec.windowName != "agent-poller" {
+		t.Errorf("heartbeat window = %q, want %q", rec.windowName, "agent-poller")
+	}
+	if rec.text != HeartbeatMessage {
+		t.Errorf("heartbeat text = %q, want %q", rec.text, HeartbeatMessage)
+	}
+
+	// Cleanup.
+	cancel()
+}
+
+func TestNoHeartbeatForOnEventAgent(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: responder
+    name: Responder
+    schedule: "on_event"
+    prompt: "Respond to things"
+    enabled: true
+`)
+
+	windows := []monitoredWindow{
+		{busName: "responder", windowName: "agent-responder"},
+	}
+	activeAgents := map[string]bool{"responder": true}
+
+	w.refreshSchedules()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	w.mu.Unlock()
+
+	w.mu.Lock()
+	_, hasHB := w.heartbeats["responder"]
+	w.mu.Unlock()
+
+	if hasHB {
+		t.Error("on_event agent should not have a heartbeat ticker")
+	}
+}
+
+func TestNoHeartbeatForAgentWithoutSchedule(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: basic
+    name: Basic
+    prompt: "Do basic things"
+    enabled: true
+`)
+
+	windows := []monitoredWindow{
+		{busName: "basic", windowName: "agent-basic"},
+	}
+	activeAgents := map[string]bool{"basic": true}
+
+	w.refreshSchedules()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	w.mu.Unlock()
+
+	w.mu.Lock()
+	_, hasHB := w.heartbeats["basic"]
+	w.mu.Unlock()
+
+	if hasHB {
+		t.Error("agent without schedule field should not have a heartbeat ticker")
+	}
+}
+
+func TestHeartbeatMessageFormat(t *testing.T) {
+	want := "[Heartbeat] Scheduled check"
+	if HeartbeatMessage != want {
+		t.Errorf("HeartbeatMessage = %q, want %q", HeartbeatMessage, want)
+	}
+}
+
+func TestHeartbeatStopsWhenAgentDisappears(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: ephemeral
+    name: Ephemeral
+    schedule: "every 1m"
+    prompt: "Watch things"
+    enabled: true
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Phase 1: Agent is present — heartbeat should start.
+	windows := []monitoredWindow{
+		{busName: "ephemeral", windowName: "agent-ephemeral"},
+	}
+	activeAgents := map[string]bool{"ephemeral": true}
+
+	w.refreshSchedules()
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	w.mu.Unlock()
+
+	w.mu.Lock()
+	_, hasHB := w.heartbeats["ephemeral"]
+	w.mu.Unlock()
+	if !hasHB {
+		t.Fatal("expected heartbeat ticker for agent 'ephemeral'")
+	}
+
+	// Phase 2: Agent disappears — heartbeat should stop.
+	emptyWindows := []monitoredWindow{}
+	emptyActiveAgents := map[string]bool{}
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, emptyWindows, emptyActiveAgents)
+	w.mu.Unlock()
+
+	w.mu.Lock()
+	_, hasHB = w.heartbeats["ephemeral"]
+	w.mu.Unlock()
+	if hasHB {
+		t.Error("heartbeat ticker should be stopped after agent window disappeared")
+	}
+}
+
+func TestHeartbeatNoDuplicateTickers(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: poller
+    name: Poller
+    schedule: "every 5m"
+    prompt: "Poll things"
+    enabled: true
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	windows := []monitoredWindow{
+		{busName: "poller", windowName: "agent-poller"},
+	}
+	activeAgents := map[string]bool{"poller": true}
+
+	w.refreshSchedules()
+
+	// Sync twice — should not create duplicate tickers.
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	w.mu.Unlock()
+
+	w.mu.Lock()
+	w.syncHeartbeats(ctx, windows, activeAgents)
+	numHB := len(w.heartbeats)
+	w.mu.Unlock()
+
+	if numHB != 1 {
+		t.Errorf("expected 1 heartbeat ticker, got %d", numHB)
+	}
+}
+
+func TestRefreshSchedulesCachesOnMtime(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	writeAgentsYAML(t, w.aptPath, `
+agents:
+  - id: poller
+    name: Poller
+    schedule: "every 5m"
+    prompt: "Poll things"
+    enabled: true
+`)
+
+	// First load.
+	w.refreshSchedules()
+	if len(w.agentSchedules) != 1 {
+		t.Fatalf("expected 1 schedule after first load, got %d", len(w.agentSchedules))
+	}
+
+	// Record mtime.
+	mtime1 := w.agentsYAMLMtime
+
+	// Second load without changing the file — should use cache.
+	w.refreshSchedules()
+	if !w.agentsYAMLMtime.Equal(mtime1) {
+		t.Error("agentsYAMLMtime changed despite file not being modified")
+	}
+}
+
+func TestNoAgentsYAMLMeansNoSchedules(t *testing.T) {
+	w, _, _ := newTestWatcherWithSchedule(t)
+
+	// Don't write agents.yaml.
+	w.refreshSchedules()
+
+	if len(w.agentSchedules) != 0 {
+		t.Errorf("expected 0 schedules without agents.yaml, got %d", len(w.agentSchedules))
 	}
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
+	"github.com/wolandomny/retinue/internal/standing"
 )
 
 const (
@@ -39,6 +40,17 @@ const (
 	// scans for a newer JSONL file to auto-discover a new session.
 	wolandStaleThreshold = 60 * time.Second
 )
+
+// HeartbeatMessage is the text injected into an agent's tmux window on each
+// scheduled heartbeat tick.
+const HeartbeatMessage = "[Heartbeat] Scheduled check"
+
+// heartbeatTicker tracks a per-agent heartbeat schedule.
+type heartbeatTicker struct {
+	ticker *time.Ticker
+	cancel context.CancelFunc
+	done   chan struct{}
+}
 
 // injectedMessagePattern matches messages injected by the bus watcher via tmux
 // send-keys. These use the format "[Name] message text" as produced by
@@ -105,18 +117,35 @@ type Watcher struct {
 	mu       sync.Mutex
 	watchers map[string]*agentWatcher // windowName → watcher
 
+	// heartbeats tracks per-agent heartbeat tickers. keyed by agent bus name.
+	heartbeats map[string]*heartbeatTicker
+
+	// agentSchedules caches schedule durations loaded from agents.yaml,
+	// keyed by agent ID (bus name).
+	agentSchedules map[string]time.Duration
+
+	// agentsYAMLMtime caches the last-seen mtime of agents.yaml to avoid
+	// re-parsing on every discover cycle.
+	agentsYAMLMtime time.Time
+
+	// injectHeartbeatFn is the function used to inject heartbeat messages.
+	// Defaults to the real tmux send-keys implementation. Override in tests.
+	injectHeartbeatFn func(ctx context.Context, windowName, text string) error
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
 func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher {
-	return &Watcher{
-		bus:        b,
-		tmuxSocket: tmuxSocket,
-		aptPath:    aptPath,
-		logger:     logger,
-		watchers:   make(map[string]*agentWatcher),
-
+	w := &Watcher{
+		bus:            b,
+		tmuxSocket:     tmuxSocket,
+		aptPath:        aptPath,
+		logger:         logger,
+		watchers:       make(map[string]*agentWatcher),
+		heartbeats:     make(map[string]*heartbeatTicker),
+		agentSchedules: make(map[string]time.Duration),
 	}
+	w.injectHeartbeatFn = w.injectHeartbeatTmux
+	return w
 }
 
 // Run starts the bus watcher daemon and blocks until ctx is cancelled.
@@ -131,11 +160,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			w.stopAllHeartbeats()
 			w.stopAllWatchers()
 			return nil
 
 		case msg, ok := <-busCh:
 			if !ok {
+				w.stopAllHeartbeats()
 				w.stopAllWatchers()
 				return fmt.Errorf("bus tail channel closed")
 			}
@@ -180,6 +211,14 @@ func (w *Watcher) discoverAgents(ctx context.Context) {
 		}
 	}
 
+	// Build a set of active agent bus names for heartbeat management.
+	activeAgents := make(map[string]bool)
+	for _, win := range windows {
+		if !win.isWoland {
+			activeAgents[win.busName] = true
+		}
+	}
+
 	// Stop watchers for windows that are no longer running.
 	for windowName, aw := range w.watchers {
 		if !active[windowName] {
@@ -189,6 +228,10 @@ func (w *Watcher) discoverAgents(ctx context.Context) {
 			delete(w.watchers, windowName)
 		}
 	}
+
+	// Manage heartbeat tickers based on agent schedules.
+	w.refreshSchedules()
+	w.syncHeartbeats(ctx, windows, activeAgents)
 }
 
 // agentMarkerExists returns true if the session marker file for the given
@@ -774,5 +817,140 @@ func (w *Watcher) stopAllWatchers() {
 		aw.cancel()
 		<-aw.done
 		delete(w.watchers, id)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat scheduling
+// ---------------------------------------------------------------------------
+
+// refreshSchedules reloads agent schedules from agents.yaml if the file has
+// changed since the last load. This avoids re-parsing on every discover cycle.
+func (w *Watcher) refreshSchedules() {
+	agentsFile := filepath.Join(w.aptPath, "agents.yaml")
+	info, err := os.Stat(agentsFile)
+	if err != nil {
+		// No agents.yaml — clear cached schedules.
+		w.agentSchedules = make(map[string]time.Duration)
+		return
+	}
+
+	if info.ModTime().Equal(w.agentsYAMLMtime) {
+		return // unchanged
+	}
+	w.agentsYAMLMtime = info.ModTime()
+
+	store := standing.NewFileStore(agentsFile)
+	agents, err := store.Load()
+	if err != nil {
+		w.logger.Printf("error loading agents.yaml for schedules: %v", err)
+		return
+	}
+
+	schedules := make(map[string]time.Duration, len(agents))
+	for _, a := range agents {
+		interval, active, err := standing.ParseSchedule(a.Schedule)
+		if err != nil {
+			w.logger.Printf("agent %q has invalid schedule %q: %v", a.ID, a.Schedule, err)
+			continue
+		}
+		if active {
+			schedules[a.ID] = interval
+		}
+	}
+	w.agentSchedules = schedules
+}
+
+// syncHeartbeats starts or stops heartbeat tickers so they match the current
+// set of active agent windows and their configured schedules.
+// Must be called with w.mu held.
+func (w *Watcher) syncHeartbeats(ctx context.Context, windows []monitoredWindow, activeAgents map[string]bool) {
+	// Build a windowName lookup for active agents (non-Woland).
+	agentWindows := make(map[string]string) // busName → windowName
+	for _, win := range windows {
+		if !win.isWoland {
+			agentWindows[win.busName] = win.windowName
+		}
+	}
+
+	// Start tickers for agents that have a schedule and are active.
+	for busName, interval := range w.agentSchedules {
+		windowName, alive := agentWindows[busName]
+		if !alive {
+			continue // agent not running
+		}
+		if _, exists := w.heartbeats[busName]; exists {
+			continue // already ticking
+		}
+		w.startHeartbeat(ctx, busName, windowName, interval)
+	}
+
+	// Stop tickers for agents that disappeared or lost their schedule.
+	for busName, hb := range w.heartbeats {
+		_, stillActive := activeAgents[busName]
+		_, hasSchedule := w.agentSchedules[busName]
+		if !stillActive || !hasSchedule {
+			w.logger.Printf("stopping heartbeat for agent %q", busName)
+			hb.cancel()
+			<-hb.done
+			delete(w.heartbeats, busName)
+		}
+	}
+}
+
+// startHeartbeat launches a goroutine that periodically injects a heartbeat
+// message into the agent's tmux window.
+func (w *Watcher) startHeartbeat(ctx context.Context, busName, windowName string, interval time.Duration) {
+	childCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	ticker := time.NewTicker(interval)
+
+	hb := &heartbeatTicker{
+		ticker: ticker,
+		cancel: cancel,
+		done:   done,
+	}
+	w.heartbeats[busName] = hb
+	w.logger.Printf("starting heartbeat for agent %q (window: %s, interval: %v)", busName, windowName, interval)
+
+	go func() {
+		defer close(done)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-childCtx.Done():
+				return
+			case <-ticker.C:
+				if err := w.injectHeartbeatFn(childCtx, windowName, HeartbeatMessage); err != nil {
+					w.logger.Printf("error injecting heartbeat to agent %q: %v", busName, err)
+				}
+			}
+		}
+	}()
+}
+
+// injectHeartbeatTmux injects a heartbeat message into an agent's tmux window
+// via send-keys. This is the default production implementation.
+func (w *Watcher) injectHeartbeatTmux(ctx context.Context, windowName, text string) error {
+	escaped := shell.EscapeTmux(text)
+	target := fmt.Sprintf("retinue:%s", windowName)
+	args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys to %s: %w: %s", windowName, err, string(out))
+	}
+	return nil
+}
+
+// stopAllHeartbeats cancels all running heartbeat tickers and waits for them.
+func (w *Watcher) stopAllHeartbeats() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for busName, hb := range w.heartbeats {
+		w.logger.Printf("stopping heartbeat for agent %q", busName)
+		hb.cancel()
+		<-hb.done
+		delete(w.heartbeats, busName)
 	}
 }
