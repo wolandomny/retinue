@@ -88,7 +88,7 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("draining pending updates: %w", err)
 	}
-	t.logger.Printf("drained pending telegram updates, offset=%d", offset)
+	t.logger.Printf("processed pending telegram updates, offset=%d", offset)
 
 	// Start tailing the bus.
 	busCh := t.bus.TailFromEnd(ctx)
@@ -165,20 +165,59 @@ func (t *TelegramAdapter) Run(ctx context.Context) error {
 	}
 }
 
-// drainUpdates consumes all pending Telegram updates and returns the next
-// offset to use. This prevents stale messages from being processed on startup.
+// startupMaxAge is the maximum age of a pending message that will be
+// delivered on startup. Messages older than this are discarded to prevent
+// ancient messages from flooding in after a long outage.
+const startupMaxAge = 5 * time.Minute
+
+// drainUpdates fetches all pending Telegram updates and delivers recent
+// messages (younger than startupMaxAge) to the bus. Old messages are
+// discarded. Returns the next offset to use for polling.
 func (t *TelegramAdapter) drainUpdates(ctx context.Context) (int64, error) {
-	updates, err := t.bot.GetUpdates(ctx, -1, 0)
+	updates, err := t.bot.GetUpdates(ctx, 0, 0)
 	if err != nil {
-		return 0, fmt.Errorf("fetching latest update: %w", err)
+		return 0, fmt.Errorf("fetching pending updates: %w", err)
 	}
 
 	if len(updates) == 0 {
 		return 0, nil
 	}
 
+	now := time.Now()
+	cutoff := now.Add(-startupMaxAge)
+	var delivered, skipped int
+
+	for _, update := range updates {
+		if update.Message == nil || update.Message.Text == "" {
+			continue
+		}
+		// Skip bot messages.
+		if update.Message.From != nil && update.Message.From.IsBot {
+			continue
+		}
+		// Skip messages from other chats.
+		if update.Message.Chat.ID != t.chatID {
+			continue
+		}
+		// Check message age.
+		msgTime := time.Unix(update.Message.Date, 0)
+		if msgTime.Before(cutoff) {
+			skipped++
+			continue
+		}
+		// Deliver recent message to the bus.
+		msg := NewMessage("user", TypeUser, update.Message.Text)
+		msg.To = []string{"woland"}
+		if err := t.bus.Append(msg); err != nil {
+			t.logger.Printf("error writing startup message to bus: %v", err)
+		} else {
+			delivered++
+		}
+	}
+
 	offset := updates[len(updates)-1].UpdateID + 1
-	t.logger.Printf("drained %d pending update(s)", len(updates))
+	t.logger.Printf("startup: %d pending update(s), delivered %d, skipped %d old",
+		len(updates), delivered, skipped)
 	return offset, nil
 }
 

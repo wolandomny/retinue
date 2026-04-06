@@ -1,9 +1,18 @@
 package bus
 
 import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wolandomny/retinue/internal/telegram"
 )
 
 func TestFormatForTelegram_ChatMessage(t *testing.T) {
@@ -276,5 +285,192 @@ func TestFormatForTelegram_SystemWithSpecialChars(t *testing.T) {
 	want := "_Agent _azazello_ has joined_"
 	if got != want {
 		t.Errorf("FormatForTelegram(system with underscores) = %q, want %q", got, want)
+	}
+}
+
+// newTestAdapter creates a TelegramAdapter with a test bus and a bot pointing
+// at the given test server URL. Returns the adapter and the bus file path.
+func newTestAdapter(t *testing.T, serverURL string) (*TelegramAdapter, string) {
+	t.Helper()
+	busPath := filepath.Join(t.TempDir(), "bus.jsonl")
+	b := New(busPath)
+	bot := telegram.NewWithBaseURL("test-token", serverURL)
+	logger := log.New(os.Stderr, "test: ", log.LstdFlags)
+	adapter := NewTelegramAdapter(b, bot, 42, logger, nil)
+	return adapter, busPath
+}
+
+func TestDrainUpdates_RecentMessagesDelivered(t *testing.T) {
+	now := time.Now()
+	recentDate := now.Add(-2 * time.Minute).Unix() // 2 minutes ago — within 5 min window
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Offset  int64 `json:"offset"`
+			Timeout int   `json:"timeout"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		// Should be called with offset=0, timeout=0
+		if body.Offset != 0 {
+			t.Errorf("expected offset 0, got %d", body.Offset)
+		}
+		if body.Timeout != 0 {
+			t.Errorf("expected timeout 0, got %d", body.Timeout)
+		}
+
+		resp := telegram.APIResponse[[]telegram.Update]{
+			OK: true,
+			Result: []telegram.Update{
+				{
+					UpdateID: 100,
+					Message: &telegram.Message{
+						ID:   1,
+						Chat: telegram.Chat{ID: 42, Type: "private"},
+						Text: "hello from phone",
+						Date: recentDate,
+						From: &telegram.User{ID: 999, IsBot: false},
+					},
+				},
+				{
+					UpdateID: 101,
+					Message: &telegram.Message{
+						ID:   2,
+						Chat: telegram.Chat{ID: 42, Type: "private"},
+						Text: "another message",
+						Date: recentDate + 10,
+						From: &telegram.User{ID: 999, IsBot: false},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	adapter, busPath := newTestAdapter(t, server.URL)
+	offset, err := adapter.drainUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("drainUpdates error: %v", err)
+	}
+
+	// Offset should be past the last update.
+	if offset != 102 {
+		t.Errorf("expected offset 102, got %d", offset)
+	}
+
+	// Both messages should have been delivered to the bus.
+	b := New(busPath)
+	msgs, err := b.ReadRecent(10)
+	if err != nil {
+		t.Fatalf("ReadRecent error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages on bus, got %d", len(msgs))
+	}
+	if msgs[0].Text != "hello from phone" {
+		t.Errorf("expected first message text %q, got %q", "hello from phone", msgs[0].Text)
+	}
+	if msgs[0].Type != TypeUser {
+		t.Errorf("expected message type %q, got %q", TypeUser, msgs[0].Type)
+	}
+	if len(msgs[0].To) != 1 || msgs[0].To[0] != "woland" {
+		t.Errorf("expected message routed to woland, got %v", msgs[0].To)
+	}
+	if msgs[1].Text != "another message" {
+		t.Errorf("expected second message text %q, got %q", "another message", msgs[1].Text)
+	}
+}
+
+func TestDrainUpdates_OldMessagesSkipped(t *testing.T) {
+	now := time.Now()
+	oldDate := now.Add(-10 * time.Minute).Unix()    // 10 minutes ago — outside 5 min window
+	recentDate := now.Add(-2 * time.Minute).Unix()   // 2 minutes ago — within window
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := telegram.APIResponse[[]telegram.Update]{
+			OK: true,
+			Result: []telegram.Update{
+				{
+					UpdateID: 200,
+					Message: &telegram.Message{
+						ID:   1,
+						Chat: telegram.Chat{ID: 42, Type: "private"},
+						Text: "old message should be skipped",
+						Date: oldDate,
+						From: &telegram.User{ID: 999, IsBot: false},
+					},
+				},
+				{
+					UpdateID: 201,
+					Message: &telegram.Message{
+						ID:   2,
+						Chat: telegram.Chat{ID: 42, Type: "private"},
+						Text: "recent message should be delivered",
+						Date: recentDate,
+						From: &telegram.User{ID: 999, IsBot: false},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	adapter, busPath := newTestAdapter(t, server.URL)
+	offset, err := adapter.drainUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("drainUpdates error: %v", err)
+	}
+
+	if offset != 202 {
+		t.Errorf("expected offset 202, got %d", offset)
+	}
+
+	// Only the recent message should be on the bus.
+	b := New(busPath)
+	msgs, err := b.ReadRecent(10)
+	if err != nil {
+		t.Fatalf("ReadRecent error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message on bus, got %d", len(msgs))
+	}
+	if msgs[0].Text != "recent message should be delivered" {
+		t.Errorf("expected message %q, got %q", "recent message should be delivered", msgs[0].Text)
+	}
+}
+
+func TestDrainUpdates_NoPendingMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := telegram.APIResponse[[]telegram.Update]{
+			OK:     true,
+			Result: []telegram.Update{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	adapter, busPath := newTestAdapter(t, server.URL)
+	offset, err := adapter.drainUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("drainUpdates error: %v", err)
+	}
+
+	if offset != 0 {
+		t.Errorf("expected offset 0, got %d", offset)
+	}
+
+	// Bus should be empty.
+	b := New(busPath)
+	msgs, err := b.ReadRecent(10)
+	if err != nil {
+		t.Fatalf("ReadRecent error: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages on bus, got %d", len(msgs))
 	}
 }
