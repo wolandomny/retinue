@@ -337,7 +337,7 @@ The interactive setup walks you through:
 1. Creating a bot via [@BotFather](https://t.me/BotFather) in Telegram.
 2. Pasting your bot token — the CLI validates it against the Telegram API.
 3. Sending a message to your new bot so the CLI can detect your chat ID.
-4. Saving the `chat_id` to `retinue.yaml` and writing MCP tool config to `.mcp.json`.
+4. Saving the token and `chat_id` to `retinue.yaml`.
 
 After setup, add the bot token to your shell profile:
 

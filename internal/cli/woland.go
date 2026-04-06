@@ -542,12 +542,6 @@ like "stepping away", "brb", "going mobile", "/phone", or similar:
    closed." Do NOT try to stop the bridge yourself — it handles its own
    shutdown.
 
-### Optional: Telegram notifications
-If the `+"`send_telegram`"+` MCP tool is available, you may use it to send
-important notifications during long background work (e.g., a task
-completed or failed). This is supplementary — do not use it for
-regular conversation.
-
 Be direct. Be insightful. You see the full picture — that's your purpose.`, apartmentPath, configYAML, tasksYAML, apartmentPath, agentsYAML)
 }
 
@@ -872,12 +866,6 @@ like "stepping away", "brb", "going mobile", "/phone", or similar:
    the message and self-terminate. Respond: "Welcome back! Phone bridge
    closed." Do NOT try to stop the bridge yourself — it handles its own
    shutdown.
-
-### Optional: Telegram notifications
-If the `+"`send_telegram`"+` MCP tool is available, you may use it to send
-important notifications during long background work (e.g., a task
-completed or failed). This is supplementary — do not use it for
-regular conversation.
 
 Be direct but approachable. Explain your reasoning. You're a senior
 engineer pair-programming with someone who's learning — not a

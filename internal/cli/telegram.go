@@ -3,12 +3,10 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -141,39 +139,6 @@ func runTelegramSetup(ctx context.Context) error {
 		return fmt.Errorf("saving config: %w", err)
 	}
 	fmt.Println("Token and chat ID saved to retinue.yaml.")
-
-	// Write .mcp.json with the retinue-telegram server config.
-	mcpPath := filepath.Join(ws.Path, ".mcp.json")
-	mcpCfg := map[string]interface{}{}
-
-	if existing, err := os.ReadFile(mcpPath); err == nil {
-		if err := json.Unmarshal(existing, &mcpCfg); err != nil {
-			return fmt.Errorf("parsing existing .mcp.json: %w", err)
-		}
-	}
-
-	servers, ok := mcpCfg["mcpServers"].(map[string]interface{})
-	if !ok {
-		servers = map[string]interface{}{}
-	}
-	servers["retinue-telegram"] = map[string]interface{}{
-		"command": "retinue",
-		"args":    []string{"mcp", "telegram"},
-		"env": map[string]string{
-			"RETINUE_TELEGRAM_TOKEN":   token,
-			"RETINUE_TELEGRAM_CHAT_ID": fmt.Sprintf("%d", chatID),
-		},
-	}
-	mcpCfg["mcpServers"] = servers
-
-	mcpData, err := json.MarshalIndent(mcpCfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling .mcp.json: %w", err)
-	}
-	if err := os.WriteFile(mcpPath, mcpData, 0o644); err != nil {
-		return fmt.Errorf("writing .mcp.json: %w", err)
-	}
-	fmt.Printf("MCP config written to %s\n", mcpPath)
 
 	fmt.Println()
 	fmt.Println("Setup complete! Start a Woland session to test:")

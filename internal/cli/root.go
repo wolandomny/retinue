@@ -28,7 +28,6 @@ func newRootCmd() *cobra.Command {
 		newAttachCmd(),
 		newDispatchCmd(),
 		newLsCmd(),
-		newMCPCmd(),
 		newMergeCmd(),
 		newPhoneCmd(),
 		newResetCmd(),
