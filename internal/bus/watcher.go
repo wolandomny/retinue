@@ -752,7 +752,6 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	}
 
 	formatted := FormatForInjection(&msg)
-	escaped := shell.EscapeTmux(formatted)
 
 	w.mu.Lock()
 	windows := make([]injectionWindow, 0, len(w.watchers))
@@ -789,15 +788,23 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 
 	for _, t := range targets {
 		target := fmt.Sprintf("retinue:%s", t.windowName)
-		args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
-		cmd := exec.CommandContext(ctx, "tmux", args...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			w.logger.Printf("error injecting message to %q (window %s): %v: %s",
-				t.busName, t.windowName, err, string(out))
+		if err := shell.InjectText(ctx, w.tmuxBaseArgs(), target, formatted); err != nil {
+			w.logger.Printf("error injecting message to %q (window %s): %v",
+				t.busName, t.windowName, err)
 		}
 	}
 }
 
+
+// tmuxBaseArgs returns the tmux socket prefix arguments (e.g. ["-L", "retinue-apt"])
+// without any subcommand. This is suitable for passing to helpers like shell.InjectText
+// that append their own subcommands.
+func (w *Watcher) tmuxBaseArgs() []string {
+	if w.tmuxSocket != "" {
+		return []string{"-L", w.tmuxSocket}
+	}
+	return nil
+}
 
 // tmuxArgs builds a tmux argument list, prepending -L <socket> when configured.
 func (w *Watcher) tmuxArgs(args ...string) []string {
@@ -930,14 +937,12 @@ func (w *Watcher) startHeartbeat(ctx context.Context, busName, windowName string
 }
 
 // injectHeartbeatTmux injects a heartbeat message into an agent's tmux window
-// via send-keys. This is the default production implementation.
+// using the reliable load-buffer + paste-buffer + send-keys pattern.
+// This is the default production implementation.
 func (w *Watcher) injectHeartbeatTmux(ctx context.Context, windowName, text string) error {
-	escaped := shell.EscapeTmux(text)
 	target := fmt.Sprintf("retinue:%s", windowName)
-	args := w.tmuxArgs("send-keys", "-t", target, "--", escaped, "Enter")
-	cmd := exec.CommandContext(ctx, "tmux", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys to %s: %w: %s", windowName, err, string(out))
+	if err := shell.InjectText(ctx, w.tmuxBaseArgs(), target, text); err != nil {
+		return fmt.Errorf("injecting heartbeat to %s: %w", windowName, err)
 	}
 	return nil
 }

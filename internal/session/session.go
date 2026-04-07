@@ -55,6 +55,16 @@ func NewTmuxManager(socket string) *TmuxManager {
 	return &TmuxManager{Socket: socket}
 }
 
+// TmuxBaseArgs returns the tmux socket prefix arguments (e.g. ["-L", "retinue-apt"])
+// without any subcommand. This is suitable for passing to helpers like shell.InjectText
+// that append their own subcommands.
+func (m *TmuxManager) TmuxBaseArgs() []string {
+	if m.Socket != "" {
+		return []string{"-L", m.Socket}
+	}
+	return nil
+}
+
 // TmuxArgs builds the base tmux argument list, prepending `-L <Socket>`
 // when a custom socket name is configured.
 func (m *TmuxManager) TmuxArgs(args ...string) []string {

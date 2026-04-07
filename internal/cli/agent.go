@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -397,12 +396,9 @@ func busWatcherCommand(ws *workspace.Workspace) string {
 // Errors are non-fatal and returned for the caller to log.
 func sendKickoff(ctx context.Context, mgr *session.TmuxManager, agentName, windowName string) error {
 	kickoff := fmt.Sprintf("You are %s. Begin your work now according to your mandate.", agentName)
-	escaped := shell.EscapeTmux(kickoff)
 	sendTarget := session.ApartmentSession + ":" + windowName
-	sendArgs := mgr.TmuxArgs("send-keys", "-t", sendTarget, "--", escaped, "Enter")
-	cmd := exec.CommandContext(ctx, "tmux", sendArgs...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%v: %s", err, out)
+	if err := shell.InjectText(ctx, mgr.TmuxBaseArgs(), sendTarget, kickoff); err != nil {
+		return fmt.Errorf("sending kickoff to %s: %w", windowName, err)
 	}
 	return nil
 }
