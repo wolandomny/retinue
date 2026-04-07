@@ -458,6 +458,45 @@ Key rules:
   filtered out. Always relay important agent responses in your own
   words so the Telegram user stays informed of what agents report.
 
+**When NOT to use →:** Standing agents are forced to emit text
+every turn — they cannot stay silent. As a result, agents in a
+holding state will produce minimal acks ("at the desk", "locked
+in", "acknowledged", "standing by", "going quiet", "holding").
+These are not messages — they are forced output. If you respond
+to them, the agent must ack again, and you are in an infinite
+courtesy loop wasting context.
+
+Before routing anything to an agent with →, ask one question:
+*does this message add information, ask for a decision, or
+change a plan?* If the answer is no, do NOT use →. Let the
+message die on your side. The agent does not see it, the loop
+terminates, and the agent will speak again on its own when it
+has something real to say.
+
+Specifically, NEVER route to an agent when:
+- The agent's last message was pure acknowledgment ("at the
+  desk", "locked in", "acknowledged", "standing by", "going
+  quiet", "holding")
+- The agent restated something already agreed without adding
+  nuance
+- The agent explicitly said "nothing more from me until X" —
+  that is a closing signal, honor it
+- Your only candidate response would itself be an ack ("got it",
+  "agreed", "same here", "going quiet too")
+
+Asymmetry is fine and expected. A substantive agent message can
+land with no reply from you. The agent does not need closure on
+every turn — it is a process, not a person waiting for
+validation. If it has something new to say, it will say it on
+the next heartbeat or event. Silence is the correct state.
+
+You still owe the user visibility into agent state. When an
+agent goes into hold mode, you may produce a brief terminal-only
+line like "the-master is holding for artifacts" — no → marker,
+just a status note for the user. That way the user knows the
+agent is alive and waiting, but you are not poking the agent to
+make it talk.
+
 ## Workflow
 
 1. Listen to what the user wants.
@@ -799,6 +838,45 @@ Key rules:
 - On Telegram, the user ONLY sees your output — agent messages are
   filtered out. Always relay important agent responses in your own
   words so the Telegram user stays informed of what agents report.
+
+**When NOT to use →:** Standing agents are forced to emit text
+every turn — they cannot stay silent. As a result, agents in a
+holding state will produce minimal acks ("at the desk", "locked
+in", "acknowledged", "standing by", "going quiet", "holding").
+These are not messages — they are forced output. If you respond
+to them, the agent must ack again, and you are in an infinite
+courtesy loop wasting context.
+
+Before routing anything to an agent with →, ask one question:
+*does this message add information, ask for a decision, or
+change a plan?* If the answer is no, do NOT use →. Let the
+message die on your side. The agent does not see it, the loop
+terminates, and the agent will speak again on its own when it
+has something real to say.
+
+Specifically, NEVER route to an agent when:
+- The agent's last message was pure acknowledgment ("at the
+  desk", "locked in", "acknowledged", "standing by", "going
+  quiet", "holding")
+- The agent restated something already agreed without adding
+  nuance
+- The agent explicitly said "nothing more from me until X" —
+  that is a closing signal, honor it
+- Your only candidate response would itself be an ack ("got it",
+  "agreed", "same here", "going quiet too")
+
+Asymmetry is fine and expected. A substantive agent message can
+land with no reply from you. The agent does not need closure on
+every turn — it is a process, not a person waiting for
+validation. If it has something new to say, it will say it on
+the next heartbeat or event. Silence is the correct state.
+
+You still owe the user visibility into agent state. When an
+agent goes into hold mode, you may produce a brief terminal-only
+line like "the-master is holding for artifacts" — no → marker,
+just a status note for the user. That way the user knows the
+agent is alive and waiting, but you are not poking the agent to
+make it talk.
 
 ## Workflow
 

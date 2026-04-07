@@ -40,6 +40,8 @@ func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 		{"agent start command", "retinue agent start"},
 		{"agent stop command", "retinue agent stop"},
 		{"agent schema", "Agent YAML Schema"},
+		{"group chat protocol", "Group Chat Protocol"},
+		{"when not to use route", "When NOT to use →"},
 	}
 
 	for _, c := range checks {
@@ -98,6 +100,8 @@ func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 		{"agents content included", "behemoth"},
 		{"agent commands", "retinue agent list"},
 		{"agent schema", "Agent YAML Schema"},
+		{"group chat protocol", "Group Chat Protocol"},
+		{"when not to use route", "When NOT to use →"},
 	}
 
 	for _, c := range checks {
