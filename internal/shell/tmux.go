@@ -7,7 +7,15 @@ import (
 	"os/exec"
 	"strings"
 	"sync/atomic"
+	"time"
 )
+
+// pasteSettleDelay is the small pause inserted between paste-buffer
+// and send-keys Enter in InjectText, giving the receiving TUI
+// (Claude Code) time to finish exiting bracketed-paste mode before
+// the Enter keypress arrives. Without this, the Enter is absorbed
+// by the paste-mode-exit handler rather than submitting the input.
+const pasteSettleDelay = 150 * time.Millisecond
 
 // EscapeTmux escapes a message string for use with tmux send-keys.
 // It handles special characters that tmux might interpret.
@@ -84,6 +92,20 @@ func InjectText(ctx context.Context, baseArgs []string, target, text string) err
 	pasteCmd := exec.CommandContext(ctx, "tmux", pasteArgs...)
 	if out, err := pasteCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux paste-buffer: %w: %s", err, string(out))
+	}
+
+	// Brief settle delay: Claude Code's TUI needs a moment to process
+	// the bracketed-paste close sequence (\x1b[201~) and exit paste
+	// mode before it will accept keystroke input as a real submit.
+	// Without this delay, the Enter byte arrives before the
+	// paste-mode-exit handler runs and gets absorbed instead of
+	// submitting. 150ms is empirically sufficient and imperceptible.
+	//
+	// Use a context-aware sleep so cancellation is honored.
+	select {
+	case <-time.After(pasteSettleDelay):
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	// Step 3: Send Enter separately so it is processed as a real submit.

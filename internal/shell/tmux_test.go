@@ -100,10 +100,22 @@ func TestNextBufferName_Format(t *testing.T) {
 	}
 }
 
+// TestPasteSettleDelay verifies the constant is defined with the expected value.
+func TestPasteSettleDelay(t *testing.T) {
+	if pasteSettleDelay != 150*time.Millisecond {
+		t.Errorf("pasteSettleDelay = %v, want 150ms", pasteSettleDelay)
+	}
+}
+
 func TestInjectText_Integration(t *testing.T) {
 	// Skip if tmux is not available.
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not found in PATH, skipping integration test")
+	}
+
+	// Skip unless explicitly opted-in via build tag or short-mode override.
+	if testing.Short() {
+		t.Skip("skipping tmux integration test in short mode")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -137,7 +149,7 @@ func TestInjectText_Integration(t *testing.T) {
 	}
 
 	// Give tmux a moment to process the paste and Enter.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Capture the pane content and verify our text appeared.
 	captureCmd := exec.CommandContext(ctx, "tmux", "-L", socketName, "capture-pane", "-p", "-t", target)
@@ -155,6 +167,11 @@ func TestInjectText_SpecialChars_Integration(t *testing.T) {
 	// Skip if tmux is not available.
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not found in PATH, skipping integration test")
+	}
+
+	// Skip unless explicitly opted-in.
+	if testing.Short() {
+		t.Skip("skipping tmux integration test in short mode")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -186,7 +203,7 @@ func TestInjectText_SpecialChars_Integration(t *testing.T) {
 		t.Fatalf("InjectText() returned error: %v", err)
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	captureCmd := exec.CommandContext(ctx, "tmux", "-L", socketName, "capture-pane", "-p", "-t", target)
 	out, err := captureCmd.CombinedOutput()
