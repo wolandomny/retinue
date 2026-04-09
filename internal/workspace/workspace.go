@@ -19,7 +19,7 @@ const (
 	LogsDir     = "logs"
 	ReposDir    = "repos"
 
-	DefaultModel      = "claude-opus-4-6"
+	DefaultModel      = "claude-opus-4-6[1m]"
 	DefaultMaxWorkers = 20
 )
 
