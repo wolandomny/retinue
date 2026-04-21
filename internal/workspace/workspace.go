@@ -19,7 +19,11 @@ const (
 	LogsDir     = "logs"
 	ReposDir    = "repos"
 
-	DefaultModel      = "claude-opus-4-6[1m]"
+	// DefaultModel is the fallback model when no model is configured
+	// in retinue.yaml. "default" is a Claude Code alias that resolves
+	// to the currently-recommended Anthropic model, so retinue does
+	// not need to chase model-name bumps.
+	DefaultModel      = "default"
 	DefaultMaxWorkers = 20
 )
 
