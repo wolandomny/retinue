@@ -73,6 +73,7 @@ repos:
   api: repos/api
   web: repos/web
 model: claude-opus-4-6
+effort: high            # optional — adaptive-reasoning depth (see "Effort" below)
 max_workers: 20
 validate:
   api: "go build ./... && go test ./..."
@@ -82,6 +83,44 @@ validate:
 The `github_account` field tells retinue which GitHub account to use for git operations.
 
 The `validate` field is optional but recommended. It maps repo names to shell commands that Hella runs before merging each task branch. If validation fails, the task is marked "failed" and the branch is not merged.
+
+### Effort
+
+The `effort` field controls Claude Code's adaptive-reasoning depth — how often and how deeply the model thinks before responding. It's independent of `model`: a smaller model can be told to think harder, and a larger model can be told to think less.
+
+Valid values:
+
+- `low` — minimal reasoning; fastest, cheapest. Suitable for trivial mechanical work.
+- `medium` — balanced default for typical coding tasks.
+- `high` — deeper deliberation. Good for architectural or cross-cutting work.
+- `xhigh` — extra-high. **Opus 4.7 only.** The 4.6 line (Opus 4.6, Sonnet 4.6) does not accept this value.
+- `max` — maximum reasoning budget. Reserve for synthesis-heavy work (planning, complex refactors, debugging gnarly state).
+
+If `effort` is omitted (or set to the empty string), retinue does not pass `--effort` to Claude Code and the model's per-version default applies (currently `xhigh` on Opus 4.7, `high` on the 4.6 line).
+
+Where it can be set:
+
+- **Workspace** (`retinue.yaml`) — applies to Woland, all task workers, and all standing agents unless overridden.
+- **Standing agent** (`agents.yaml`, per agent) — overrides the workspace value for that agent only.
+- **Per-task** (`tasks.yaml`, per task) — overrides the workspace value for that task's worker only.
+
+Resolution hierarchy (first match wins):
+
+1. Task-level or agent-level `effort`
+2. Workspace-level `effort` from `retinue.yaml`
+3. Unset → Claude Code's per-model default
+
+Recommendations by use case:
+
+| Use case                                   | Suggested `effort`     |
+| ------------------------------------------ | ---------------------- |
+| Trivial mechanical edits, simple renames   | `low`                  |
+| Typical coding tasks                       | unset (model default)  |
+| Architectural changes, cross-file refactor | `high`                 |
+| Synthesis-heavy work (planning, debugging) | `max`                  |
+| Opus 4.7 + want the strongest default      | `xhigh` or unset       |
+
+When in doubt, leave it unset. Bump it up for tasks you'd want a senior engineer to slow down and think about; bump it down for tasks where speed matters more than depth.
 
 ### Multiple GitHub accounts
 
@@ -301,6 +340,8 @@ tasks:
   - id: add-auth            # unique identifier
     description: Add JWT authentication to the API  # human-readable summary
     repo: api               # repository key (must match retinue.yaml)
+    # model: claude-opus-4-6  # optional — overrides workspace model
+    # effort: high            # optional — overrides workspace effort (low|medium|high|xhigh|max)
     depends_on:              # task IDs that must complete first
       - setup-db
     status: pending          # pending | in_progress | done | merged | failed

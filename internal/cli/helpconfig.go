@@ -17,6 +17,10 @@ Top-level fields:
   name              string    Apartment display name
   github_account    string    GitHub account for git operations
   model             string    Claude model for agents (e.g. "claude-opus-4-6")
+  effort            string    Adaptive-reasoning depth for agents (see below).
+                              One of: low, medium, high, xhigh, max. Empty = unset.
+                              Note: xhigh is Opus 4.7 only; the 4.6 line accepts
+                              low/medium/high/max.
   max_workers       int       Maximum concurrent worker agents
   track_costs       bool      Track token usage and costs per task (default: false)
 
@@ -58,10 +62,39 @@ Full example:
       commit_style: conventional
     frontend: repos/frontend
   model: claude-opus-4-6
+  effort: high
   max_workers: 10
   validate:
     backend: "go build ./... && go test ./..."
     frontend: "npm ci && npm run lint && npm test"
+
+Effort resolution:
+
+  Effort controls Claude Code's adaptive-reasoning depth (the --effort
+  flag). It is independent of model selection.
+
+  Valid values:
+    low      Minimal reasoning. Fastest, cheapest. Use for trivial work.
+    medium   Balanced default for typical coding tasks.
+    high     Deeper deliberation. Use for architectural work.
+    xhigh    Extra-high. Opus 4.7 only — the 4.6 line rejects this value.
+    max      Maximum reasoning budget. Use for synthesis-heavy work.
+    ""       Unset — defer to the model's per-version default.
+
+  Where it can be set:
+    - Workspace (retinue.yaml)         applies to all agents
+    - Standing agent (agents.yaml)     overrides workspace per agent
+    - Task (tasks.yaml)                overrides workspace per worker
+
+  Resolution order (first match wins):
+    1. task.effort (or agent.effort)
+    2. workspace.effort
+    3. unset → Claude Code's per-model default
+
+  Recommendation:
+    Leave unset for typical work. Bump to "high" or "max" for tasks you'd
+    want a senior engineer to slow down on. Drop to "low" when speed
+    matters more than depth.
 
 ═══════════════════════════════════════════
 tasks.yaml — Task Definitions
@@ -81,6 +114,9 @@ Task fields:
   branch          string      Git branch name (auto-generated if omitted)
   base_branch     string      Branch to merge into (overrides repo config)
   model           string      Claude model override (falls back to workspace model)
+  effort          string      Effort level override (low|medium|high|xhigh|max).
+                              Falls back to workspace effort, then unset. xhigh is
+                              Opus 4.7 only.
   depends_on      []string    Task IDs this depends on (for ordering)
   status          string      Task status (see below)
   prompt          string      Detailed instructions for the worker agent
@@ -113,6 +149,8 @@ Example task:
       description: Add JWT authentication middleware
       repo: backend
       base_branch: develop
+      # model: claude-opus-4-6      # optional override
+      effort: high                  # optional — architectural work, slow down
       depends_on: []
       status: pending
       prompt: |
@@ -160,6 +198,10 @@ Agent fields:
   model           string      (optional) Claude model override for this agent.
                               Falls back to the workspace-level model from
                               retinue.yaml.
+  effort          string      (optional) Effort level override for this agent.
+                              One of: low, medium, high, xhigh, max.
+                              Falls back to the workspace-level effort, then to
+                              the model's default. xhigh is Opus 4.7 only.
   prompt          string      (required) The agent's mandate. Detailed instructions
                               defining what the agent does, what it watches for, and
                               how it responds. For scheduled agents, include
@@ -188,6 +230,7 @@ Example agents.yaml:
       repos: [backend, frontend]
       schedule: "on_event"
       model: claude-sonnet-4-20250514
+      effort: medium
       prompt: |
         You are Azazello, the enforcer. Watch CI pipelines for failures.
         When a build or test fails:
@@ -203,6 +246,7 @@ Example agents.yaml:
       role: Codebase Gardener
       repos: [backend]
       schedule: "every 2h"
+      effort: high
       prompt: |
         You are Behemoth, the scholarly cat. You run on a 2-hour schedule
         to periodically review the codebase for quality issues.
