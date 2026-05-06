@@ -341,6 +341,7 @@ tasks:
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
     model: claude-sonnet-4-20250514  # optional: override workspace model
+    effort: high               # optional: low|medium|high|xhigh|max
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
     skip_validate: false       # optional: skip per-task validation
@@ -370,6 +371,24 @@ tasks:
   complex, ambiguous, or requiring deep reasoning.
 - When in doubt, don't set it. Always err on the side of using the
   default (Opus).
+- Resolution: per-task `+"`model`"+` → workspace `+"`model`"+` → Claude default.
+
+### Per-Task Effort Override
+- The `+"`effort`"+` field is optional. Valid values: `+"`low`"+`, `+"`medium`"+`,
+  `+"`high`"+`, `+"`xhigh`"+`, `+"`max`"+`. If unset, falls back to the workspace
+  `+"`effort`"+`, then to Claude Code's per-model default.
+- `+"`xhigh`"+` is **Opus 4.7 only**. Opus 4.6 and Sonnet 4.6 support
+  `+"`low`"+`/`+"`medium`"+`/`+"`high`"+`/`+"`max`"+`.
+- Effort controls adaptive-reasoning depth — it is independent of model.
+  Pair it with whichever model fits the task; the two dials are orthogonal.
+- Recommendation:
+  - `+"`low`"+` — trivial mechanical edits (pure renames, simple config tweaks).
+  - unset — most tasks; trust the model default.
+  - `+"`high`"+` — architectural work, refactors, anything ambiguous.
+  - `+"`max`"+` — synthesis-heavy tasks where you'd rather pay for thinking
+    than redo the work.
+- When in doubt, leave it unset.
+- Resolution: per-task `+"`effort`"+` → workspace `+"`effort`"+` → Claude default.
 
 ### Per-Task Validation Override
 - The `+"`skip_validate`"+` field is optional (default: false).
@@ -415,12 +434,28 @@ agents:
     repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
     schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
     model: claude-sonnet-4-20250514  # optional model override
+    effort: high               # optional: low|medium|high|xhigh|max
     prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,
       what it watches for, and how it should respond.
       For scheduled agents, include how to handle heartbeat messages.
     enabled: true              # must be true to start (default: false)
 ~~~
+
+### Per-Agent Effort Override
+- The `+"`effort`"+` field is optional. Valid values: `+"`low`"+`, `+"`medium`"+`,
+  `+"`high`"+`, `+"`xhigh`"+`, `+"`max`"+`. If unset, falls back to the workspace
+  `+"`effort`"+`, then to Claude Code's per-model default.
+- `+"`xhigh`"+` is **Opus 4.7 only**. Opus 4.6 and Sonnet 4.6 support
+  `+"`low`"+`/`+"`medium`"+`/`+"`high`"+`/`+"`max`"+`.
+- Effort controls adaptive-reasoning depth — it is independent of model.
+- Recommendation:
+  - `+"`low`"+` — heartbeat watchers and simple responders.
+  - unset — general-purpose agents.
+  - `+"`high`"+` — agents synthesizing logs or cross-referencing systems.
+  - `+"`max`"+` — only if the agent's mandate is genuinely deep analysis.
+- When in doubt, leave it unset.
+- Resolution: per-agent `+"`effort`"+` → workspace `+"`effort`"+` → Claude default.
 
 ### Agent Commands
 - `+"`retinue agent list`"+` — show all defined agents and running status
@@ -732,6 +767,7 @@ tasks:
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
     model: claude-sonnet-4-20250514  # optional: override workspace model
+    effort: high               # optional: low|medium|high|xhigh|max
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
     skip_validate: false       # optional: skip per-task validation
@@ -761,6 +797,24 @@ tasks:
   complex, ambiguous, or requiring deep reasoning.
 - When in doubt, don't set it. Always err on the side of using the
   default (Opus).
+- Resolution: per-task `+"`model`"+` → workspace `+"`model`"+` → Claude default.
+
+### Per-Task Effort Override
+- The `+"`effort`"+` field is optional. Valid values: `+"`low`"+`, `+"`medium`"+`,
+  `+"`high`"+`, `+"`xhigh`"+`, `+"`max`"+`. If unset, falls back to the workspace
+  `+"`effort`"+`, then to Claude Code's per-model default.
+- `+"`xhigh`"+` is **Opus 4.7 only**. Opus 4.6 and Sonnet 4.6 support
+  `+"`low`"+`/`+"`medium`"+`/`+"`high`"+`/`+"`max`"+`.
+- Effort controls adaptive-reasoning depth — it is independent of model.
+  Pair it with whichever model fits the task; the two dials are orthogonal.
+- Recommendation:
+  - `+"`low`"+` — trivial mechanical edits (pure renames, simple config tweaks).
+  - unset — most tasks; trust the model default.
+  - `+"`high`"+` — architectural work, refactors, anything ambiguous.
+  - `+"`max`"+` — synthesis-heavy tasks where you'd rather pay for thinking
+    than redo the work.
+- When in doubt, leave it unset.
+- Resolution: per-task `+"`effort`"+` → workspace `+"`effort`"+` → Claude default.
 
 ### Skipping Validation
 - Set `+"`skip_validate: true`"+` on tasks that only change docs,
@@ -795,12 +849,28 @@ agents:
     repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
     schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
     model: claude-sonnet-4-20250514  # optional model override
+    effort: high               # optional: low|medium|high|xhigh|max
     prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,
       what it watches for, and how it should respond.
       For scheduled agents, include how to handle heartbeat messages.
     enabled: true              # must be true to start (default: false)
 ~~~
+
+### Per-Agent Effort Override
+- The `+"`effort`"+` field is optional. Valid values: `+"`low`"+`, `+"`medium`"+`,
+  `+"`high`"+`, `+"`xhigh`"+`, `+"`max`"+`. If unset, falls back to the workspace
+  `+"`effort`"+`, then to Claude Code's per-model default.
+- `+"`xhigh`"+` is **Opus 4.7 only**. Opus 4.6 and Sonnet 4.6 support
+  `+"`low`"+`/`+"`medium`"+`/`+"`high`"+`/`+"`max`"+`.
+- Effort controls adaptive-reasoning depth — it is independent of model.
+- Recommendation:
+  - `+"`low`"+` — heartbeat watchers and simple responders.
+  - unset — general-purpose agents.
+  - `+"`high`"+` — agents synthesizing logs or cross-referencing systems.
+  - `+"`max`"+` — only if the agent's mandate is genuinely deep analysis.
+- When in doubt, leave it unset.
+- Resolution: per-agent `+"`effort`"+` → workspace `+"`effort`"+` → Claude default.
 
 ### Agent Commands
 - `+"`retinue agent list`"+` — show all defined agents and running status
