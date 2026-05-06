@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/wolandomny/retinue/internal/effort"
 )
 
 // kebabCaseRe matches valid kebab-case identifiers: lowercase
@@ -39,6 +41,10 @@ func Validate(agents []Agent) error {
 
 		if err := validateSchedule(a.Schedule); err != nil {
 			return fmt.Errorf("agent[%d] (%s): %w", i, a.ID, err)
+		}
+
+		if err := effort.Validate(a.Effort); err != nil {
+			return fmt.Errorf("agents.yaml: agent[%d] (%s): %w", i, a.ID, err)
 		}
 	}
 

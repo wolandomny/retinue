@@ -199,3 +199,35 @@ func TestValidate_InvalidSchedule(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_Effort_AcceptsValidLevels(t *testing.T) {
+	for _, level := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+		t.Run(level, func(t *testing.T) {
+			agents := []Agent{
+				{ID: "agent-x", Prompt: "do work", Effort: level},
+			}
+			if err := Validate(agents); err != nil {
+				t.Errorf("Validate() unexpected error for valid effort %q: %v", level, err)
+			}
+		})
+	}
+}
+
+func TestValidate_Effort_RejectsInvalidLevel(t *testing.T) {
+	agents := []Agent{
+		{ID: "azazello", Prompt: "do work", Effort: "ultra"},
+	}
+	err := Validate(agents)
+	if err == nil {
+		t.Fatal("Validate() expected error for invalid effort 'ultra'")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Errorf("error should mention 'ultra', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "agents.yaml") {
+		t.Errorf("error should mention 'agents.yaml', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "azazello") {
+		t.Errorf("error should mention the agent id, got: %v", err)
+	}
+}

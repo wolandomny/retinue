@@ -74,3 +74,48 @@ func TestClaudeRunnerBuildsArgs(t *testing.T) {
 	// the runner struct exists and implements the interface.
 	var _ Runner = &ClaudeRunner{}
 }
+
+func TestBuildClaudeArgs_WithEffort(t *testing.T) {
+	args := buildClaudeArgs(RunOpts{
+		Prompt:       "do work",
+		SystemPrompt: "you are a worker",
+		Model:        "claude-opus-4-7",
+		Effort:       "max",
+	})
+
+	// Find --effort and verify the next arg.
+	found := false
+	for i, a := range args {
+		if a == "--effort" {
+			if i+1 >= len(args) || args[i+1] != "max" {
+				t.Errorf("expected --effort max, got args: %v", args)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --effort flag, got args: %v", args)
+	}
+}
+
+func TestBuildClaudeArgs_NoEffort(t *testing.T) {
+	args := buildClaudeArgs(RunOpts{
+		Prompt: "do work",
+		Model:  "claude-opus-4-7",
+	})
+	for _, a := range args {
+		if a == "--effort" {
+			t.Errorf("--effort should not be present when Effort is empty, got args: %v", args)
+		}
+	}
+}
+
+func TestBuildClaudeArgs_PromptIsLast(t *testing.T) {
+	args := buildClaudeArgs(RunOpts{
+		Prompt: "the prompt",
+		Effort: "high",
+	})
+	if args[len(args)-1] != "the prompt" {
+		t.Errorf("expected prompt to be the last arg, got args: %v", args)
+	}
+}

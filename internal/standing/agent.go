@@ -14,6 +14,7 @@ type Agent struct {
 	Repos    []string `yaml:"repos,omitempty"`
 	Schedule string   `yaml:"schedule,omitempty"`
 	Model    string   `yaml:"model,omitempty"`
+	Effort   string   `yaml:"effort,omitempty"`
 	Prompt   string   `yaml:"prompt"`
 	Enabled  bool     `yaml:"enabled,omitempty"`
 }

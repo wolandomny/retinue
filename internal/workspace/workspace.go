@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/wolandomny/retinue/internal/effort"
 	"gopkg.in/yaml.v3"
 )
 
@@ -96,6 +97,10 @@ func Load(path string) (*Workspace, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+
+	if err := effort.Validate(cfg.Effort); err != nil {
+		return nil, fmt.Errorf("%s: field 'effort': %w", cfgPath, err)
 	}
 
 	return &Workspace{Path: path, Config: cfg}, nil

@@ -35,6 +35,10 @@ func (s *FileStore) load() ([]Task, error) {
 		return nil, fmt.Errorf("parsing tasks file: %w", err)
 	}
 
+	if err := validateFields(tf.Tasks); err != nil {
+		return nil, err
+	}
+
 	return tf.Tasks, nil
 }
 

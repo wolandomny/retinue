@@ -161,13 +161,9 @@ func newAgentStartCmd() *cobra.Command {
 				model = ws.Config.Model
 			}
 
-			claudeArgs := []string{
-				"--dangerously-skip-permissions",
-				"--system-prompt", systemPrompt,
-			}
-			if model != "" {
-				claudeArgs = append(claudeArgs, "--model", model)
-			}
+			effortLevel := resolveAgentEffort(agent, ws)
+
+			claudeArgs := buildAgentClaudeArgs(systemPrompt, model, effortLevel)
 
 			claudeCmd := "claude " + shell.Join(claudeArgs)
 
@@ -379,6 +375,36 @@ func shouldStopBusWatcher(ctx context.Context, mgr session.Manager, store *stand
 		}
 	}
 	return true
+}
+
+// resolveAgentEffort returns the effort level to pass to a standing
+// agent's claude process. Precedence: agent.Effort > workspace.Config.Effort.
+// An empty result means "do not pass --effort" (defer to model default).
+func resolveAgentEffort(a *standing.Agent, ws *workspace.Workspace) string {
+	if a != nil && a.Effort != "" {
+		return a.Effort
+	}
+	if ws != nil {
+		return ws.Config.Effort
+	}
+	return ""
+}
+
+// buildAgentClaudeArgs constructs the argv for spawning claude as a
+// standing agent. The model and effort args are conditionally appended;
+// the empty string for either means "omit the flag".
+func buildAgentClaudeArgs(systemPrompt, model, effortLevel string) []string {
+	args := []string{
+		"--dangerously-skip-permissions",
+		"--system-prompt", systemPrompt,
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effortLevel != "" {
+		args = append(args, "--effort", effortLevel)
+	}
+	return args
 }
 
 // busWatcherCommand returns the shell command used to run the bus watcher

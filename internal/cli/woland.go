@@ -61,13 +61,7 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 	}
 
 	if !hasWindow {
-		claudeArgs := []string{
-			"--dangerously-skip-permissions",
-			"--system-prompt", systemPrompt,
-		}
-		if ws.Config.Model != "" {
-			claudeArgs = append(claudeArgs, "--model", ws.Config.Model)
-		}
+		claudeArgs := buildWolandClaudeArgs(systemPrompt, ws.Config.Model, ws.Config.Effort)
 
 		claudeCmd := "claude " + shell.Join(claudeArgs)
 
@@ -93,6 +87,23 @@ func wolandSession(ws *workspace.Workspace, windowName, systemPrompt string) err
 		os.Environ())
 }
 
+
+// buildWolandClaudeArgs constructs the argv for spawning claude as
+// Woland. Woland has no per-instance config, so effort is sourced
+// only from the workspace. Empty model/effort means "omit the flag".
+func buildWolandClaudeArgs(systemPrompt, model, effortLevel string) []string {
+	args := []string{
+		"--dangerously-skip-permissions",
+		"--system-prompt", systemPrompt,
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effortLevel != "" {
+		args = append(args, "--effort", effortLevel)
+	}
+	return args
+}
 
 // writeSessionMarker waits for a new .jsonl session file to appear in the
 // Claude projects directory and writes its path to the .woland-session marker

@@ -532,3 +532,91 @@ func TestConcurrentMultipleArchives(t *testing.T) {
 		t.Fatalf("expected %d archived tasks, got %d", toArchive, len(archived))
 	}
 }
+
+func TestEffortField_PreservedThroughRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.yaml")
+	store := NewFileStore(path)
+
+	tasks := []Task{
+		{ID: "with-effort", Status: StatusPending, Effort: "high"},
+		{ID: "no-effort", Status: StatusPending},
+	}
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if loaded[0].Effort != "high" {
+		t.Errorf("task[0].Effort = %q, want %q", loaded[0].Effort, "high")
+	}
+	if loaded[1].Effort != "" {
+		t.Errorf("task[1].Effort = %q, want empty", loaded[1].Effort)
+	}
+
+	// Effort should be omitted from YAML when empty (omitempty tag).
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+	if !strings.Contains(string(content), "effort: high") {
+		t.Errorf("expected 'effort: high' in YAML, got:\n%s", string(content))
+	}
+}
+
+func TestEffortField_InvalidValueRejectedOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.yaml")
+
+	raw := `tasks:
+  - id: bad-task
+    description: A task with a bogus effort
+    repo: api
+    status: pending
+    prompt: do stuff
+    effort: ultra
+    depends_on: []
+    artifacts: []
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewFileStore(path)
+	_, err := store.Load()
+	if err == nil {
+		t.Fatal("Load() expected error for invalid effort 'ultra'")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Errorf("error should mention 'ultra', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bad-task") {
+		t.Errorf("error should mention task id 'bad-task', got: %v", err)
+	}
+}
+
+func TestEffortField_AllValidValuesAccepted(t *testing.T) {
+	for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(level, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tasks.yaml")
+			store := NewFileStore(path)
+
+			tk := Task{ID: "t-" + level, Status: StatusPending, Effort: level}
+			if err := store.Save([]Task{tk}); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			loaded, err := store.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if loaded[0].Effort != level {
+				t.Errorf("Effort = %q, want %q", loaded[0].Effort, level)
+			}
+		})
+	}
+}

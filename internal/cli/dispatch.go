@@ -168,6 +168,10 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		model = target.Model
 	}
 
+	// Use task-level effort if set, otherwise fall back to workspace default.
+	// Empty string means "do not pass --effort" (defer to model default).
+	effortLevel := resolveTaskEffort(target, ws)
+
 	// Inject GitHub token into the agent's environment if available.
 	var extraEnv []string
 	if token := ws.GitHubToken(); token != "" {
@@ -179,6 +183,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		SystemPrompt:     systemPrompt,
 		WorkDir:          workDir,
 		Model:            model,
+		Effort:           effortLevel,
 		LogFile:          logFile,
 		WindowName:       windowName,
 		ApartmentSession: aptSession,
@@ -645,6 +650,19 @@ func buildDependencyContext(store *task.FileStore, deps []string) string {
 	}
 
 	return b.String()
+}
+
+// resolveTaskEffort returns the effort level to pass to the worker
+// claude process for this task. Precedence: task.Effort > workspace.Config.Effort.
+// An empty result means "do not pass --effort" (defer to model default).
+func resolveTaskEffort(t *task.Task, ws *workspace.Workspace) string {
+	if t != nil && t.Effort != "" {
+		return t.Effort
+	}
+	if ws != nil {
+		return ws.Config.Effort
+	}
+	return ""
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {

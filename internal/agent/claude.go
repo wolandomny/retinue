@@ -38,7 +38,10 @@ type usageData struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
+// buildClaudeArgs constructs the argv passed to the claude CLI for a
+// worker run. It is exported as a package-private helper purely so
+// the model/effort plumbing can be unit-tested without exec'ing claude.
+func buildClaudeArgs(opts RunOpts) []string {
 	args := []string{
 		"--print",
 		"--verbose",
@@ -50,11 +53,20 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		args = append(args, "--model", opts.Model)
 	}
 
+	if opts.Effort != "" {
+		args = append(args, "--effort", opts.Effort)
+	}
+
 	if opts.SystemPrompt != "" {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 
 	args = append(args, opts.Prompt)
+	return args
+}
+
+func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
+	args := buildClaudeArgs(opts)
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	if opts.WorkDir != "" {

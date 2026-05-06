@@ -8,6 +8,7 @@ type RunOpts struct {
 	SystemPrompt     string
 	WorkDir          string
 	Model            string
+	Effort           string
 	LogFile          string
 	WindowName       string   // tmux window name within the apartment session
 	ApartmentSession string   // tmux session name (e.g. "retinue")
