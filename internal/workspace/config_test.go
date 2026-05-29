@@ -129,21 +129,21 @@ func TestConfig_Effort_ValidValues(t *testing.T) {
 func TestConfig_Effort_InvalidValueRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ConfigFile)
-	raw := "name: test\nrepos: {}\nmodel: claude-opus-4-7\nmax_workers: 1\neffort: ultra\n"
+	raw := "name: test\nrepos: {}\nmodel: claude-opus-4-7\nmax_workers: 1\neffort: bogus\n"
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := Load(dir)
 	if err == nil {
-		t.Fatal("Load() expected error for invalid effort 'ultra', got nil")
+		t.Fatal("Load() expected error for invalid effort 'bogus', got nil")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "effort") {
 		t.Errorf("error should mention 'effort', got: %v", err)
 	}
-	if !strings.Contains(msg, "ultra") {
-		t.Errorf("error should mention the bad value 'ultra', got: %v", err)
+	if !strings.Contains(msg, "bogus") {
+		t.Errorf("error should mention the bad value 'bogus', got: %v", err)
 	}
 	if !strings.Contains(msg, ConfigFile) {
 		t.Errorf("error should mention the config file path, got: %v", err)

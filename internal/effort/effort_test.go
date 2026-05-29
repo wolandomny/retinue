@@ -21,6 +21,15 @@ func TestValidate_AllValidLevels(t *testing.T) {
 	}
 }
 
+func TestValidate_Ultracode(t *testing.T) {
+	if err := Validate("ultracode"); err != nil {
+		t.Errorf("Validate(\"ultracode\") = %v, want nil", err)
+	}
+	if err := Validate("bogus"); err == nil {
+		t.Error("Validate(\"bogus\") = nil, want error")
+	}
+}
+
 func TestValidate_Invalid(t *testing.T) {
 	cases := []string{"ultra", "LOW", "Low", "extreme", "x-high", "off", " low"}
 	for _, c := range cases {
