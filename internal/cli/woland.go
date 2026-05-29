@@ -340,7 +340,7 @@ tasks:
   - id: short-kebab-id        # unique identifier
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
-    model: claude-sonnet-4-20250514  # optional: override workspace model
+    model: claude-sonnet-4-6  # optional: override workspace model
     effort: high               # optional: low|medium|high|xhigh|max
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
@@ -364,7 +364,7 @@ tasks:
 ### Per-Task Model Override
 - The `+"`model`"+` field is optional. If set, the worker uses this model
   instead of the workspace default.
-- Use `+"`claude-sonnet-4-20250514`"+` for clearly mechanical tasks:
+- Use `+"`claude-sonnet-4-6`"+` for clearly mechanical tasks:
   documentation updates, simple renames, config changes, straightforward
   CRUD, or anything with very explicit instructions.
 - Leave `+"`model`"+` unset (defaulting to Opus) for anything architectural,
@@ -433,7 +433,7 @@ agents:
     role: Brief Role           # e.g. "CI Watcher" (optional)
     repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
     schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
-    model: claude-sonnet-4-20250514  # optional model override
+    model: claude-sonnet-4-6  # optional model override
     effort: high               # optional: low|medium|high|xhigh|max
     prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,
@@ -766,7 +766,7 @@ tasks:
   - id: short-kebab-id        # unique identifier
     description: Brief summary  # human-readable description
     repo: repo-name            # key from repos in config above
-    model: claude-sonnet-4-20250514  # optional: override workspace model
+    model: claude-sonnet-4-6  # optional: override workspace model
     effort: high               # optional: low|medium|high|xhigh|max
     depends_on: []             # list of task IDs this depends on
     status: pending            # always "pending" for new tasks
@@ -790,7 +790,7 @@ tasks:
 ### Per-Task Model Override
 - The `+"`model`"+` field is optional. If set, the worker uses this model
   instead of the workspace default.
-- Use `+"`claude-sonnet-4-20250514`"+` for clearly mechanical tasks:
+- Use `+"`claude-sonnet-4-6`"+` for clearly mechanical tasks:
   documentation updates, simple renames, config changes, straightforward
   CRUD, or anything with very explicit instructions.
 - Leave `+"`model`"+` unset (defaulting to Opus) for anything architectural,
@@ -848,7 +848,7 @@ agents:
     role: Brief Role           # e.g. "CI Watcher" (optional)
     repos: [repo-name]         # repos from retinue.yaml this agent accesses (optional)
     schedule: "every 5m"       # heartbeat interval: empty/"on_event" or "every <duration>"
-    model: claude-sonnet-4-20250514  # optional model override
+    model: claude-sonnet-4-6  # optional model override
     effort: high               # optional: low|medium|high|xhigh|max
     prompt: |                  # the agent's mandate (required)
       Detailed instructions defining what this agent does,

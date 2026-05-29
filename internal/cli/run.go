@@ -450,7 +450,12 @@ func runAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *task.F
 			// Try smart re-planning first.
 			errContext := t.Error
 			var revisedPrompt string
-			replanRes, replanErr := replanFailedTask(ctx, t, ws.Config.Model, ws.LogsPath())
+			// Use task-level model if set, otherwise fall back to workspace default.
+			replanModel := ws.Config.Model
+			if t.Model != "" {
+				replanModel = t.Model
+			}
+			replanRes, replanErr := replanFailedTask(ctx, t, replanModel, ws.LogsPath())
 
 			if replanErr != nil {
 				// Fall back to mechanical retry.

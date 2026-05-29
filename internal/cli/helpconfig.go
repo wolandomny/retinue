@@ -16,7 +16,7 @@ Top-level fields:
 
   name              string    Apartment display name
   github_account    string    GitHub account for git operations
-  model             string    Claude model for agents (e.g. "claude-opus-4-6")
+  model             string    Claude model for agents (e.g. "claude-opus-4-8")
   effort            string    Adaptive-reasoning depth for agents (see below).
                               One of: low, medium, high, xhigh, max. Empty = unset.
                               Note: xhigh is Opus 4.7 only; the 4.6 line accepts
@@ -61,7 +61,7 @@ Full example:
       base_branch: develop
       commit_style: conventional
     frontend: repos/frontend
-  model: claude-opus-4-6
+  model: claude-opus-4-8
   effort: high
   max_workers: 10
   validate:
@@ -149,7 +149,7 @@ Example task:
       description: Add JWT authentication middleware
       repo: backend
       base_branch: develop
-      # model: claude-opus-4-6      # optional override
+      # model: claude-opus-4-8      # optional override
       effort: high                  # optional — architectural work, slow down
       depends_on: []
       status: pending
@@ -229,7 +229,7 @@ Example agents.yaml:
       role: CI Watcher
       repos: [backend, frontend]
       schedule: "on_event"
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-4-6
       effort: medium
       prompt: |
         You are Azazello, the enforcer. Watch CI pipelines for failures.
