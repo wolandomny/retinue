@@ -312,7 +312,7 @@ func runAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore,
 				fmt.Fprintf(out, "[run] Starting task %q\n", t.ID)
 				mu.Unlock()
 
-				if err := dispatchOne(ctx, ws, store, &t, io.Discard); err != nil {
+				if err := dispatchOne(ctx, ws, store, &t, io.Discard, nil); err != nil {
 					mu.Lock()
 					fmt.Fprintf(out, "[run] Task %q failed: %v\n", t.ID, err)
 					mu.Unlock()

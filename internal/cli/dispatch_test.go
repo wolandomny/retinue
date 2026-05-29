@@ -1,13 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/wolandomny/retinue/internal/agent"
 	"github.com/wolandomny/retinue/internal/task"
 	"github.com/wolandomny/retinue/internal/workspace"
 )
@@ -27,7 +33,13 @@ func TestResolveWorkerLaunch_DowngradesUltracodeWhenDisabled(t *testing.T) {
 	}
 	tk := &task.Task{ID: "t-ultra", Effort: "ultracode"}
 
-	effort, env := resolveWorkerLaunch(tk, ws)
+	var effort string
+	var env []string
+	// The downgrade emits an operator-facing warning to stderr; capture it so we
+	// assert the warning is actually surfaced (not silently downgraded).
+	stderr := captureStderr(t, func() {
+		effort, env = resolveWorkerLaunch(tk, ws)
+	})
 
 	if effort != "xhigh" {
 		t.Errorf("effort = %q, want %q (downgraded)", effort, "xhigh")
@@ -35,6 +47,33 @@ func TestResolveWorkerLaunch_DowngradesUltracodeWhenDisabled(t *testing.T) {
 	// Downgraded workers are non-ultracode, so workflows must be disabled.
 	if !hasEnv(env, "CLAUDE_CODE_DISABLE_WORKFLOWS=1") {
 		t.Errorf("expected CLAUDE_CODE_DISABLE_WORKFLOWS=1 in env, got %v", env)
+	}
+	// The warning must be emitted and must identify both the offending task and
+	// the new effort level, so operators can see why ultracode was refused.
+	if !strings.Contains(stderr, "downgrading to xhigh") {
+		t.Errorf("expected 'downgrading to xhigh' warning on stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "t-ultra") {
+		t.Errorf("expected task ID %q in downgrade warning, got: %q", "t-ultra", stderr)
+	}
+	if !strings.Contains(stderr, "allow_ultracode") {
+		t.Errorf("expected warning to mention allow_ultracode, got: %q", stderr)
+	}
+}
+
+// TestResolveWorkerLaunch_NoWarningWhenAllowed guards against a spurious
+// downgrade warning when the workspace has opted into ultracode.
+func TestResolveWorkerLaunch_NoWarningWhenAllowed(t *testing.T) {
+	ws := &workspace.Workspace{
+		Config: workspace.Config{AllowUltracode: true},
+	}
+	tk := &task.Task{ID: "t-ultra", Effort: "ultracode"}
+
+	stderr := captureStderr(t, func() {
+		resolveWorkerLaunch(tk, ws)
+	})
+	if strings.Contains(stderr, "downgrading") {
+		t.Errorf("did not expect a downgrade warning when allow_ultracode is true, got: %q", stderr)
 	}
 }
 
@@ -412,4 +451,321 @@ func TestBuildDependencyContext_EmptyResult(t *testing.T) {
 	if strings.Contains(got, "Result:") {
 		t.Errorf("expected no Result line for empty result, got %q", got)
 	}
+}
+
+// --- Dispatch concurrency / governance tests -------------------------------
+//
+// These tests exercise dispatchAll's ultracode semaphore and the per-worker
+// disallowed-tools wiring WITHOUT spawning real `claude` processes. They rely
+// on the injectable runner seam: dispatchAll/dispatchOne accept an
+// agent.Runner; when nil they build the real tmux runner (production), and
+// tests pass a fakeRunner instead.
+//
+// What is covered:
+//   - The ultracode semaphore never lets more than MaxUltracodeWorkers
+//     ultracode workers run concurrently (the SAFETY property).
+//   - Non-ultracode workers are NOT gated by the ultracode semaphore.
+//   - The acquire order (ultraSem before sem) does not deadlock under
+//     saturation; the scheduler always drains.
+//   - The "AskUserQuestion" deny actually reaches the worker invocation.
+//
+// What is NOT covered here: the real tmux/claude launch path (that lives in
+// internal/agent) and worktree creation (covered by the resolveWorkDir tests).
+// The fakeRunner returns an error so dispatchOne takes its failure path, which
+// avoids touching tmux at all; failed tasks are not "ready", so the scheduler
+// terminates cleanly.
+
+// fakeRunner is an agent.Runner that records concurrency without launching any
+// real process. It separately tracks ultracode vs non-ultracode in-flight
+// counts (distinguished by RunOpts.Effort) and the peak of each, so tests can
+// assert the ultracode cap is honored while plain workers are not throttled.
+type fakeRunner struct {
+	delay time.Duration
+
+	mu          sync.Mutex
+	ultraCur    int
+	ultraPeak   int
+	otherCur    int
+	otherPeak   int
+	runCount   int
+	disallowed []string // RunOpts.DisallowedTools seen, one entry per Run call
+	efforts    []string // RunOpts.Effort seen, one entry per Run call
+}
+
+func (r *fakeRunner) Run(_ context.Context, opts agent.RunOpts) (agent.Result, error) {
+	isUltra := opts.Effort == "ultracode"
+
+	r.mu.Lock()
+	r.runCount++
+	r.disallowed = append(r.disallowed, opts.DisallowedTools)
+	r.efforts = append(r.efforts, opts.Effort)
+	if isUltra {
+		r.ultraCur++
+		if r.ultraCur > r.ultraPeak {
+			r.ultraPeak = r.ultraCur
+		}
+	} else {
+		r.otherCur++
+		if r.otherCur > r.otherPeak {
+			r.otherPeak = r.otherCur
+		}
+	}
+	r.mu.Unlock()
+
+	// Hold the slot long enough that concurrently-launched workers overlap,
+	// making the observed peak deterministic relative to the semaphore cap.
+	if r.delay > 0 {
+		time.Sleep(r.delay)
+	}
+
+	r.mu.Lock()
+	if isUltra {
+		r.ultraCur--
+	} else {
+		r.otherCur--
+	}
+	r.mu.Unlock()
+
+	// Return an error so dispatchOne takes the failure path: it records the task
+	// as failed and, crucially, does NOT call the real tmux KillWindow. Failed
+	// tasks are not re-dispatched, so the scheduler converges.
+	return agent.Result{}, fmt.Errorf("fakeRunner: simulated failure")
+}
+
+func (r *fakeRunner) snapshot() (ultraPeak, otherPeak, runCount int, disallowed, efforts []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ultraPeak, r.otherPeak, r.runCount,
+		append([]string(nil), r.disallowed...),
+		append([]string(nil), r.efforts...)
+}
+
+// newDispatchTestWorkspace builds a workspace backed by a temp dir plus a
+// FileStore pre-populated with the given tasks. The tasks have no Repo, so
+// resolveWorkDir returns the workspace path and no git/worktree work occurs.
+func newDispatchTestWorkspace(t *testing.T, cfg workspace.Config, tasks []task.Task) (*workspace.Workspace, *task.FileStore) {
+	t.Helper()
+	if cfg.Name == "" {
+		cfg.Name = "test"
+	}
+	ws := &workspace.Workspace{Path: t.TempDir(), Config: cfg}
+	store := task.NewFileStore(ws.TasksPath())
+	if err := store.Save(tasks); err != nil {
+		t.Fatalf("saving tasks: %v", err)
+	}
+	return ws, store
+}
+
+// makePendingTasks builds n ready (pending, no-dep, no-repo) tasks with the
+// given effort and an id prefix.
+func makePendingTasks(prefix, effort string, n int) []task.Task {
+	tasks := make([]task.Task, n)
+	for i := 0; i < n; i++ {
+		tasks[i] = task.Task{
+			ID:     fmt.Sprintf("%s-%d", prefix, i),
+			Status: task.StatusPending,
+			Effort: effort,
+			Prompt: "do work",
+		}
+	}
+	return tasks
+}
+
+// runDispatchAllWithin runs dispatchAll in a goroutine and fails the test if it
+// does not return within timeout. A real deadlock in the semaphore-acquire
+// path would hang regardless of context cancellation, so we use a wall-clock
+// guard rather than a context deadline.
+func runDispatchAllWithin(t *testing.T, ws *workspace.Workspace, store *task.FileStore, runner agent.Runner, timeout time.Duration) {
+	t.Helper()
+	errc := make(chan error, 1)
+	go func() {
+		errc <- dispatchAll(context.Background(), ws, store, io.Discard, runner)
+	}()
+	select {
+	case <-errc:
+		// dispatchAll itself returns nil even when individual tasks fail; we
+		// don't assert on it here (the fakeRunner always "fails" tasks).
+	case <-time.After(timeout):
+		t.Fatalf("dispatchAll did not complete within %s — possible deadlock in the ultracode/worker semaphore acquire order", timeout)
+	}
+}
+
+// TestDispatchAll_UltracodeSemaphoreCapsConcurrency is the highest-priority
+// guardrail test: with many ultracode tasks ready at once, no more than
+// MaxUltracodeWorkers may run concurrently. A regression that dropped the
+// ultraSem gating would let the peak climb toward the task count (or MaxWorkers).
+func TestDispatchAll_UltracodeSemaphoreCapsConcurrency(t *testing.T) {
+	const ultraCap = 2
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{
+		AllowUltracode:      true,
+		MaxUltracodeWorkers: ultraCap,
+		MaxWorkers:          10, // deliberately loose so ultraSem is the binding constraint
+	}, makePendingTasks("ultra", "ultracode", 6))
+
+	fr := &fakeRunner{delay: 60 * time.Millisecond}
+	runDispatchAllWithin(t, ws, store, fr, 15*time.Second)
+
+	ultraPeak, _, runCount, _, efforts := fr.snapshot()
+
+	if runCount != 6 {
+		t.Fatalf("expected all 6 ultracode tasks to run, got runCount=%d", runCount)
+	}
+	for _, e := range efforts {
+		if e != "ultracode" {
+			t.Fatalf("expected every worker to launch with effort=ultracode, saw %q (efforts=%v)", e, efforts)
+		}
+	}
+	// SAFETY property: never exceed the cap.
+	if ultraPeak > ultraCap {
+		t.Errorf("ultracode concurrency peak = %d, exceeds MaxUltracodeWorkers = %d", ultraPeak, ultraCap)
+	}
+	// Meaningfulness: the gate should still allow up to the cap, otherwise the
+	// test would pass even if dispatch serialized everything (hiding a real cap
+	// regression behind over-serialization).
+	if ultraPeak != ultraCap {
+		t.Errorf("ultracode concurrency peak = %d, want exactly %d (gate should saturate to the cap)", ultraPeak, ultraCap)
+	}
+}
+
+// TestDispatchAll_NonUltracodeNotThrottledByUltraSem confirms plain workers do
+// not consume the ultracode semaphore: with the ultracode cap pinned to 1, a
+// batch of non-ultracode tasks must still run concurrently up to MaxWorkers.
+func TestDispatchAll_NonUltracodeNotThrottledByUltraSem(t *testing.T) {
+	const ultraCap = 1
+	const workers = 8
+	const n = 6
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{
+		AllowUltracode:      true,
+		MaxUltracodeWorkers: ultraCap,
+		MaxWorkers:          workers,
+	}, makePendingTasks("plain", "high", n))
+
+	fr := &fakeRunner{delay: 60 * time.Millisecond}
+	runDispatchAllWithin(t, ws, store, fr, 15*time.Second)
+
+	ultraPeak, otherPeak, runCount, _, _ := fr.snapshot()
+
+	if runCount != n {
+		t.Fatalf("expected all %d tasks to run, got runCount=%d", n, runCount)
+	}
+	if ultraPeak != 0 {
+		t.Errorf("non-ultracode tasks should never register as ultracode, ultraPeak=%d", ultraPeak)
+	}
+	// If plain workers were (incorrectly) gated by the size-1 ultracode
+	// semaphore, otherPeak would be 1. It must climb well past the ultracode cap.
+	if otherPeak <= ultraCap {
+		t.Errorf("non-ultracode peak = %d, want > %d (plain workers must not be throttled by ultraSem)", otherPeak, ultraCap)
+	}
+}
+
+// TestDispatchAll_MixedSaturationNoDeadlock saturates BOTH semaphores with a
+// mix of ultracode and plain tasks under a tight worker cap and asserts the
+// scheduler drains within a timeout. This guards the acquire/release ordering
+// (ultraSem before sem, released in reverse) against a deadlock regression.
+func TestDispatchAll_MixedSaturationNoDeadlock(t *testing.T) {
+	const ultraCap = 2
+	const workers = 2 // tight: ultra acquisition must interleave with the worker cap
+	ultra := makePendingTasks("ultra", "ultracode", 4)
+	plain := makePendingTasks("plain", "high", 4)
+
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{
+		AllowUltracode:      true,
+		MaxUltracodeWorkers: ultraCap,
+		MaxWorkers:          workers,
+	}, append(ultra, plain...))
+
+	fr := &fakeRunner{delay: 20 * time.Millisecond}
+	runDispatchAllWithin(t, ws, store, fr, 20*time.Second)
+
+	ultraPeak, _, runCount, _, _ := fr.snapshot()
+
+	if runCount != 8 {
+		t.Fatalf("expected all 8 tasks to run, got runCount=%d", runCount)
+	}
+	if ultraPeak > ultraCap {
+		t.Errorf("ultracode concurrency peak = %d, exceeds cap = %d", ultraPeak, ultraCap)
+	}
+}
+
+// TestDispatchAll_DrainsBacklogLargerThanWorkerCap is a regression guard for a
+// scheduler deadlock: when far more tasks are ready than MaxWorkers, the launch
+// loop must still drain. The bug was that each worker sent its completion pulse
+// on the `done` channel (buffered at MaxWorkers) BEFORE releasing its worker
+// slot; once the buffer filled, in-flight workers pinned every slot while the
+// launch loop blocked acquiring one — a hang. The fix releases the slot before
+// the pulse. This test uses a deliberately tight cap and a large backlog so a
+// regression re-deadlocks and trips the timeout.
+//
+// Note: this path is independent of ultracode — it exercises the general
+// worker semaphore — but it is part of the same dispatch safety surface.
+func TestDispatchAll_DrainsBacklogLargerThanWorkerCap(t *testing.T) {
+	const workers = 2
+	const n = 16 // well past the backlog threshold (~2*workers) where the old code hung
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{
+		MaxWorkers: workers,
+	}, makePendingTasks("plain", "high", n))
+
+	fr := &fakeRunner{delay: 5 * time.Millisecond}
+	runDispatchAllWithin(t, ws, store, fr, 20*time.Second)
+
+	_, otherPeak, runCount, _, _ := fr.snapshot()
+
+	if runCount != n {
+		t.Fatalf("expected all %d tasks to run, got runCount=%d (scheduler likely stalled)", n, runCount)
+	}
+	if otherPeak > workers {
+		t.Errorf("worker concurrency peak = %d, exceeds MaxWorkers = %d", otherPeak, workers)
+	}
+}
+
+// TestDispatchOne_PassesDisallowedTools asserts the AskUserQuestion deny is
+// wired all the way through to the worker invocation (RunOpts.DisallowedTools),
+// not merely validated at the runner's arg-building unit test. Workers must not
+// be able to block on interactive prompts.
+func TestDispatchOne_PassesDisallowedTools(t *testing.T) {
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{Name: "test"},
+		[]task.Task{{ID: "deny-1", Status: task.StatusPending, Prompt: "do work"}})
+
+	tk := task.Task{ID: "deny-1", Status: task.StatusPending, Prompt: "do work"}
+	fr := &fakeRunner{}
+
+	// dispatchOne returns an error because the fakeRunner reports failure; that
+	// is expected and irrelevant — we only care about what reached the runner.
+	_ = dispatchOne(context.Background(), ws, store, &tk, io.Discard, fr)
+
+	_, _, runCount, disallowed, _ := fr.snapshot()
+	if runCount != 1 {
+		t.Fatalf("expected the worker to be invoked exactly once, got runCount=%d", runCount)
+	}
+	if len(disallowed) != 1 || disallowed[0] != "AskUserQuestion" {
+		t.Errorf("expected DisallowedTools=%q to reach the worker invocation, got %v", "AskUserQuestion", disallowed)
+	}
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns whatever
+// was written. Used to assert operator-facing warnings are actually emitted.
+// Not safe for concurrent use; callers must not run in parallel.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("creating pipe: %v", err)
+	}
+	os.Stderr = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	os.Stderr = old
+	out := <-done
+	_ = r.Close()
+	return out
 }

@@ -49,7 +49,7 @@ func newDispatchCmd() *cobra.Command {
 				if retry {
 					return dispatchAllWithRetry(cmd.Context(), ws, store, cmd.OutOrStdout(), maxRetries)
 				}
-				return dispatchAll(cmd.Context(), ws, store, cmd.OutOrStdout())
+				return dispatchAll(cmd.Context(), ws, store, cmd.OutOrStdout(), nil)
 			}
 
 			tasks, err := store.Load()
@@ -80,7 +80,7 @@ func newDispatchCmd() *cobra.Command {
 				target = &ready[0]
 			}
 
-			return dispatchOne(cmd.Context(), ws, store, target, cmd.OutOrStdout())
+			return dispatchOne(cmd.Context(), ws, store, target, cmd.OutOrStdout(), nil)
 		},
 	}
 
@@ -94,7 +94,12 @@ func newDispatchCmd() *cobra.Command {
 // dispatchOne dispatches a single task to a Claude Code agent. It updates the
 // task status, creates a worktree if needed, runs the agent, and records the
 // result.
-func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, target *task.Task, out io.Writer) error {
+//
+// If runner is nil, a real tmux-backed runner is constructed (the production
+// path). Tests may inject a fake runner to exercise the dispatch logic without
+// spawning real `claude` processes; this is the only behavioral effect of the
+// parameter.
+func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, target *task.Task, out io.Writer, runner agent.Runner) error {
 	fmt.Fprintf(out, "Dispatching task %q...\n", target.ID)
 
 	// Update status to in_progress.
@@ -149,7 +154,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	}
 
 	socket := "retinue-" + ws.Config.Name
-	runner := agent.NewTmuxRunner(session.NewTmuxManager(socket))
+	if runner == nil {
+		runner = agent.NewTmuxRunner(session.NewTmuxManager(socket))
+	}
 	logFile := filepath.Join(ws.LogsPath(), target.ID+".log")
 	windowName := target.ID // window name = task ID
 	aptSession := session.ApartmentSession
@@ -268,7 +275,11 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 // dispatchAll runs a concurrent scheduler that dispatches all ready tasks,
 // waits for completions, and dispatches newly-unblocked tasks until no
 // pending work remains. Respects the workspace's MaxWorkers concurrency limit.
-func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, out io.Writer) error {
+//
+// If runner is nil, each dispatched task constructs its own real tmux-backed
+// runner (the production path). Tests may inject a shared fake runner to
+// observe concurrency without spawning real `claude` processes.
+func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileStore, out io.Writer, runner agent.Runner) error {
 	maxWorkers := ws.Config.MaxWorkers
 	if maxWorkers <= 0 {
 		maxWorkers = workspace.DefaultMaxWorkers
@@ -297,7 +308,12 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		maxUltra = 1
 	}
 	ultraSem := make(chan struct{}, maxUltra)
-	done := make(chan string, maxWorkers)
+	// done is a coalescing wake-up signal: workers send a non-blocking pulse
+	// when they finish so the scheduler loop re-evaluates. Buffer 1 is
+	// sufficient because the loop re-reads full state on every wake; a larger
+	// buffer or a blocking send is unnecessary and was previously a deadlock
+	// source when the backlog exceeded the worker cap.
+	done := make(chan struct{}, 1)
 	inFlight := make(map[string]bool)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -401,6 +417,9 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 
 			go func() {
 				defer wg.Done()
+				// Release the worker slots when this task finishes. Release order
+				// mirrors the reverse of acquisition (sem then ultraSem) to avoid
+				// lock-order inversion with the acquire path above.
 				defer func() {
 					<-sem
 					if isUltra {
@@ -415,7 +434,7 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				fmt.Fprintf(out, "[dispatch] Starting task %q\n", t.ID)
 				mu.Unlock()
 
-				if err := dispatchOne(ctx, ws, store, &t, io.Discard); err != nil {
+				if err := dispatchOne(ctx, ws, store, &t, io.Discard, runner); err != nil {
 					mu.Lock()
 					fmt.Fprintf(out, "[dispatch] Task %q failed: %v\n", t.ID, err)
 					mu.Unlock()
@@ -431,7 +450,18 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				delete(inFlight, t.ID)
 				mu.Unlock()
 
-				done <- t.ID
+				// Wake the scheduler loop to re-evaluate. This is a coalescing
+				// pulse (non-blocking send into a buffer-1 channel), NOT a
+				// per-task signal: the loop re-reads full state from disk and the
+				// inFlight map on each wake, so collapsing several completions
+				// into one wake is correct. A blocking send here would be a bug —
+				// the loop deletes us from inFlight above, so it can break and
+				// reach wg.Wait() while we are still trying to send, deadlocking
+				// once the backlog exceeds the worker cap.
+				select {
+				case done <- struct{}{}:
+				default:
+				}
 			}()
 		}
 
@@ -532,7 +562,7 @@ func dispatchAllWithRetry(ctx context.Context, ws *workspace.Workspace, store *t
 			fmt.Fprintf(out, "\n[dispatch] === Retry round %d/%d ===\n", round, maxRetries)
 		}
 
-		if err := dispatchAll(ctx, ws, store, out); err != nil {
+		if err := dispatchAll(ctx, ws, store, out, nil); err != nil {
 			return err
 		}
 
