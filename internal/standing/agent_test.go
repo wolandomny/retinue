@@ -14,7 +14,7 @@ func TestAgentYAMLRoundTrip(t *testing.T) {
 		Role:     "CI Watcher",
 		Repos:    []string{"api", "frontend"},
 		Schedule: "every 4h",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Prompt:   "Watch CI pipelines and report failures.",
 		Enabled:  true,
 	}

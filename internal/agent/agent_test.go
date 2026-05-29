@@ -79,7 +79,7 @@ func TestBuildClaudeArgs_WithEffort(t *testing.T) {
 	args := buildClaudeArgs(RunOpts{
 		Prompt:       "do work",
 		SystemPrompt: "you are a worker",
-		Model:        "claude-opus-4-7",
+		Model:        "claude-opus-4-8",
 		Effort:       "max",
 	})
 
@@ -101,7 +101,7 @@ func TestBuildClaudeArgs_WithEffort(t *testing.T) {
 func TestBuildClaudeArgs_NoEffort(t *testing.T) {
 	args := buildClaudeArgs(RunOpts{
 		Prompt: "do work",
-		Model:  "claude-opus-4-7",
+		Model:  "claude-opus-4-8",
 	})
 	for _, a := range args {
 		if a == "--effort" {

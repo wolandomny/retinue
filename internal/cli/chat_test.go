@@ -20,7 +20,7 @@ func setupTestWorkspace(t *testing.T) *workspace.Workspace {
 	tmpDir := t.TempDir()
 
 	cfg := workspace.Config{
-		Model:      "claude-opus-4-6",
+		Model:      "claude-opus-4-8",
 		MaxWorkers: 1,
 	}
 

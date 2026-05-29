@@ -27,7 +27,7 @@ func setupAgentWorkspace(t *testing.T, agents []standing.Agent) string {
 		Path: dir,
 		Config: workspace.Config{
 			Name:  "test-apt",
-			Model: "claude-opus-4-6",
+			Model: "claude-opus-4-8",
 			Repos: map[string]workspace.RepoConfig{
 				"myrepo": {Path: "repos/myrepo"},
 			},
@@ -322,7 +322,7 @@ func TestBuildAgentSystemPrompt(t *testing.T) {
 		Path: dir,
 		Config: workspace.Config{
 			Name:  "test-apt",
-			Model: "claude-opus-4-6",
+			Model: "claude-opus-4-8",
 			Repos: map[string]workspace.RepoConfig{
 				"myrepo": {Path: "repos/myrepo"},
 			},
@@ -391,7 +391,7 @@ func TestBuildAgentSystemPromptWithBusHistory(t *testing.T) {
 		Path: dir,
 		Config: workspace.Config{
 			Name:  "test-apt",
-			Model: "claude-opus-4-6",
+			Model: "claude-opus-4-8",
 			Repos: map[string]workspace.RepoConfig{
 				"myrepo": {Path: "repos/myrepo"},
 			},
@@ -438,7 +438,7 @@ func TestBuildAgentSystemPromptNoBusFile(t *testing.T) {
 		Path: dir,
 		Config: workspace.Config{
 			Name:  "test-apt",
-			Model: "claude-opus-4-6",
+			Model: "claude-opus-4-8",
 		},
 	}
 
@@ -471,7 +471,7 @@ func TestAgentModelOverride(t *testing.T) {
 		Name:    "Azazello",
 		Role:    "CI Watcher",
 		Prompt:  "Watch CI.",
-		Model:   "claude-sonnet-4-20250514",
+		Model:   "claude-sonnet-4-6",
 		Enabled: true,
 	}
 	agentNoModel := &standing.Agent{
@@ -482,15 +482,15 @@ func TestAgentModelOverride(t *testing.T) {
 		Enabled: true,
 	}
 
-	wsModel := "claude-opus-4-6"
+	wsModel := "claude-opus-4-8"
 
 	// When agent has a model, it should be used.
 	model := agentWithModel.Model
 	if model == "" {
 		model = wsModel
 	}
-	if model != "claude-sonnet-4-20250514" {
-		t.Errorf("expected agent model 'claude-sonnet-4-20250514', got %q", model)
+	if model != "claude-sonnet-4-6" {
+		t.Errorf("expected agent model 'claude-sonnet-4-6', got %q", model)
 	}
 
 	// When agent has no model, workspace model should be used.
@@ -1273,7 +1273,7 @@ func TestBusWatcherFullStartStopCycle(t *testing.T) {
 // headless and must escalate to Woland rather than ask the user directly.
 func TestBuildAgentClaudeArgs_DeniesAskUserQuestion(t *testing.T) {
 	t.Parallel()
-	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-7", "high")
+	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-8", "high")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--disallowed-tools AskUserQuestion") {

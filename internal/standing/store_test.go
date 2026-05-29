@@ -30,7 +30,7 @@ func TestFileStoreRoundTrip(t *testing.T) {
 			Name:   "Behemoth",
 			Role:   "Codebase Gardener",
 			Repos:  []string{"api"},
-			Model:  "claude-sonnet-4-20250514",
+			Model:  "claude-sonnet-4-6",
 			Prompt: "Keep the codebase tidy.",
 		},
 	}

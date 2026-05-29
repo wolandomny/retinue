@@ -13,7 +13,7 @@ import (
 func TestBuildWolandPrompt_ContainsKeySections(t *testing.T) {
 	prompt := buildWolandPrompt(
 		"/tmp/test-apartment",
-		"name: test\nrepos:\n  api: /tmp/api\nmodel: claude-opus-4-6\nmax_workers: 4\n",
+		"name: test\nrepos:\n  api: /tmp/api\nmodel: claude-opus-4-8\nmax_workers: 4\n",
 		"tasks:\n  - id: task-1\n    status: pending\n",
 		"agents:\n  - id: azazello\n    name: Azazello\n",
 	)
@@ -72,7 +72,7 @@ func TestBuildWolandPrompt_NoAgentsMessage(t *testing.T) {
 func TestBuildBabytalkPrompt_ContainsKeySections(t *testing.T) {
 	prompt := buildBabytalkPrompt(
 		"/tmp/test-apartment",
-		"name: test\nrepos:\n  web: /tmp/web\nmodel: claude-opus-4-6\nmax_workers: 4\n",
+		"name: test\nrepos:\n  web: /tmp/web\nmodel: claude-opus-4-8\nmax_workers: 4\n",
 		"tasks:\n  - id: task-1\n    status: pending\n",
 		"agents:\n  - id: behemoth\n    name: Behemoth\n",
 	)
@@ -267,7 +267,7 @@ func TestWolandProjectDir(t *testing.T) {
 // denied AskUserQuestion — Woland is the sole human channel and must retain the
 // ability to ask the user questions.
 func TestBuildWolandClaudeArgs_KeepsAskUserQuestion(t *testing.T) {
-	args := buildWolandClaudeArgs("system prompt", "claude-opus-4-7", "max")
+	args := buildWolandClaudeArgs("system prompt", "claude-opus-4-8", "max")
 
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "AskUserQuestion") {

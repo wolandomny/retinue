@@ -85,7 +85,7 @@ repos:
   full:
     path: repos/full
     base_branch: develop
-model: claude-opus-4-6
+model: claude-opus-4-8
 max_workers: 4
 `
 	var cfg Config
@@ -108,7 +108,7 @@ func TestConfig_Effort_ValidValues(t *testing.T) {
 		t.Run("level="+level, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, ConfigFile)
-			cfgYAML := "name: test\nrepos: {}\nmodel: claude-opus-4-7\nmax_workers: 1\n"
+			cfgYAML := "name: test\nrepos: {}\nmodel: claude-opus-4-8\nmax_workers: 1\n"
 			if level != "" {
 				cfgYAML += "effort: " + level + "\n"
 			}
@@ -181,7 +181,7 @@ func TestConfig_Ultracode_Defaults(t *testing.T) {
 func TestConfig_Effort_InvalidValueRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ConfigFile)
-	raw := "name: test\nrepos: {}\nmodel: claude-opus-4-7\nmax_workers: 1\neffort: bogus\n"
+	raw := "name: test\nrepos: {}\nmodel: claude-opus-4-8\nmax_workers: 1\neffort: bogus\n"
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}

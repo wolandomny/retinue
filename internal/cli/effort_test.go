@@ -76,19 +76,19 @@ func TestResolveAgentEffort_NeitherSet(t *testing.T) {
 // --- Standing agent claude-args building ---
 
 func TestBuildAgentClaudeArgs_WithEffort(t *testing.T) {
-	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-7", "high")
+	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-8", "high")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--effort high") {
 		t.Errorf("expected '--effort high' in args, got: %v", args)
 	}
-	if !strings.Contains(joined, "--model claude-opus-4-7") {
-		t.Errorf("expected '--model claude-opus-4-7' in args, got: %v", args)
+	if !strings.Contains(joined, "--model claude-opus-4-8") {
+		t.Errorf("expected '--model claude-opus-4-8' in args, got: %v", args)
 	}
 }
 
 func TestBuildAgentClaudeArgs_WithoutEffort(t *testing.T) {
-	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-7", "")
+	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-8", "")
 
 	for _, a := range args {
 		if a == "--effort" {
@@ -109,7 +109,7 @@ func TestBuildAgentClaudeArgs_WithoutModel(t *testing.T) {
 // --- Woland claude-args building ---
 
 func TestBuildWolandClaudeArgs_PassesWorkspaceEffort(t *testing.T) {
-	args := buildWolandClaudeArgs("you are woland", "claude-opus-4-7", "max")
+	args := buildWolandClaudeArgs("you are woland", "claude-opus-4-8", "max")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--effort max") {
@@ -118,7 +118,7 @@ func TestBuildWolandClaudeArgs_PassesWorkspaceEffort(t *testing.T) {
 }
 
 func TestBuildWolandClaudeArgs_NoEffort(t *testing.T) {
-	args := buildWolandClaudeArgs("you are woland", "claude-opus-4-7", "")
+	args := buildWolandClaudeArgs("you are woland", "claude-opus-4-8", "")
 
 	for _, a := range args {
 		if a == "--effort" {
