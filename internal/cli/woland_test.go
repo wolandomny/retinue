@@ -263,6 +263,18 @@ func TestWolandProjectDir(t *testing.T) {
 	}
 }
 
+// TestBuildWolandClaudeArgs_KeepsAskUserQuestion verifies that Woland is NOT
+// denied AskUserQuestion — Woland is the sole human channel and must retain the
+// ability to ask the user questions.
+func TestBuildWolandClaudeArgs_KeepsAskUserQuestion(t *testing.T) {
+	args := buildWolandClaudeArgs("system prompt", "claude-opus-4-7", "max")
+
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "AskUserQuestion") {
+		t.Errorf("expected Woland args NOT to contain \"AskUserQuestion\", got %q", joined)
+	}
+}
+
 // --- RefreshSessionMarker tests for woland.go integration ---
 
 func TestRefreshSessionMarker_ValidMarker(t *testing.T) {

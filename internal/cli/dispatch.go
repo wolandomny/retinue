@@ -128,7 +128,9 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			"Focus only on this task.\n\n"+
 			"IMPORTANT: After completing your work, you MUST commit all changes to git. "+
 			"Stage your files with `git add` and create a commit with a clear, descriptive message. "+
-			"Do not leave work uncommitted.",
+			"Do not leave work uncommitted.\n\n"+
+			"You cannot ask the user questions; state your assumptions and proceed, or "+
+			"surface blockers in your result for Woland to handle.",
 		target.ID,
 	)
 
@@ -189,6 +191,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		ApartmentSession: aptSession,
 		Socket:           socket,
 		Env:              extraEnv,
+		DisallowedTools:  "AskUserQuestion",
 	})
 
 	finishedAt := time.Now()

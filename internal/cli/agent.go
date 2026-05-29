@@ -312,6 +312,12 @@ func buildAgentSystemPrompt(ws *workspace.Workspace, agent *standing.Agent) stri
 	fmt.Fprintf(&b, "You cannot message the user directly — Woland will relay your responses.\n\n")
 	fmt.Fprintf(&b, "Focus on your mandate. Respond concisely and actionably.\n")
 
+	fmt.Fprintf(&b, "\n## Tool Restrictions\n\n")
+	fmt.Fprintf(&b, "You CANNOT use the AskUserQuestion tool — you cannot ask the user questions.\n")
+	fmt.Fprintf(&b, "When you hit ambiguity, state your assumption and proceed. If you are truly\n")
+	fmt.Fprintf(&b, "blocked and need a human decision, escalate to Woland via a normal\n")
+	fmt.Fprintf(&b, "`-> woland:` message — Woland is the only one who talks to the user.\n")
+
 	// Include recent bus history if available.
 	msgBus := bus.New(ws.BusPath())
 	messages, err := msgBus.ReadRecent(20)
@@ -404,6 +410,10 @@ func buildAgentClaudeArgs(systemPrompt, model, effortLevel string) []string {
 	if effortLevel != "" {
 		args = append(args, "--effort", effortLevel)
 	}
+	// Standing agents run headless (no TTY) and communicate only via the
+	// text-only bus, so AskUserQuestion would silently auto-resolve with an
+	// empty answer. Deny it; agents escalate to Woland instead.
+	args = append(args, "--disallowed-tools", "AskUserQuestion")
 	return args
 }
 

@@ -17,6 +17,7 @@ type RunOpts struct {
 	ApartmentSession string   // tmux session name (e.g. "retinue")
 	Socket           string   // tmux socket name (-L flag); if empty, uses default socket
 	Env              []string // extra env vars to inject (e.g. "GH_TOKEN=xxx")
+	DisallowedTools  string   // comma-separated tool names passed to --disallowed-tools; empty omits the flag
 }
 
 // Result holds the output of an agent run.

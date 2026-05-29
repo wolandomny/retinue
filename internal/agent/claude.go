@@ -55,6 +55,10 @@ func buildClaudeArgs(opts RunOpts) []string {
 
 	args = applyEffort(args, opts.Effort)
 
+	if opts.DisallowedTools != "" {
+		args = append(args, "--disallowed-tools", opts.DisallowedTools)
+	}
+
 	if opts.SystemPrompt != "" {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}

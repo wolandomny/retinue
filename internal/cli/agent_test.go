@@ -1267,3 +1267,16 @@ func TestBusWatcherFullStartStopCycle(t *testing.T) {
 		t.Errorf("expected 0 windows after cleanup, got %d: %v", len(windows), windows)
 	}
 }
+
+// TestBuildAgentClaudeArgs_DeniesAskUserQuestion verifies that standing agents
+// are spawned with AskUserQuestion denied via --disallowed-tools. Agents run
+// headless and must escalate to Woland rather than ask the user directly.
+func TestBuildAgentClaudeArgs_DeniesAskUserQuestion(t *testing.T) {
+	t.Parallel()
+	args := buildAgentClaudeArgs("system prompt", "claude-opus-4-7", "high")
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--disallowed-tools AskUserQuestion") {
+		t.Errorf("expected args to contain \"--disallowed-tools AskUserQuestion\", got %q", joined)
+	}
+}
