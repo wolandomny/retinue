@@ -18,10 +18,17 @@ Top-level fields:
   github_account    string    GitHub account for git operations
   model             string    Claude model for agents (e.g. "claude-opus-4-8")
   effort            string    Adaptive-reasoning depth for agents (see below).
-                              One of: low, medium, high, xhigh, max. Empty = unset.
-                              Note: xhigh is Opus 4.7 only; the 4.6 line accepts
-                              low/medium/high/max.
+                              One of: low, medium, high, xhigh, max, ultracode.
+                              Empty = unset. Note: xhigh is supported on Opus 4.7
+                              and 4.8; the 4.6 line accepts low/medium/high/max;
+                              default effort is high on Opus 4.8.
   max_workers       int       Maximum concurrent worker agents
+  allow_ultracode   bool      Permit the ultracode effort tier on this apartment
+                              (default: false). When false, any task that resolves
+                              to ultracode auto-downgrades to xhigh.
+  max_ultracode_workers int   Max concurrent ultracode workers when allow_ultracode
+                              is set (default: 1). Caps ultracode fan-out so it
+                              cannot bypass max_workers.
   track_costs       bool      Track token usage and costs per task (default: false)
 
   repos             map       Repository configurations (see below)
@@ -74,12 +81,16 @@ Effort resolution:
   flag). It is independent of model selection.
 
   Valid values:
-    low      Minimal reasoning. Fastest, cheapest. Use for trivial work.
-    medium   Balanced default for typical coding tasks.
-    high     Deeper deliberation. Use for architectural work.
-    xhigh    Extra-high. Opus 4.7 only — the 4.6 line rejects this value.
-    max      Maximum reasoning budget. Use for synthesis-heavy work.
-    ""       Unset — defer to the model's per-version default.
+    low       Minimal reasoning. Fastest, cheapest. Use for trivial work.
+    medium    Balanced default for typical coding tasks.
+    high      Deeper deliberation. Use for architectural work.
+    xhigh     Extra-high. Supported on Opus 4.7 and 4.8 — the 4.6 line
+              rejects this value.
+    max       Maximum reasoning budget. Use for synthesis-heavy work.
+    ultracode Privileged tier: xhigh + autonomous workflow fan-out; off
+              unless allow_ultracode is set; downgrades to xhigh otherwise.
+    ""        Unset — defer to the model's per-version default (high on
+              Opus 4.8).
 
   Where it can be set:
     - Workspace (retinue.yaml)         applies to all agents
@@ -114,9 +125,11 @@ Task fields:
   branch          string      Git branch name (auto-generated if omitted)
   base_branch     string      Branch to merge into (overrides repo config)
   model           string      Claude model override (falls back to workspace model)
-  effort          string      Effort level override (low|medium|high|xhigh|max).
-                              Falls back to workspace effort, then unset. xhigh is
-                              Opus 4.7 only.
+  effort          string      Effort level override (low|medium|high|xhigh|max|
+                              ultracode). Falls back to workspace effort, then unset.
+                              xhigh is supported on Opus 4.7 and 4.8 (the 4.6 line
+                              rejects it); ultracode is off unless allow_ultracode is
+                              set and downgrades to xhigh otherwise.
   depends_on      []string    Task IDs this depends on (for ordering)
   status          string      Task status (see below)
   prompt          string      Detailed instructions for the worker agent
@@ -201,7 +214,8 @@ Agent fields:
   effort          string      (optional) Effort level override for this agent.
                               One of: low, medium, high, xhigh, max.
                               Falls back to the workspace-level effort, then to
-                              the model's default. xhigh is Opus 4.7 only.
+                              the model's default. xhigh is supported on Opus 4.7
+                              and 4.8 (the 4.6 line rejects it).
   prompt          string      (required) The agent's mandate. Detailed instructions
                               defining what the agent does, what it watches for, and
                               how it responds. For scheduled agents, include
