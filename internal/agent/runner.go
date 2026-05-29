@@ -4,11 +4,14 @@ import "context"
 
 // RunOpts configures a single agent run.
 type RunOpts struct {
-	Prompt           string
-	SystemPrompt     string
-	WorkDir          string
-	Model            string
-	Effort           string
+	Prompt       string
+	SystemPrompt string
+	WorkDir      string
+	Model        string
+	Effort       string
+	// DisallowedTools is a space-separated list of tool names to deny via the
+	// claude CLI --disallowed-tools flag, e.g. "AskUserQuestion".
+	DisallowedTools  string
 	LogFile          string
 	WindowName       string   // tmux window name within the apartment session
 	ApartmentSession string   // tmux session name (e.g. "retinue")
