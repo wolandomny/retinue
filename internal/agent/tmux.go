@@ -49,23 +49,7 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	}
 
 	// 2. Build the claude command arguments (unchanged).
-	args := []string{
-		"--print",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--dangerously-skip-permissions",
-	}
-	if opts.Model != "" {
-		args = append(args, "--model", opts.Model)
-	}
-	if opts.SystemPrompt != "" {
-		args = append(args, "--system-prompt", opts.SystemPrompt)
-	}
-	args = applyEffort(args, opts.Effort)
-	if opts.DisallowedTools != "" {
-		args = append(args, "--disallowed-tools", opts.DisallowedTools)
-	}
-	args = append(args, opts.Prompt)
+	args := buildTmuxClaudeArgs(opts)
 
 	// Unset CLAUDECODE so claude doesn't refuse to run inside a retinue session.
 	// Also inject any extra environment variables (e.g. GH_TOKEN).
@@ -129,6 +113,32 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 
 	// 7. Return result.
 	return Result{Output: resultStr, ExitCode: 0}, nil
+}
+
+// buildTmuxClaudeArgs constructs the claude CLI argument list for a tmux run.
+// It is a pure function of opts so that argument construction (including
+// effort handling) can be exercised in unit tests without a tmux server.
+// The ordering mirrors the original inline construction to keep the produced
+// command byte-for-byte identical.
+func buildTmuxClaudeArgs(opts RunOpts) []string {
+	args := []string{
+		"--print",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--dangerously-skip-permissions",
+	}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	if opts.SystemPrompt != "" {
+		args = append(args, "--system-prompt", opts.SystemPrompt)
+	}
+	args = applyEffort(args, opts.Effort)
+	if opts.DisallowedTools != "" {
+		args = append(args, "--disallowed-tools", opts.DisallowedTools)
+	}
+	args = append(args, opts.Prompt)
+	return args
 }
 
 // randomSuffix returns a random lowercase alphanumeric string of length n.

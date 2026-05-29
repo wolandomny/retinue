@@ -99,6 +99,49 @@ func TestTmuxRunnerCommandContainsPromptAndArgs(t *testing.T) {
 	}
 }
 
+// TestBuildClaudeArgsEffortHigh guards against the effort flag being dropped
+// on the tmux worker path: Effort=="high" must append --effort high.
+func TestBuildClaudeArgsEffortHigh(t *testing.T) {
+	args := buildTmuxClaudeArgs(RunOpts{Prompt: "hello", Effort: "high"})
+
+	effortIdx := indexOf(args, "--effort")
+	if effortIdx == -1 {
+		t.Fatalf("expected args to contain --effort, got %v", args)
+	}
+	if effortIdx+1 >= len(args) || args[effortIdx+1] != "high" {
+		t.Fatalf("expected --effort to be followed by high, got %v", args)
+	}
+}
+
+// TestBuildClaudeArgsEffortUltracode verifies ultracode maps to the --settings
+// flag with {"ultracode": true} and never emits a bare --effort flag.
+func TestBuildClaudeArgsEffortUltracode(t *testing.T) {
+	args := buildTmuxClaudeArgs(RunOpts{Prompt: "hello", Effort: "ultracode"})
+
+	if !contains(args, "--settings") {
+		t.Fatalf("expected args to contain --settings, got %v", args)
+	}
+	if !contains(args, `{"ultracode": true}`) {
+		t.Fatalf("expected args to contain ultracode settings, got %v", args)
+	}
+	if contains(args, "--effort") {
+		t.Fatalf("expected args to NOT contain --effort, got %v", args)
+	}
+}
+
+// TestBuildClaudeArgsEffortEmpty verifies an empty Effort adds no effort or
+// settings flag at all.
+func TestBuildClaudeArgsEffortEmpty(t *testing.T) {
+	args := buildTmuxClaudeArgs(RunOpts{Prompt: "hello"})
+
+	if contains(args, "--effort") {
+		t.Fatalf("expected args to NOT contain --effort, got %v", args)
+	}
+	if contains(args, "--settings") {
+		t.Fatalf("expected args to NOT contain --settings, got %v", args)
+	}
+}
+
 func TestTmuxRunnerParsesResultFromLogFile(t *testing.T) {
 	// Write a fake log file with a stream-json result event.
 	dir := t.TempDir()
