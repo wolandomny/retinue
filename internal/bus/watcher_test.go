@@ -196,6 +196,135 @@ func TestParseSessionLine(t *testing.T) {
 	}
 }
 
+func TestParseSessionLineTyped_AskUserQuestion(t *testing.T) {
+	// A synthetic JSONL line containing an AskUserQuestion tool_use block.
+	line := `{"type":"assistant","uuid":"q-1","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"header":"Deploy","question":"Which environment should I deploy to?","options":[{"label":"staging","description":"safe sandbox"},{"label":"production","description":"live traffic"}]}]}}]}}`
+
+	msgType, text, uuid, ok := parseSessionLineTyped(line)
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if msgType != "assistant" {
+		t.Errorf("msgType = %q, want %q", msgType, "assistant")
+	}
+	if uuid != "q-1" {
+		t.Errorf("uuid = %q, want %q", uuid, "q-1")
+	}
+	if !strings.Contains(text, "WARNING: Woland is asking a multiple-choice question") {
+		t.Errorf("text missing heads-up warning, got %q", text)
+	}
+	if !strings.Contains(text, "answer at the terminal") {
+		t.Errorf("text missing terminal hint, got %q", text)
+	}
+	if !strings.Contains(text, "[Deploy] Which environment should I deploy to?") {
+		t.Errorf("text missing question heading, got %q", text)
+	}
+	if !strings.Contains(text, "1. staging - safe sandbox") {
+		t.Errorf("text missing first option, got %q", text)
+	}
+	if !strings.Contains(text, "2. production - live traffic") {
+		t.Errorf("text missing second option, got %q", text)
+	}
+}
+
+func TestParseSessionLineTyped_AskUserQuestion_Defensive(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "missing input",
+			line: `{"type":"assistant","uuid":"d-1","message":{"content":[{"type":"tool_use","name":"AskUserQuestion"}]}}`,
+		},
+		{
+			name: "empty questions",
+			line: `{"type":"assistant","uuid":"d-2","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[]}}]}}`,
+		},
+		{
+			name: "other tool ignored",
+			line: `{"type":"assistant","uuid":"d-3","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`,
+		},
+		{
+			name: "malformed input",
+			line: `{"type":"assistant","uuid":"d-4","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":"not-an-object"}]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Must not panic and must produce no forwarded text.
+			_, text, _, ok := parseSessionLineTyped(tt.line)
+			if !ok {
+				t.Fatalf("expected ok=true for valid JSON")
+			}
+			if text != "" {
+				t.Errorf("expected empty text, got %q", text)
+			}
+		})
+	}
+}
+
+func TestReadAgentLines_AskUserQuestionForwarded(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session.jsonl")
+
+	msgs := []sessionMessage{
+		{
+			Type: "assistant",
+			UUID: "uuid-text",
+			Message: messageContent{Content: []contentBlock{
+				{Type: "text", Text: "A normal text message"},
+			}},
+		},
+		{
+			Type: "assistant",
+			UUID: "uuid-question",
+			Message: messageContent{Content: []contentBlock{
+				{
+					Type:  "tool_use",
+					Name:  "AskUserQuestion",
+					Input: json.RawMessage(`{"questions":[{"header":"Choice","question":"Pick one?","options":[{"label":"yes","description":"affirmative"},{"label":"no","description":"negative"}]}]}`),
+				},
+			}},
+		},
+	}
+	writeJSONL(t, sessionPath, msgs)
+
+	w := newTestWatcher(t, dir)
+	seen := make(map[string]bool)
+	ctx := context.Background()
+
+	// isWoland=false so messages route to woland via the normal text path.
+	w.readAgentLines(ctx, "test-agent", sessionPath, 0, "", seen, false, false)
+
+	recent, err := w.bus.ReadRecent(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 bus messages, got %d", len(recent))
+	}
+
+	// Normal text block forwards unchanged.
+	if recent[0].Text != "A normal text message" {
+		t.Errorf("first message text = %q, want %q", recent[0].Text, "A normal text message")
+	}
+
+	// AskUserQuestion heads-up is forwarded through the same path.
+	headsUp := recent[1].Text
+	if !strings.Contains(headsUp, "WARNING: Woland is asking a multiple-choice question") {
+		t.Errorf("heads-up missing warning, got %q", headsUp)
+	}
+	if !strings.Contains(headsUp, "[Choice] Pick one?") {
+		t.Errorf("heads-up missing question, got %q", headsUp)
+	}
+	if !strings.Contains(headsUp, "1. yes - affirmative") {
+		t.Errorf("heads-up missing first option, got %q", headsUp)
+	}
+	if !strings.Contains(headsUp, "2. no - negative") {
+		t.Errorf("heads-up missing second option, got %q", headsUp)
+	}
+}
+
 func TestClaudeProjectDir(t *testing.T) {
 	dir := claudeProjectDir("/Users/broc/apt")
 	// Should replace / with - and . with -

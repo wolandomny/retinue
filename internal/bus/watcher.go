@@ -80,6 +80,84 @@ type messageContent struct {
 type contentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// Name and Input are populated for "tool_use" blocks. Input is kept as raw
+	// JSON so we can defensively decode only the tools we care about.
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// askUserQuestionToolName is the name of the interactive multiple-choice tool
+// Woland may invoke. Such prompts cannot be answered over Telegram, so the
+// watcher forwards a plain-text heads-up instead of dropping the block.
+const askUserQuestionToolName = "AskUserQuestion"
+
+// askUserQuestionInput is the (defensively decoded) input of an
+// AskUserQuestion tool_use block.
+type askUserQuestionInput struct {
+	Questions []askUserQuestionEntry `json:"questions"`
+}
+
+// askUserQuestionEntry is a single question within an AskUserQuestion prompt.
+type askUserQuestionEntry struct {
+	Question string                  `json:"question"`
+	Header   string                  `json:"header"`
+	Options  []askUserQuestionOption `json:"options"`
+}
+
+// askUserQuestionOption is a single multiple-choice option.
+type askUserQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// askUserQuestionHeadsUp formats a plain-text heads-up message for an
+// AskUserQuestion tool_use block, given its raw input JSON. It is defensive:
+// it returns ("", false) if the input is missing/unparseable or contains no
+// questions, so the caller can simply skip forwarding in that case.
+func askUserQuestionHeadsUp(rawInput json.RawMessage) (string, bool) {
+	if len(rawInput) == 0 {
+		return "", false
+	}
+	var input askUserQuestionInput
+	if err := json.Unmarshal(rawInput, &input); err != nil {
+		return "", false
+	}
+	if len(input.Questions) == 0 {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.WriteString("WARNING: Woland is asking a multiple-choice question (answer at the terminal -- the interactive prompt cannot be answered over Telegram):")
+
+	for _, q := range input.Questions {
+		// Build the question heading from the header (if present) and text.
+		heading := strings.TrimSpace(q.Question)
+		if h := strings.TrimSpace(q.Header); h != "" {
+			if heading != "" {
+				heading = fmt.Sprintf("[%s] %s", h, heading)
+			} else {
+				heading = fmt.Sprintf("[%s]", h)
+			}
+		}
+		if heading == "" {
+			heading = "(question)"
+		}
+		b.WriteString("\n\n")
+		b.WriteString(heading)
+		for i, opt := range q.Options {
+			label := strings.TrimSpace(opt.Label)
+			if label == "" {
+				label = "(unlabeled option)"
+			}
+			b.WriteString(fmt.Sprintf("\n  %d. %s", i+1, label))
+			if desc := strings.TrimSpace(opt.Description); desc != "" {
+				b.WriteString(fmt.Sprintf(" - %s", desc))
+			}
+		}
+	}
+
+	return b.String(), true
 }
 
 // monitoredWindow describes a tmux window that the bus watcher should monitor.
@@ -724,8 +802,17 @@ func parseSessionLineTyped(line string) (msgType string, text string, uuid strin
 
 	var parts []string
 	for _, block := range msg.Message.Content {
-		if block.Type == "text" && block.Text != "" {
+		switch {
+		case block.Type == "text" && block.Text != "":
 			parts = append(parts, block.Text)
+		case block.Type == "tool_use" && block.Name == askUserQuestionToolName:
+			// AskUserQuestion is an interactive multiple-choice prompt that
+			// cannot be answered over Telegram. Forward a plain-text heads-up
+			// through the normal text path so the remote user isn't left in
+			// silence while the session blocks at the terminal.
+			if headsUp, ok := askUserQuestionHeadsUp(block.Input); ok {
+				parts = append(parts, headsUp)
+			}
 		}
 	}
 
