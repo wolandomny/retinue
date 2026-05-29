@@ -53,9 +53,7 @@ func buildClaudeArgs(opts RunOpts) []string {
 		args = append(args, "--model", opts.Model)
 	}
 
-	if opts.Effort != "" {
-		args = append(args, "--effort", opts.Effort)
-	}
+	args = applyEffort(args, opts.Effort)
 
 	if opts.SystemPrompt != "" {
 		args = append(args, "--system-prompt", opts.SystemPrompt)

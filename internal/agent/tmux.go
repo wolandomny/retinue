@@ -61,6 +61,7 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	if opts.SystemPrompt != "" {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
+	args = applyEffort(args, opts.Effort)
 	args = append(args, opts.Prompt)
 
 	// Unset CLAUDECODE so claude doesn't refuse to run inside a retinue session.
