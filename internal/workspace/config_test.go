@@ -126,6 +126,58 @@ func TestConfig_Effort_ValidValues(t *testing.T) {
 	}
 }
 
+func TestConfig_Ultracode_RoundTrip(t *testing.T) {
+	input := `
+name: test
+repos: {}
+model: claude-opus-4-8
+max_workers: 4
+allow_ultracode: true
+max_ultracode_workers: 2
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !cfg.AllowUltracode {
+		t.Errorf("AllowUltracode = %v, want true", cfg.AllowUltracode)
+	}
+	if cfg.MaxUltracodeWorkers != 2 {
+		t.Errorf("MaxUltracodeWorkers = %d, want 2", cfg.MaxUltracodeWorkers)
+	}
+
+	// Re-marshal and decode again to confirm the yaml tags round-trip.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var cfg2 Config
+	if err := yaml.Unmarshal(out, &cfg2); err != nil {
+		t.Fatalf("re-unmarshal error: %v", err)
+	}
+	if cfg2.AllowUltracode != cfg.AllowUltracode {
+		t.Errorf("round-trip AllowUltracode = %v, want %v", cfg2.AllowUltracode, cfg.AllowUltracode)
+	}
+	if cfg2.MaxUltracodeWorkers != cfg.MaxUltracodeWorkers {
+		t.Errorf("round-trip MaxUltracodeWorkers = %d, want %d", cfg2.MaxUltracodeWorkers, cfg.MaxUltracodeWorkers)
+	}
+}
+
+func TestConfig_Ultracode_Defaults(t *testing.T) {
+	// Omitted fields should default to false / 0.
+	input := "name: test\nrepos: {}\nmodel: claude-opus-4-8\nmax_workers: 1\n"
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if cfg.AllowUltracode {
+		t.Errorf("AllowUltracode = %v, want false (default)", cfg.AllowUltracode)
+	}
+	if cfg.MaxUltracodeWorkers != 0 {
+		t.Errorf("MaxUltracodeWorkers = %d, want 0 (default)", cfg.MaxUltracodeWorkers)
+	}
+}
+
 func TestConfig_Effort_InvalidValueRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ConfigFile)

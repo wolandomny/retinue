@@ -12,6 +12,65 @@ import (
 	"github.com/wolandomny/retinue/internal/workspace"
 )
 
+func hasEnv(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestResolveWorkerLaunch_DowngradesUltracodeWhenDisabled(t *testing.T) {
+	ws := &workspace.Workspace{
+		Config: workspace.Config{AllowUltracode: false},
+	}
+	tk := &task.Task{ID: "t-ultra", Effort: "ultracode"}
+
+	effort, env := resolveWorkerLaunch(tk, ws)
+
+	if effort != "xhigh" {
+		t.Errorf("effort = %q, want %q (downgraded)", effort, "xhigh")
+	}
+	// Downgraded workers are non-ultracode, so workflows must be disabled.
+	if !hasEnv(env, "CLAUDE_CODE_DISABLE_WORKFLOWS=1") {
+		t.Errorf("expected CLAUDE_CODE_DISABLE_WORKFLOWS=1 in env, got %v", env)
+	}
+}
+
+func TestResolveWorkerLaunch_KeepsUltracodeWhenAllowed(t *testing.T) {
+	ws := &workspace.Workspace{
+		Config: workspace.Config{AllowUltracode: true},
+	}
+	tk := &task.Task{ID: "t-ultra", Effort: "ultracode"}
+
+	effort, env := resolveWorkerLaunch(tk, ws)
+
+	if effort != "ultracode" {
+		t.Errorf("effort = %q, want %q", effort, "ultracode")
+	}
+	// Ultracode workers keep workflows enabled.
+	if hasEnv(env, "CLAUDE_CODE_DISABLE_WORKFLOWS=1") {
+		t.Errorf("did not expect CLAUDE_CODE_DISABLE_WORKFLOWS=1 for ultracode worker, got %v", env)
+	}
+}
+
+func TestResolveWorkerLaunch_DisablesWorkflowsForPlainWorker(t *testing.T) {
+	ws := &workspace.Workspace{
+		Config: workspace.Config{Effort: "high"},
+	}
+	tk := &task.Task{ID: "t-plain"}
+
+	effort, env := resolveWorkerLaunch(tk, ws)
+
+	if effort != "high" {
+		t.Errorf("effort = %q, want %q", effort, "high")
+	}
+	if !hasEnv(env, "CLAUDE_CODE_DISABLE_WORKFLOWS=1") {
+		t.Errorf("expected CLAUDE_CODE_DISABLE_WORKFLOWS=1 in env, got %v", env)
+	}
+}
+
 func TestResolveWorkDir_NoRepo(t *testing.T) {
 	ws := &workspace.Workspace{
 		Path: "/tmp/test-apartment",

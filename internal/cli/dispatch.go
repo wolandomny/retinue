@@ -170,15 +170,18 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		model = target.Model
 	}
 
-	// Use task-level effort if set, otherwise fall back to workspace default.
-	// Empty string means "do not pass --effort" (defer to model default).
-	effortLevel := resolveTaskEffort(target, ws)
+	// Resolve the effort level and any governance env for this worker. This
+	// downgrades ultracode to xhigh when the workspace hasn't opted in, and
+	// disables nested dynamic workflows for non-ultracode workers so they
+	// can't bypass the max_workers semaphore.
+	effortLevel, govEnv := resolveWorkerLaunch(target, ws)
 
 	// Inject GitHub token into the agent's environment if available.
 	var extraEnv []string
 	if token := ws.GitHubToken(); token != "" {
 		extraEnv = append(extraEnv, "GH_TOKEN="+token)
 	}
+	extraEnv = append(extraEnv, govEnv...)
 
 	result, err := runner.Run(ctx, agent.RunOpts{
 		Prompt:           target.Prompt,
@@ -209,6 +212,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 				t.Meta = make(map[string]string)
 			}
 			t.Meta["session"] = ""
+			t.Meta["effort_applied"] = effortLevel
 			if ws.Config.TrackCosts {
 				if usage.InputTokens > 0 {
 					t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
@@ -237,6 +241,7 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			t.Meta = make(map[string]string)
 		}
 		t.Meta["session"] = ""
+		t.Meta["effort_applied"] = effortLevel
 		if ws.Config.TrackCosts {
 			if usage.InputTokens > 0 {
 				t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
@@ -284,6 +289,14 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 	}
 
 	sem := make(chan struct{}, maxWorkers)
+	// Ultracode workers get a dedicated, tighter concurrency cap because each
+	// one can auto-launch nested dynamic workflows. This is independent of the
+	// general worker semaphore.
+	maxUltra := ws.Config.MaxUltracodeWorkers
+	if maxUltra <= 0 {
+		maxUltra = 1
+	}
+	ultraSem := make(chan struct{}, maxUltra)
 	done := make(chan string, maxWorkers)
 	inFlight := make(map[string]bool)
 	var mu sync.Mutex
@@ -376,12 +389,24 @@ func dispatchAll(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 			inFlight[t.ID] = true
 			mu.Unlock()
 
+			// Ultracode workers (when the workspace allows them) consume an
+			// additional dedicated slot. Acquire ultraSem BEFORE sem and
+			// release in reverse order (sem then ultraSem) to avoid deadlock.
+			isUltra := ws.Config.AllowUltracode && resolveTaskEffort(&t, ws) == "ultracode"
+			if isUltra {
+				ultraSem <- struct{}{} // acquire ultracode slot
+			}
 			sem <- struct{}{} // acquire worker slot
 			wg.Add(1)
 
 			go func() {
 				defer wg.Done()
-				defer func() { <-sem }()
+				defer func() {
+					<-sem
+					if isUltra {
+						<-ultraSem
+					}
+				}()
 
 				logFile := filepath.Join(ws.LogsPath(), t.ID+".log")
 				wdState.addTask(t.ID, logFile)
@@ -666,6 +691,38 @@ func resolveTaskEffort(t *task.Task, ws *workspace.Workspace) string {
 		return ws.Config.Effort
 	}
 	return ""
+}
+
+// resolveWorkerLaunch computes the effort level and any extra environment
+// variables for a worker launch, applying ultracode governance:
+//
+//   - If the resolved effort is "ultracode" but the workspace has not opted in
+//     via allow_ultracode, the effort is downgraded to "xhigh" and a warning is
+//     logged to stderr.
+//   - For any worker whose FINAL effort is not "ultracode",
+//     CLAUDE_CODE_DISABLE_WORKFLOWS=1 is added so it cannot spawn nested dynamic
+//     workflows that would bypass the max_workers semaphore. Ultracode workers
+//     (only reachable when allow_ultracode is true) keep workflows enabled.
+//
+// It is a pure function of (target, ws) aside from the stderr warning, which
+// makes the governance independently unit-testable.
+func resolveWorkerLaunch(target *task.Task, ws *workspace.Workspace) (effort string, env []string) {
+	effort = resolveTaskEffort(target, ws)
+
+	if effort == "ultracode" && (ws == nil || !ws.Config.AllowUltracode) {
+		taskID := ""
+		if target != nil {
+			taskID = target.ID
+		}
+		fmt.Fprintf(os.Stderr, "warning: task %q requested ultracode but allow_ultracode is false; downgrading to xhigh\n", taskID)
+		effort = "xhigh"
+	}
+
+	if effort != "ultracode" {
+		env = append(env, "CLAUDE_CODE_DISABLE_WORKFLOWS=1")
+	}
+
+	return effort, env
 }
 
 func loadWorkspace() (*workspace.Workspace, error) {

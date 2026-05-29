@@ -10,15 +10,24 @@ type TelegramConfig struct {
 
 // Config holds the workspace configuration persisted in retinue.yaml.
 type Config struct {
-	Name          string                `yaml:"name"`               // workspace display name
-	GithubAccount string                `yaml:"github_account"`     // GitHub account for gh CLI auth
-	Repos         map[string]RepoConfig `yaml:"repos"`              // repo name → repo configuration
-	Model         string                `yaml:"model"`              // Claude model to use for agents
-	Effort        string                `yaml:"effort,omitempty"`   // adaptive-reasoning depth: low|medium|high|xhigh|max
-	MaxWorkers    int                   `yaml:"max_workers"`        // max concurrent worker agents
-	TrackCosts    bool                  `yaml:"track_costs,omitempty"` // track token usage and costs per task
-	Validate      map[string]string     `yaml:"validate,omitempty"` // repo name → validation shell command
-	Telegram      *TelegramConfig       `yaml:"telegram,omitempty"` // Telegram bot configuration
+	Name          string                `yaml:"name"`             // workspace display name
+	GithubAccount string                `yaml:"github_account"`   // GitHub account for gh CLI auth
+	Repos         map[string]RepoConfig `yaml:"repos"`            // repo name → repo configuration
+	Model         string                `yaml:"model"`            // Claude model to use for agents
+	Effort        string                `yaml:"effort,omitempty"` // adaptive-reasoning depth: low|medium|high|xhigh|max|ultracode
+	// AllowUltracode opts the workspace into running ultracode workers. When
+	// false (the default), any task that resolves to the "ultracode" effort is
+	// downgraded to "xhigh" at dispatch, since ultracode lets a worker
+	// auto-launch nested dynamic workflows that bypass the max_workers cap.
+	AllowUltracode bool `yaml:"allow_ultracode,omitempty"`
+	// MaxUltracodeWorkers caps how many ultracode workers may run concurrently,
+	// independently of MaxWorkers. Only consulted when AllowUltracode is true;
+	// a value <= 0 is treated as the default cap of 1.
+	MaxUltracodeWorkers int               `yaml:"max_ultracode_workers,omitempty"`
+	MaxWorkers          int               `yaml:"max_workers"`           // max concurrent worker agents
+	TrackCosts          bool              `yaml:"track_costs,omitempty"` // track token usage and costs per task
+	Validate            map[string]string `yaml:"validate,omitempty"`    // repo name → validation shell command
+	Telegram            *TelegramConfig   `yaml:"telegram,omitempty"`    // Telegram bot configuration
 }
 
 // RepoConfig holds per-repository configuration.
