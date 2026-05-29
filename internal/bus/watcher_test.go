@@ -1644,7 +1644,7 @@ func TestReadAgentLines_IncrementalReads(t *testing.T) {
 	f.Close()
 
 	// Second read picks up only the new message.
-	offset, partial = w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false, false)
+	offset, _ = w.readAgentLines(ctx, "test-agent", sessionPath, offset, partial, seen, false, false)
 	_ = offset
 
 	recent, _ = w.bus.ReadRecent(100)

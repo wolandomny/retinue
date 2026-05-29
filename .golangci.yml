@@ -1,6 +1,11 @@
 version: 2
 
 linters:
+  # Restrict to exactly the linters we intend to enforce. Without `default: none`,
+  # golangci-lint v2 also runs its default set (errcheck, staticcheck, unused), which
+  # would surface a large backlog of findings out of scope for CI enforcement today.
+  # A broader lint cleanup (and enabling more linters) is a separate effort.
+  default: none
   enable:
     - govet
     - ineffassign

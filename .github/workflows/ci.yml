@@ -9,6 +9,7 @@ on:
       - '**'
 
 jobs:
+  # Local merge-gate parity: build + vet + test. Must stay exactly `make verify`.
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -18,3 +19,39 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: make verify
+
+  # Separate lint job. golangci-lint is NOT preinstalled; the official action
+  # installs the pinned version and runs it with the repo's .golangci.yml.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.3
+
+  # Separate coverage job. Computes total statement coverage and fails below the
+  # threshold. Current coverage is ~46.9%, so 45.0% passes today.
+  # Ratchet COVER_THRESHOLD up over time as coverage improves (never lower it).
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      COVER_THRESHOLD: "45.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with coverage and enforce threshold
+        run: |
+          go test ./... -coverprofile=cover.out -covermode=atomic
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${total}% (threshold: ${COVER_THRESHOLD}%)"
+          awk -v t="$total" -v min="$COVER_THRESHOLD" 'BEGIN { if (t+0 < min+0) { exit 1 } }' \
+            || { echo "FAIL: coverage ${total}% is below threshold ${COVER_THRESHOLD}%"; exit 1; }
