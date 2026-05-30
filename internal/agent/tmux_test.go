@@ -176,6 +176,139 @@ func TestTmuxRunnerParsesResultFromLogFile(t *testing.T) {
 	}
 }
 
+// TestBuildTmuxClaudeArgsIncludesPromptAsLastArg guards against the prompt
+// being dropped or swallowed: opts.Prompt must always be the final argument.
+func TestBuildTmuxClaudeArgsIncludesPromptAsLastArg(t *testing.T) {
+	cases := []RunOpts{
+		{Prompt: "test prompt", Effort: "high"},
+		{Prompt: "test prompt", Effort: "ultracode"},
+		{Prompt: "test prompt"},
+		{Prompt: "test prompt", DisallowedTools: "AskUserQuestion"},
+		{Prompt: "test prompt", Effort: "xhigh", DisallowedTools: "AskUserQuestion", Model: "claude-opus", SystemPrompt: "You are helpful"},
+	}
+	for _, opts := range cases {
+		args := buildTmuxClaudeArgs(opts)
+		if len(args) == 0 || args[len(args)-1] != "test prompt" {
+			t.Errorf("prompt not last arg; args=%v", args)
+		}
+	}
+}
+
+// TestBuildTmuxClaudeArgsDisallowedToolsUsesEqualsForm guards the prompt-swallowing
+// regression: the deny flag must be emitted as the single token
+// "--disallowed-tools=AskUserQuestion" and never as a bare "--disallowed-tools"
+// element (the two-token form swallows the positional prompt).
+func TestBuildTmuxClaudeArgsDisallowedToolsUsesEqualsForm(t *testing.T) {
+	args := buildTmuxClaudeArgs(RunOpts{Prompt: "test prompt", DisallowedTools: "AskUserQuestion"})
+	if !contains(args, "--disallowed-tools=AskUserQuestion") {
+		t.Errorf("expected args to contain --disallowed-tools=AskUserQuestion, got %v", args)
+	}
+	if contains(args, "--disallowed-tools") {
+		t.Errorf("expected args to NOT contain bare --disallowed-tools (two-token form swallows prompt), got %v", args)
+	}
+}
+
+// TestBuildClaudeArgsDisallowedToolsUsesEqualsForm mirrors the above for the
+// non-tmux ClaudeRunner arg builder.
+func TestBuildClaudeArgsDisallowedToolsUsesEqualsForm(t *testing.T) {
+	args := buildClaudeArgs(RunOpts{Prompt: "test prompt", DisallowedTools: "AskUserQuestion"})
+	if !contains(args, "--disallowed-tools=AskUserQuestion") {
+		t.Errorf("expected args to contain --disallowed-tools=AskUserQuestion, got %v", args)
+	}
+	if contains(args, "--disallowed-tools") {
+		t.Errorf("expected args to NOT contain bare --disallowed-tools (two-token form swallows prompt), got %v", args)
+	}
+	if len(args) == 0 || args[len(args)-1] != "test prompt" {
+		t.Errorf("prompt not last arg; args=%v", args)
+	}
+}
+
+// TestTmuxRunnerWindowCommandCarriesPrompt verifies the prompt survives
+// end-to-end into the recorded tmux window command.
+func TestTmuxRunnerWindowCommandCarriesPrompt(t *testing.T) {
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:           "unique-prompt-token-xyzzy",
+		WindowName:       "prompt-carry-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := fake.WindowCommand("retinue", "prompt-carry-test")
+	if !strings.Contains(cmd, "unique-prompt-token-xyzzy") {
+		t.Errorf("expected window command to contain prompt token, got: %s", cmd)
+	}
+}
+
+// TestTmuxRunnerFastFailureNoResultEventErrors verifies that a log file with
+// stream events but no result event causes Run to return a non-nil error
+// instead of a phantom success.
+func TestTmuxRunnerFastFailureNoResultEventErrors(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "run.log")
+
+	logContent := `{"type":"message_start","message":{}}
+{"type":"content_block_start"}
+{"type":"content_block_stop"}
+`
+	if err := os.WriteFile(logFile, []byte(logContent), 0o600); err != nil {
+		t.Fatalf("writing log file: %v", err)
+	}
+
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:           "test",
+		WindowName:       "fastfail-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		LogFile:          logFile,
+	}
+
+	result, err := runner.Run(context.Background(), opts)
+	if err == nil {
+		t.Fatalf("expected error for log file with no result event, got nil (result=%+v)", result)
+	}
+	if result.ExitCode == 0 {
+		t.Errorf("expected non-zero ExitCode on fast failure, got %d", result.ExitCode)
+	}
+}
+
+// TestTmuxRunnerEmptyLogFileErrors verifies an empty requested log file also
+// produces an error rather than a phantom success.
+func TestTmuxRunnerEmptyLogFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "run.log")
+
+	if err := os.WriteFile(logFile, []byte(""), 0o600); err != nil {
+		t.Fatalf("writing log file: %v", err)
+	}
+
+	fake := session.NewFakeManager()
+	runner := &TmuxRunner{Sessions: fake}
+
+	opts := RunOpts{
+		Prompt:           "test",
+		WindowName:       "emptylog-test",
+		ApartmentSession: "retinue",
+		WorkDir:          "/tmp",
+		LogFile:          logFile,
+	}
+
+	_, err := runner.Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error for empty log file, got nil")
+	}
+}
+
 func TestTmuxRunnerNoLogFileReturnsEmptyOutput(t *testing.T) {
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}
@@ -311,6 +444,14 @@ func TestTmuxRunnerEmptyEnvVarsNoChange(t *testing.T) {
 }
 
 func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
+	// Use a real temp log file containing a result event so the fast-failure
+	// guard is satisfied; this test only asserts on command construction.
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "run.log")
+	if err := os.WriteFile(logFile, []byte(`{"type":"result","result":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("writing log file: %v", err)
+	}
+
 	fake := session.NewFakeManager()
 	runner := &TmuxRunner{Sessions: fake}
 
@@ -319,7 +460,7 @@ func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 		WindowName:       "tee-test",
 		ApartmentSession: "retinue",
 		WorkDir:          "/tmp",
-		LogFile:          "/var/log/run.log",
+		LogFile:          logFile,
 	}
 
 	_, err := runner.Run(context.Background(), opts)
@@ -331,7 +472,7 @@ func TestTmuxRunnerLogFileCommandUsesTee(t *testing.T) {
 	if !strings.Contains(cmd, "tee") {
 		t.Errorf("expected command to contain 'tee', got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "/var/log/run.log") {
+	if !strings.Contains(cmd, logFile) {
 		t.Errorf("expected command to contain log file path, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, "tmux wait-for -S tee-test") {

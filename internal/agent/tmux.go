@@ -97,6 +97,7 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 
 	// 6. Parse log file for result event.
 	resultStr := ""
+	resultFound := false
 	if opts.LogFile != "" {
 		data, err := os.ReadFile(opts.LogFile)
 		if err == nil {
@@ -106,12 +107,20 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 				var event claudeStreamEvent
 				if err := json.Unmarshal([]byte(line), &event); err == nil && event.Type == "result" {
 					resultStr = event.Result
+					resultFound = true
 				}
 			}
 		}
 	}
 
-	// 7. Return result.
+	// 7. Detect fast-failure: a worker that produced no result event likely
+	// died early (e.g. claude rejected its args). Guard on LogFile so the
+	// existing no-logfile convenience path is preserved.
+	if opts.LogFile != "" && !resultFound && resultStr == "" {
+		return Result{Output: "", ExitCode: 1}, fmt.Errorf("worker %q produced no result event; possible fast failure in claude process", windowName)
+	}
+
+	// 8. Return result.
 	return Result{Output: resultStr, ExitCode: 0}, nil
 }
 
@@ -135,7 +144,7 @@ func buildTmuxClaudeArgs(opts RunOpts) []string {
 	}
 	args = applyEffort(args, opts.Effort)
 	if opts.DisallowedTools != "" {
-		args = append(args, "--disallowed-tools", opts.DisallowedTools)
+		args = append(args, "--disallowed-tools="+opts.DisallowedTools)
 	}
 	args = append(args, opts.Prompt)
 	return args
