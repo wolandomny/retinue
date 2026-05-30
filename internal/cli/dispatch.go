@@ -237,6 +237,42 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 		return fmt.Errorf("task %q failed: %w", target.ID, err)
 	}
 
+	// Empty-output guard: a runner can return success with no output (e.g. a
+	// fast/empty worker failure it could not classify). Treat this as a failure
+	// rather than letting it flow to the StatusDone path, which would auto-kill
+	// the window and produce a phantom success that could be "merged" as an
+	// empty branch. Mirror the err != nil block, but do NOT kill the window so
+	// the worker can be inspected.
+	if strings.TrimSpace(result.Output) == "" {
+		usage, _ := agent.ParseUsageFromLog(logFile)
+
+		if updateErr := store.Update(target.ID, func(t *task.Task) {
+			t.Status = task.StatusFailed
+			t.Error = "worker produced no output (possible fast failure); not marking done"
+			t.Result = result.Output
+			t.FinishedAt = &finishedAt
+			if t.Meta == nil {
+				t.Meta = make(map[string]string)
+			}
+			t.Meta["session"] = ""
+			t.Meta["effort_applied"] = effortLevel
+			if ws.Config.TrackCosts {
+				if usage.InputTokens > 0 {
+					t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+					t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+				}
+				if usage.TotalCostUSD > 0 {
+					t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+				}
+			}
+		}); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to update empty-output task: %v\n", updateErr)
+		}
+		// NOTE: Intentionally NOT killing the window so the empty/fast failure
+		// can be inspected.
+		return fmt.Errorf("task %q failed: worker produced no output", target.ID)
+	}
+
 	// Parse usage from log file.
 	usage, _ := agent.ParseUsageFromLog(logFile)
 

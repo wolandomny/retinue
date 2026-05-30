@@ -742,6 +742,31 @@ func TestDispatchOne_PassesDisallowedTools(t *testing.T) {
 	}
 }
 
+// emptyOutputRunner is an agent.Runner that simulates a fast/empty worker
+// failure: it reports SUCCESS (err == nil) but produces no output. dispatchOne
+// must treat this as a failure rather than a phantom success.
+type emptyOutputRunner struct{}
+
+func (emptyOutputRunner) Run(_ context.Context, _ agent.RunOpts) (agent.Result, error) {
+	return agent.Result{Output: ""}, nil
+}
+
+// TestDispatchOne_EmptyOutputIsRecordedFailed guards the empty-output path: a
+// runner returning success with empty output must be recorded StatusFailed (and
+// dispatchOne must return an error), never marked done.
+func TestDispatchOne_EmptyOutputIsRecordedFailed(t *testing.T) {
+	ws, store := newDispatchTestWorkspace(t, workspace.Config{Name: "test"},
+		[]task.Task{{ID: "ff-1", Status: task.StatusPending, Prompt: "do work"}})
+	tk := task.Task{ID: "ff-1", Status: task.StatusPending, Prompt: "do work"}
+	if err := dispatchOne(context.Background(), ws, store, &tk, io.Discard, emptyOutputRunner{}); err == nil {
+		t.Fatal("expected error for empty-output worker")
+	}
+	got, _ := store.Get("ff-1")
+	if got.Status != task.StatusFailed {
+		t.Errorf("status = %q, want failed (empty output must not be a phantom success)", got.Status)
+	}
+}
+
 // captureStderr redirects os.Stderr for the duration of fn and returns whatever
 // was written. Used to assert operator-facing warnings are actually emitted.
 // Not safe for concurrent use; callers must not run in parallel.
