@@ -116,9 +116,15 @@ func (r *ClaudeRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 	// Scan newline-delimited JSON events to find the result event.
 	// If multiple "result" events are present (unlikely but possible),
 	// the last one wins.
+	//
+	// Like TmuxRunner, this is best-effort TEXT recovery, NOT a success verdict.
+	// A missing result event is non-authoritative: we return the raw output and
+	// let the caller (dispatchOne) decide. For repo tasks the caller uses commit
+	// presence as the authority, so the two runners share one consistent rule.
 	raw := output.String()
 	var finalResult string
 	scanner := bufio.NewScanner(strings.NewReader(raw))
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		var event claudeStreamEvent

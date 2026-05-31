@@ -767,6 +767,152 @@ func TestDispatchOne_EmptyOutputIsRecordedFailed(t *testing.T) {
 	}
 }
 
+// --- Commit-aware status decision (incidents 1 & 2) ------------------------
+//
+// For a task WITH a repo, dispatchOne must base done/failed on whether the task
+// branch has commits beyond its base, NOT on the worker's result event:
+//   - branch HAS commits  -> done (recover real work even with no result text).
+//   - branch has NO commits -> failed regardless of output (no phantom merge).
+// These tests drive the full dispatchOne against a real throwaway git repo so
+// the production worktree path runs; the injected runner operates on the actual
+// worktree (opts.WorkDir) to simulate a worker that does or does not commit.
+
+// repoWorkRunner is an agent.Runner that, when invoked, optionally creates a
+// commit in the worker's worktree (opts.WorkDir) to simulate committed work,
+// then returns the configured output with err == nil (a "clean" worker exit).
+type repoWorkRunner struct {
+	commit bool
+	output string
+}
+
+func (r repoWorkRunner) Run(_ context.Context, opts agent.RunOpts) (agent.Result, error) {
+	if r.commit {
+		ctx := context.Background()
+		fname := filepath.Join(opts.WorkDir, "worker-change.txt")
+		if err := os.WriteFile(fname, []byte("work product\n"), 0o644); err != nil {
+			return agent.Result{}, err
+		}
+		if _, err := runGit(ctx, opts.WorkDir, "add", "."); err != nil {
+			return agent.Result{}, err
+		}
+		if _, err := runGit(ctx, opts.WorkDir, "commit", "-m", "worker commit"); err != nil {
+			return agent.Result{}, err
+		}
+	}
+	return agent.Result{Output: r.output}, nil
+}
+
+// newRepoDispatchWorkspace builds a workspace with a real git repo at
+// repos/myrepo (base branch "main", one commit) plus a FileStore holding a
+// single pending repo task. dispatchOne will create the worktree on the
+// production path.
+func newRepoDispatchWorkspace(t *testing.T, taskID string) (*workspace.Workspace, *task.FileStore) {
+	t.Helper()
+	aptDir := t.TempDir()
+	repoDir := filepath.Join(aptDir, "repos", "myrepo")
+	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(initTestRepo(t), repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Name:  "test",
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: "repos/myrepo"}},
+		},
+	}
+	store := task.NewFileStore(ws.TasksPath())
+	if err := store.Save([]task.Task{
+		{ID: taskID, Repo: "myrepo", Status: task.StatusPending, Prompt: "do work"},
+	}); err != nil {
+		t.Fatalf("saving tasks: %v", err)
+	}
+	return ws, store
+}
+
+// TestDispatchOne_RepoCommitsRecoverDoneWithEmptyOutput covers INCIDENT 1: the
+// worker committed real work but its result event never flushed (empty output).
+// Commit presence must mark the task done, recovering the work, and synthesize
+// a result note.
+func TestDispatchOne_RepoCommitsRecoverDoneWithEmptyOutput(t *testing.T) {
+	ws, store := newRepoDispatchWorkspace(t, "inc1")
+	tk := task.Task{ID: "inc1", Repo: "myrepo", Status: task.StatusPending, Prompt: "do work"}
+
+	err := dispatchOne(context.Background(), ws, store, &tk, io.Discard, repoWorkRunner{commit: true, output: ""})
+	if err != nil {
+		t.Fatalf("expected success when branch has commits, got error: %v", err)
+	}
+	got, _ := store.Get("inc1")
+	if got.Status != task.StatusDone {
+		t.Errorf("status = %q, want done (committed work must be recovered)", got.Status)
+	}
+	if !strings.Contains(got.Result, "recovered") || !strings.Contains(got.Result, "commit") {
+		t.Errorf("expected synthesized recovery note in Result, got %q", got.Result)
+	}
+}
+
+// TestDispatchOne_RepoNoCommitsErrorOutputFailed covers INCIDENT 2: the worker
+// committed nothing but emitted output (e.g. an error string). It must be
+// failed, never done — no phantom branch may be merged.
+func TestDispatchOne_RepoNoCommitsErrorOutputFailed(t *testing.T) {
+	ws, store := newRepoDispatchWorkspace(t, "inc2")
+	tk := task.Task{ID: "inc2", Repo: "myrepo", Status: task.StatusPending, Prompt: "do work"}
+
+	errText := "API Error: 529 overloaded"
+	err := dispatchOne(context.Background(), ws, store, &tk, io.Discard, repoWorkRunner{commit: false, output: errText})
+	if err == nil {
+		t.Fatal("expected error when branch has no commits (phantom must not succeed)")
+	}
+	got, _ := store.Get("inc2")
+	if got.Status != task.StatusFailed {
+		t.Errorf("status = %q, want failed (no commits => never a phantom success)", got.Status)
+	}
+	// The worker's output is preserved for inspection.
+	if got.Result != errText {
+		t.Errorf("expected worker output %q preserved in Result, got %q", errText, got.Result)
+	}
+}
+
+// TestDispatchOne_RepoNoCommitsEmptyOutputFailed is the phantom case: no commits
+// and no output. Must be failed (preserving the existing invariant).
+func TestDispatchOne_RepoNoCommitsEmptyOutputFailed(t *testing.T) {
+	ws, store := newRepoDispatchWorkspace(t, "phantom")
+	tk := task.Task{ID: "phantom", Repo: "myrepo", Status: task.StatusPending, Prompt: "do work"}
+
+	err := dispatchOne(context.Background(), ws, store, &tk, io.Discard, repoWorkRunner{commit: false, output: ""})
+	if err == nil {
+		t.Fatal("expected error for phantom run (no commits, no output)")
+	}
+	got, _ := store.Get("phantom")
+	if got.Status != task.StatusFailed {
+		t.Errorf("status = %q, want failed (phantom must never be merged)", got.Status)
+	}
+}
+
+// TestDispatchOne_RepoCommitsWithResultTextDone is the normal success path: the
+// worker committed AND produced result text. The task is done and keeps that
+// text (the synthesized note is only used when the result event is missing).
+func TestDispatchOne_RepoCommitsWithResultTextDone(t *testing.T) {
+	ws, store := newRepoDispatchWorkspace(t, "happy")
+	tk := task.Task{ID: "happy", Repo: "myrepo", Status: task.StatusPending, Prompt: "do work"}
+
+	resultText := "Implemented the feature and committed."
+	err := dispatchOne(context.Background(), ws, store, &tk, io.Discard, repoWorkRunner{commit: true, output: resultText})
+	if err != nil {
+		t.Fatalf("expected success on normal commit+result, got error: %v", err)
+	}
+	got, _ := store.Get("happy")
+	if got.Status != task.StatusDone {
+		t.Errorf("status = %q, want done", got.Status)
+	}
+	if got.Result != resultText {
+		t.Errorf("expected Result %q, got %q", resultText, got.Result)
+	}
+}
+
 // captureStderr redirects os.Stderr for the duration of fn and returns whatever
 // was written. Used to assert operator-facing warnings are actually emitted.
 // Not safe for concurrent use; callers must not run in parallel.

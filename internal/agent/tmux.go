@@ -9,9 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wolandomny/retinue/internal/session"
 	"github.com/wolandomny/retinue/internal/shell"
+)
+
+// resultGracePolls and resultGraceInterval bound how long Run re-reads the
+// tee'd log file looking for a {"type":"result"} event after the worker's
+// tmux command has signaled completion. tmux wait-for can fire a hair before
+// the final `tee` flush lands on disk, so a short grace recovers the result
+// TEXT. This grace is ONLY about recovering result text; it never decides
+// success/failure — that decision is made by the caller (dispatchOne), which
+// uses commit presence as the authority for repo tasks.
+const (
+	resultGracePolls    = 10
+	resultGraceInterval = 100 * time.Millisecond
 )
 
 // claudeCodeEnvVar is the environment variable name unset via env -u
@@ -95,33 +108,62 @@ func (r *TmuxRunner) Run(ctx context.Context, opts RunOpts) (Result, error) {
 		return Result{}, fmt.Errorf("waiting for tmux window %q: %w", windowName, err)
 	}
 
-	// 6. Parse log file for result event.
+	// 6. Parse the log file for a {"type":"result"} event to recover the
+	// worker's final result TEXT.
+	//
+	// tmux wait-for can signal completion a moment before the final `tee` flush
+	// reaches disk, so a missing result event on the first read is NOT proof of
+	// failure — it may just be an unflushed line. We re-read the log a few times
+	// over a short grace window to recover the text if it shows up.
+	//
+	// Crucially, this runner NO LONGER classifies success/failure. A missing
+	// result event is non-authoritative: we return whatever text we have (often
+	// empty) with ExitCode 0 and let the caller decide. For repo tasks the
+	// caller (dispatchOne) uses COMMIT PRESENCE as the authority, which both
+	// recovers real committed work whose result line never flushed (incident 1)
+	// and rejects phantom/errored runs that committed nothing (incident 2).
 	resultStr := ""
 	resultFound := false
 	if opts.LogFile != "" {
-		data, err := os.ReadFile(opts.LogFile)
-		if err == nil {
-			scanner := bufio.NewScanner(strings.NewReader(string(data)))
-			for scanner.Scan() {
-				line := scanner.Text()
-				var event claudeStreamEvent
-				if err := json.Unmarshal([]byte(line), &event); err == nil && event.Type == "result" {
-					resultStr = event.Result
-					resultFound = true
+		for attempt := 0; attempt < resultGracePolls; attempt++ {
+			resultStr, resultFound = parseResultFromLog(opts.LogFile)
+			if resultFound {
+				break
+			}
+			// Sleep between polls, but not after the final attempt.
+			if attempt < resultGracePolls-1 {
+				select {
+				case <-ctx.Done():
+					return Result{Output: resultStr, ExitCode: 0}, nil
+				case <-time.After(resultGraceInterval):
 				}
 			}
 		}
 	}
 
-	// 7. Detect fast-failure: a worker that produced no result event likely
-	// died early (e.g. claude rejected its args). Guard on LogFile so the
-	// existing no-logfile convenience path is preserved.
-	if opts.LogFile != "" && !resultFound && resultStr == "" {
-		return Result{Output: "", ExitCode: 1}, fmt.Errorf("worker %q produced no result event; possible fast failure in claude process", windowName)
-	}
-
-	// 8. Return result.
+	// 7. Return best-effort output. ExitCode 0 / nil err means "ran to a tmux
+	// signal"; it does NOT assert the worker succeeded. The caller decides.
 	return Result{Output: resultStr, ExitCode: 0}, nil
+}
+
+// parseResultFromLog reads the tee'd log file and returns the result text from
+// the last {"type":"result"} event, plus whether such an event was found.
+func parseResultFromLog(logFile string) (result string, found bool) {
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		return "", false
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var event claudeStreamEvent
+		if err := json.Unmarshal([]byte(line), &event); err == nil && event.Type == "result" {
+			result = event.Result
+			found = true
+		}
+	}
+	return result, found
 }
 
 // buildTmuxClaudeArgs constructs the claude CLI argument list for a tmux run.

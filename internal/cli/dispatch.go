@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -206,96 +207,63 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 
 	finishedAt := time.Now()
 
+	// A runner-level error (e.g. tmux/worktree plumbing failed) is always a
+	// failure: there is nothing to classify. Record it and leave the window for
+	// inspection.
 	if err != nil {
-		// Parse usage even on failure.
-		usage, _ := agent.ParseUsageFromLog(logFile)
-
-		if updateErr := store.Update(target.ID, func(t *task.Task) {
-			t.Status = task.StatusFailed
-			t.Error = err.Error()
-			t.Result = result.Output
-			t.FinishedAt = &finishedAt
-			if t.Meta == nil {
-				t.Meta = make(map[string]string)
-			}
-			t.Meta["session"] = ""
-			t.Meta["effort_applied"] = effortLevel
-			if ws.Config.TrackCosts {
-				if usage.InputTokens > 0 {
-					t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
-					t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
-				}
-				if usage.TotalCostUSD > 0 {
-					t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
-				}
-			}
-		}); updateErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", updateErr)
-		}
+		recordWorkerFailed(store, target.ID, finishedAt, err.Error(), result.Output, effortLevel, logFile, ws.Config.TrackCosts)
 		// NOTE: Intentionally NOT killing the window on failure.
 		// The user can attach to inspect what went wrong.
 		return fmt.Errorf("task %q failed: %w", target.ID, err)
 	}
 
-	// Empty-output guard: a runner can return success with no output (e.g. a
-	// fast/empty worker failure it could not classify). Treat this as a failure
-	// rather than letting it flow to the StatusDone path, which would auto-kill
-	// the window and produce a phantom success that could be "merged" as an
-	// empty branch. Mirror the err != nil block, but do NOT kill the window so
-	// the worker can be inspected.
-	if strings.TrimSpace(result.Output) == "" {
-		usage, _ := agent.ParseUsageFromLog(logFile)
-
-		if updateErr := store.Update(target.ID, func(t *task.Task) {
-			t.Status = task.StatusFailed
-			t.Error = "worker produced no output (possible fast failure); not marking done"
-			t.Result = result.Output
-			t.FinishedAt = &finishedAt
-			if t.Meta == nil {
-				t.Meta = make(map[string]string)
-			}
-			t.Meta["session"] = ""
-			t.Meta["effort_applied"] = effortLevel
-			if ws.Config.TrackCosts {
-				if usage.InputTokens > 0 {
-					t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
-					t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
-				}
-				if usage.TotalCostUSD > 0 {
-					t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
-				}
-			}
-		}); updateErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to update empty-output task: %v\n", updateErr)
+	// The runner returned without a transport error. The {"type":"result"} event
+	// it parsed (carried in result.Output) is NON-authoritative for success — it
+	// only supplies result TEXT. Whether the task succeeded is decided here.
+	if target.Repo != "" {
+		// COMMIT PRESENCE is the authority for repo tasks. A worker is successful
+		// iff its task branch (retinue/<id>) has commits beyond the base branch:
+		//   - commits exist -> done, even if the result event never flushed
+		//     (incident 1: real work no longer discarded as a false FAILURE).
+		//   - no commits    -> failed, even if it emitted output such as an error
+		//     string (incident 2: phantom/errored runs never silently merged).
+		baseBranch := task.ResolveBaseBranch(*target, ws.Config.Repos)
+		commits, countErr := countBranchCommits(ctx, workDir, baseBranch)
+		if countErr != nil {
+			// We could not determine commit presence (e.g. worktree vanished).
+			// Fail safe: do NOT mark done, so a phantom can never be merged.
+			errMsg := fmt.Sprintf("could not verify task commits: %v", countErr)
+			recordWorkerFailed(store, target.ID, finishedAt, errMsg, result.Output, effortLevel, logFile, ws.Config.TrackCosts)
+			return fmt.Errorf("task %q failed: %s", target.ID, errMsg)
 		}
-		// NOTE: Intentionally NOT killing the window so the empty/fast failure
-		// can be inspected.
-		return fmt.Errorf("task %q failed: worker produced no output", target.ID)
-	}
 
-	// Parse usage from log file.
-	usage, _ := agent.ParseUsageFromLog(logFile)
+		if commits == 0 {
+			// No committed work: failure regardless of output. Preserve whatever
+			// the worker emitted for inspection, but do NOT kill the window.
+			errMsg := "worker produced no commits on the task branch; not marking done"
+			recordWorkerFailed(store, target.ID, finishedAt, errMsg, result.Output, effortLevel, logFile, ws.Config.TrackCosts)
+			return fmt.Errorf("task %q failed: worker produced no commits", target.ID)
+		}
 
-	if err := store.Update(target.ID, func(t *task.Task) {
-		t.Status = task.StatusDone
-		t.Result = result.Output
-		t.FinishedAt = &finishedAt
-		if t.Meta == nil {
-			t.Meta = make(map[string]string)
+		// Commits exist: success. Prefer the captured result text; if it never
+		// flushed, synthesize a note so the recovery is visible.
+		resultText := result.Output
+		if strings.TrimSpace(resultText) == "" {
+			resultText = fmt.Sprintf("recovered: %d commit(s), no captured result event", commits)
 		}
-		t.Meta["session"] = ""
-		t.Meta["effort_applied"] = effortLevel
-		if ws.Config.TrackCosts {
-			if usage.InputTokens > 0 {
-				t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
-				t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
-			}
-			if usage.TotalCostUSD > 0 {
-				t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
-			}
+		recordWorkerDone(store, target.ID, finishedAt, resultText, effortLevel, logFile, ws.Config.TrackCosts)
+	} else {
+		// No repo, hence no branch to inspect: fall back to the output-based
+		// empty-output guard. An empty result is treated as a fast/empty failure
+		// rather than a phantom success.
+		if strings.TrimSpace(result.Output) == "" {
+			errMsg := "worker produced no output (possible fast failure); not marking done"
+			recordWorkerFailed(store, target.ID, finishedAt, errMsg, result.Output, effortLevel, logFile, ws.Config.TrackCosts)
+			// NOTE: Intentionally NOT killing the window so the empty/fast failure
+			// can be inspected.
+			return fmt.Errorf("task %q failed: worker produced no output", target.ID)
 		}
-	}); err != nil {
-		return fmt.Errorf("updating task result: %w", err)
+		recordWorkerDone(store, target.ID, finishedAt, result.Output, effortLevel, logFile, ws.Config.TrackCosts)
 	}
 
 	// Auto-close the window on success.
@@ -306,6 +274,73 @@ func dispatchOne(ctx context.Context, ws *workspace.Workspace, store *task.FileS
 
 	fmt.Fprintf(out, "Task %q completed successfully.\n", target.ID)
 	return nil
+}
+
+// countBranchCommits returns the number of commits on the worktree's current
+// HEAD that are not reachable from baseBranch (i.e. `git rev-list --count
+// <base>..HEAD`). This is the same notion of "has the worker produced work"
+// that the merge path relies on. A non-nil error means commit presence could
+// not be determined and callers must fail safe (never treat as a success).
+func countBranchCommits(ctx context.Context, worktreePath, baseBranch string) (int, error) {
+	out, err := runGit(ctx, worktreePath, "rev-list", "--count", baseBranch+"..HEAD")
+	if err != nil {
+		return 0, err
+	}
+	n, convErr := strconv.Atoi(strings.TrimSpace(out))
+	if convErr != nil {
+		return 0, fmt.Errorf("parsing commit count %q: %w", out, convErr)
+	}
+	return n, nil
+}
+
+// recordWorkerDone transitions a task to done with the given result text,
+// clearing the live session and recording usage/cost metadata.
+func recordWorkerDone(store *task.FileStore, id string, finishedAt time.Time, resultText, effortLevel, logFile string, trackCosts bool) {
+	usage, _ := agent.ParseUsageFromLog(logFile)
+	if err := store.Update(id, func(t *task.Task) {
+		t.Status = task.StatusDone
+		t.Error = ""
+		t.Result = resultText
+		t.FinishedAt = &finishedAt
+		applyWorkerMeta(t, effortLevel, usage, trackCosts)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update task result: %v\n", err)
+	}
+}
+
+// recordWorkerFailed transitions a task to failed, preserving the worker's
+// error message and any output it produced for later inspection, and recording
+// usage/cost metadata. It never kills the tmux window.
+func recordWorkerFailed(store *task.FileStore, id string, finishedAt time.Time, errMsg, output, effortLevel, logFile string, trackCosts bool) {
+	usage, _ := agent.ParseUsageFromLog(logFile)
+	if err := store.Update(id, func(t *task.Task) {
+		t.Status = task.StatusFailed
+		t.Error = errMsg
+		t.Result = output
+		t.FinishedAt = &finishedAt
+		applyWorkerMeta(t, effortLevel, usage, trackCosts)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update failed task: %v\n", err)
+	}
+}
+
+// applyWorkerMeta clears the live session marker and records the applied effort
+// and (when cost tracking is on) token/cost usage onto a task's metadata.
+func applyWorkerMeta(t *task.Task, effortLevel string, usage agent.UsageSummary, trackCosts bool) {
+	if t.Meta == nil {
+		t.Meta = make(map[string]string)
+	}
+	t.Meta["session"] = ""
+	t.Meta["effort_applied"] = effortLevel
+	if trackCosts {
+		if usage.InputTokens > 0 {
+			t.Meta["input_tokens"] = fmt.Sprintf("%d", usage.InputTokens)
+			t.Meta["output_tokens"] = fmt.Sprintf("%d", usage.OutputTokens)
+		}
+		if usage.TotalCostUSD > 0 {
+			t.Meta["cost_usd"] = fmt.Sprintf("%.4f", usage.TotalCostUSD)
+		}
+	}
 }
 
 // dispatchAll runs a concurrent scheduler that dispatches all ready tasks,

@@ -247,10 +247,16 @@ func TestTmuxRunnerWindowCommandCarriesPrompt(t *testing.T) {
 	}
 }
 
-// TestTmuxRunnerFastFailureNoResultEventErrors verifies that a log file with
-// stream events but no result event causes Run to return a non-nil error
-// instead of a phantom success.
-func TestTmuxRunnerFastFailureNoResultEventErrors(t *testing.T) {
+// TestTmuxRunnerMissingResultEventDoesNotHardFail verifies the NEW contract:
+// a log file with stream events but no {"type":"result"} event must NOT cause
+// Run to hard-fail. The result event is non-authoritative for success — the
+// runner returns best-effort output (here empty) with ExitCode 0 / nil err and
+// lets the caller (dispatchOne) decide based on commit presence.
+//
+// This replaces the old TestTmuxRunnerFastFailureNoResultEventErrors, which
+// encoded the removed hard-fail behavior that discarded real committed work
+// whose result line had not yet flushed (incident 1).
+func TestTmuxRunnerMissingResultEventDoesNotHardFail(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "run.log")
 
@@ -267,24 +273,30 @@ func TestTmuxRunnerFastFailureNoResultEventErrors(t *testing.T) {
 
 	opts := RunOpts{
 		Prompt:           "test",
-		WindowName:       "fastfail-test",
+		WindowName:       "noresult-test",
 		ApartmentSession: "retinue",
 		WorkDir:          "/tmp",
 		LogFile:          logFile,
 	}
 
 	result, err := runner.Run(context.Background(), opts)
-	if err == nil {
-		t.Fatalf("expected error for log file with no result event, got nil (result=%+v)", result)
+	if err != nil {
+		t.Fatalf("expected nil error on missing result event (non-authoritative), got %v", err)
 	}
-	if result.ExitCode == 0 {
-		t.Errorf("expected non-zero ExitCode on fast failure, got %d", result.ExitCode)
+	if result.ExitCode != 0 {
+		t.Errorf("expected ExitCode 0 on missing result event, got %d", result.ExitCode)
+	}
+	if result.Output != "" {
+		t.Errorf("expected empty Output when no result event present, got %q", result.Output)
 	}
 }
 
-// TestTmuxRunnerEmptyLogFileErrors verifies an empty requested log file also
-// produces an error rather than a phantom success.
-func TestTmuxRunnerEmptyLogFileErrors(t *testing.T) {
+// TestTmuxRunnerEmptyLogFileDoesNotHardFail verifies an empty requested log
+// file also does NOT hard-fail under the new contract; the runner returns
+// empty best-effort output with ExitCode 0 / nil err.
+//
+// This replaces the old TestTmuxRunnerEmptyLogFileErrors.
+func TestTmuxRunnerEmptyLogFileDoesNotHardFail(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "run.log")
 
@@ -303,9 +315,15 @@ func TestTmuxRunnerEmptyLogFileErrors(t *testing.T) {
 		LogFile:          logFile,
 	}
 
-	_, err := runner.Run(context.Background(), opts)
-	if err == nil {
-		t.Fatal("expected error for empty log file, got nil")
+	result, err := runner.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("expected nil error on empty log file (non-authoritative), got %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("expected ExitCode 0 on empty log file, got %d", result.ExitCode)
+	}
+	if result.Output != "" {
+		t.Errorf("expected empty Output for empty log file, got %q", result.Output)
 	}
 }
 
