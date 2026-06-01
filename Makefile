@@ -18,8 +18,13 @@ build:
 test:
 	go test -race -count=1 ./...
 
+# lint: run the SAME pinned golangci-lint version as CI (golangci-lint-action@v8
+# installs v2.11.3). Using `go run ...@v2.11.3` instead of whatever is on PATH
+# guarantees local and CI can never silently diverge across major versions.
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3
+
 lint:
-	golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
 
 fmt:
 	gofumpt -w .
