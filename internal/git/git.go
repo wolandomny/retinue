@@ -63,11 +63,51 @@ func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 		return fmt.Errorf("checkout %s: %w", baseBranch, err)
 	}
 
-	// Fast-forward merge.
+	// Fast-forward merge the branch into the checked-out base, verifying the
+	// result is linear and rolling back any accidental merge commit.
+	if err := ffMergeAndVerify(ctx, repoPath, branch, ghEnv); err != nil {
+		return err
+	}
+
+	// Clean up worktree and branch (best-effort).
+	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "worktree", "remove", worktreePath)
+	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "branch", "-d", branch)
+
+	return nil
+}
+
+// ffMergeAndVerify fast-forward merges branch into the currently checked-out
+// base in repoPath, then verifies the merge was truly a fast-forward (the base
+// HEAD must have exactly one parent). If --ff-only is ever bypassed and a merge
+// commit slips through, it is rolled back. This is the load-bearing
+// fast-forward-only safety: it must reject/undo any state that would leave the
+// base branch with a 2-parent merge commit.
+//
+// The two safeguards are split into ffMerge (refuse a non-fast-forward up front)
+// and verifyLinearOrRollback (undo any merge commit that nevertheless appears)
+// so each can be exercised independently: with both inlined, either one alone
+// fully masks the other and neither is observable in isolation.
+func ffMergeAndVerify(ctx context.Context, repoPath, branch string, ghEnv []string) error {
+	if err := ffMerge(ctx, repoPath, branch, ghEnv); err != nil {
+		return err
+	}
+	return verifyLinearOrRollback(ctx, repoPath, branch, ghEnv)
+}
+
+// ffMerge merges branch into the currently checked-out base using --ff-only, so
+// a divergent (non-fast-forward) branch is refused instead of producing a merge
+// commit. This is the first fast-forward-only safeguard.
+func ffMerge(ctx context.Context, repoPath, branch string, ghEnv []string) error {
 	if _, err := RunWithEnv(ctx, repoPath, ghEnv, "merge", "--ff-only", branch); err != nil {
 		return fmt.Errorf("ff-merge: %w", err)
 	}
+	return nil
+}
 
+// verifyLinearOrRollback verifies the base HEAD is linear (exactly one parent)
+// and, if a merge commit slipped through despite --ff-only, rolls it back with
+// reset --hard. This is the second, defense-in-depth safeguard.
+func verifyLinearOrRollback(ctx context.Context, repoPath, branch string, ghEnv []string) error {
 	// Verify the merge was truly a fast-forward (HEAD should have exactly one parent).
 	parents, err := RunWithEnv(ctx, repoPath, ghEnv, "rev-list", "--parents", "-1", "HEAD")
 	if err != nil {
@@ -82,10 +122,6 @@ func RebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 		}
 		return fmt.Errorf("merge of %s created a merge commit (expected fast-forward); rolled back", branch)
 	}
-
-	// Clean up worktree and branch (best-effort).
-	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "worktree", "remove", worktreePath)
-	_, _ = RunWithEnv(ctx, repoPath, ghEnv, "branch", "-d", branch)
 
 	return nil
 }

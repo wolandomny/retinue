@@ -135,6 +135,227 @@ func TestRebaseAndMerge_FastForwardOnly(t *testing.T) {
 	}
 }
 
+// TestRebaseAndMerge_DivergentBaseStaysLinear is a regression test for the
+// fast-forward-only merge safety. The existing TestRebaseAndMerge_FastForwardOnly
+// never advances main after the feature branch is created, so the merge is a
+// fast-forward by construction and the one-parent assertion can never fail. Here
+// the histories actually DIVERGE: the feature branch is created, THEN main
+// receives an independent commit, forcing rebaseAndMerge to rebase the feature
+// work onto the new base tip before the ff-only merge. Afterwards the base HEAD
+// must be linear (one parent) and contain both sides' work.
+func TestRebaseAndMerge_DivergentBaseStaysLinear(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initTestRepo(t)
+
+	// Feature branch with a commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Back to main, then advance main with a DIVERGENT commit (different file)
+	// so it is no longer an ancestor of the feature branch.
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "base.txt"), []byte("base work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "divergent base commit"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: histories have diverged.
+	if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", "main", "feature"); err == nil {
+		t.Fatal("precondition failed: main is already an ancestor of feature (histories did not diverge)")
+	}
+
+	// Worktree for the feature branch.
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rebaseAndMerge(ctx, repoPath, worktreePath, "feature", "main", "", "", nil); err != nil {
+		t.Fatalf("rebaseAndMerge failed: %v", err)
+	}
+
+	// Invariant: base HEAD is linear — exactly one parent.
+	parents, err := runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := strings.Fields(parents); len(parts) != 2 {
+		t.Fatalf("expected base HEAD linear (1 parent) after divergent rebase+ff-merge, got %d parents: %q", len(parts)-1, parents)
+	}
+
+	// Both sides' work present on main.
+	log, err := runGit(ctx, repoPath, "log", "--oneline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log, "add feature") {
+		t.Errorf("expected 'add feature' on main after merge, got:\n%s", log)
+	}
+	if !strings.Contains(log, "divergent base commit") {
+		t.Errorf("expected 'divergent base commit' on main after merge, got:\n%s", log)
+	}
+}
+
+// divergentRepo builds a repo where "feature" and "main" have genuinely
+// diverged (each has a commit the other lacks, on different files so they do not
+// conflict), leaves "main" checked out, and returns the repo path plus main's
+// HEAD sha. In this state a `merge feature` from main is a non-fast-forward that
+// would create a 2-parent merge commit; `merge --ff-only feature` is refused.
+func divergentRepo(t *testing.T) (repoPath, baseHEAD string) {
+	t.Helper()
+	ctx := context.Background()
+	repoPath = initTestRepo(t)
+
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "base.txt"), []byte("base work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "divergent base commit"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert the divergence precondition: neither branch is an ancestor of the
+	// other, so the merge is genuinely non-fast-forward.
+	if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", "feature", "main"); err == nil {
+		t.Fatal("precondition failed: feature is an ancestor of main (not divergent)")
+	}
+	if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", "main", "feature"); err == nil {
+		t.Fatal("precondition failed: main is an ancestor of feature (fast-forwardable)")
+	}
+
+	baseHEAD, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repoPath, baseHEAD
+}
+
+// TestFFMerge_RefusesDivergentBranch isolates the FIRST safeguard: `merge
+// --ff-only`. rebaseAndMerge's preceding rebase normally linearizes history, so
+// the merge step only ever sees fast-forwardable branches and --ff-only is never
+// observably exercised end-to-end — which is exactly why dropping it survived
+// the mutation audit. Here we hand the production ffMerge helper a genuinely
+// divergent (non-ff) branch: with --ff-only the merge MUST be refused outright,
+// creating NO merge commit and leaving the base HEAD untouched. Dropping
+// --ff-only makes git create a 2-parent merge commit instead, which these
+// assertions detect (base HEAD moves / becomes a merge commit and no error).
+func TestFFMerge_RefusesDivergentBranch(t *testing.T) {
+	ctx := context.Background()
+	repoPath, baseBefore := divergentRepo(t)
+
+	// main is checked out; drive only the --ff-only merge safeguard.
+	err := ffMerge(ctx, repoPath, "feature", nil)
+
+	// A non-ff merge must be refused with an error...
+	if err == nil {
+		t.Fatal("expected ffMerge to refuse the non-fast-forward branch, got nil error")
+	}
+	// ...and no merge commit may exist: base HEAD must be unchanged and linear.
+	baseAfter, perr := runGit(ctx, repoPath, "rev-parse", "HEAD")
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	if baseAfter != baseBefore {
+		t.Fatalf("base HEAD moved from %s to %s; --ff-only did not refuse the non-fast-forward merge", baseBefore[:7], baseAfter[:7])
+	}
+	parents, perr := runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	if parts := strings.Fields(parents); len(parts) > 2 {
+		t.Fatalf("base HEAD became a %d-parent merge commit; --ff-only safeguard failed (parents: %q)", len(parts)-1, parents)
+	}
+}
+
+// TestVerifyLinearOrRollback_UndoesMergeCommit isolates the SECOND safeguard:
+// the parent-count check + reset --hard rollback. The rollback only matters when
+// a merge commit has already been created on the base (e.g. if --ff-only were
+// ever bypassed). With --ff-only present that never happens, so the rollback is
+// unreachable end-to-end and disabling it survived the mutation audit. Here we
+// deliberately create a real 2-parent merge commit on the base (a plain,
+// non-ff merge in the TEST setup — NOT production code), then drive the
+// production verifyLinearOrRollback helper and assert it detects the merge
+// commit and rolls the base back to a linear, one-parent HEAD. Disabling the
+// `len(parts) > 2` rollback leaves the 2-parent merge commit in place, which
+// these assertions detect.
+func TestVerifyLinearOrRollback_UndoesMergeCommit(t *testing.T) {
+	ctx := context.Background()
+	repoPath, baseBefore := divergentRepo(t)
+
+	// TEST SETUP ONLY: force a real 2-parent merge commit onto main by doing a
+	// plain (non-ff) merge. This simulates the dangerous state a bypassed
+	// --ff-only would produce, so the rollback safeguard has something to undo.
+	if _, err := runGit(ctx, repoPath, "merge", "--no-edit", "feature"); err != nil {
+		t.Fatalf("test setup: forcing merge commit failed: %v", err)
+	}
+	parents, err := runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := strings.Fields(parents); len(parts) <= 2 {
+		t.Fatalf("test setup: expected a 2-parent merge commit, got %d parents: %q", len(parts)-1, parents)
+	}
+
+	// Drive the production rollback safeguard against the merge-commit state.
+	rbErr := verifyLinearOrRollback(ctx, repoPath, "feature", nil)
+
+	// The rollback must report the problem...
+	if rbErr == nil {
+		t.Fatal("expected verifyLinearOrRollback to report the merge commit, got nil error")
+	}
+	// ...and undo it: base HEAD must be linear (one parent) again...
+	parents, err = runGit(ctx, repoPath, "rev-list", "--parents", "-1", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := strings.Fields(parents); len(parts) > 2 {
+		t.Fatalf("merge commit was NOT rolled back; base HEAD still has %d parents: %q", len(parts)-1, parents)
+	}
+	// ...and restored to exactly the pre-merge base commit.
+	baseAfter, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseAfter != baseBefore {
+		t.Fatalf("rollback did not restore base HEAD: want %s, got %s", baseBefore[:7], baseAfter[:7])
+	}
+}
+
 func TestRebaseAndMerge_CustomBaseBranch(t *testing.T) {
 	ctx := context.Background()
 	repoPath := initTestRepo(t)
