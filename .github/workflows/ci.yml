@@ -36,12 +36,12 @@ jobs:
           version: v2.11.3
 
   # Separate coverage job. Computes total statement coverage and fails below the
-  # threshold. Current coverage is ~46.9%, so 45.0% passes today.
+  # threshold. Current coverage is ~51.5%, so 50.0% passes today.
   # Ratchet COVER_THRESHOLD up over time as coverage improves (never lower it).
   coverage:
     runs-on: ubuntu-latest
     env:
-      COVER_THRESHOLD: "45.0"
+      COVER_THRESHOLD: "50.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

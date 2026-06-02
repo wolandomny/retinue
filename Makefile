@@ -39,7 +39,7 @@ coverage:
 
 # Minimum total statement coverage enforced by `cover-check` (and CI).
 # Ratchet this up over time as coverage improves; never lower it.
-COVER_THRESHOLD ?= 45.0
+COVER_THRESHOLD ?= 50.0
 
 # cover: run tests with a coverage profile and print the total coverage line.
 cover:
