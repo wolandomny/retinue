@@ -115,7 +115,7 @@ Each agent is a full Claude Code session. They can:
 - Run shell commands
 - Make code changes
 - Respond to Woland's requests
-- Act autonomously according to their mandate (e.g., watching CI on a schedule via heartbeat messages)
+- Act autonomously according to their mandate (e.g., watching CI on a schedule)
 
 ## What Should NOT Happen
 
