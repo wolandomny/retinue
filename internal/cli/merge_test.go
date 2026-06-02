@@ -558,6 +558,253 @@ func TestMergeOne_NoArchiveKeepsTask(t *testing.T) {
 	}
 }
 
+// TestMergeOne_ValidationRunsOnRebasedState is the load-bearing regression
+// test for the validation-ordering bug. The feature branch is created FIRST,
+// then an independent commit is added to the base branch (adding base-only.txt)
+// AFTER the branch diverged. The validation command asserts base-only.txt is
+// present in the worktree.
+//
+// That file does NOT exist on the isolated feature branch, only on base. So:
+//   - validate-BEFORE-rebase  => validation runs on the isolated branch where
+//     base-only.txt is absent => `test -f` fails => mergeOne returns an error.
+//   - validate-AFTER-rebase   => the worktree has been rebased onto base, so
+//     base-only.txt is present => validation passes => merge succeeds.
+//
+// Asserting success therefore proves validation saw the combined/rebased state.
+func TestMergeOne_ValidationRunsOnRebasedState(t *testing.T) {
+	ctx := context.Background()
+
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoPath := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if _, err := runGit(ctx, repoPath, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the feature branch (diverges from the initial commit) and give it
+	// its own commit on a DIFFERENT file so the later base commit does not
+	// conflict (the rebase must be clean).
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN add a commit to the base branch AFTER the feature branch diverged.
+	// base-only.txt exists only on main, not on the isolated feature branch.
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "base-only.txt"), []byte("from base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add base-only file"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: histories diverged (the base commit is not yet on feature).
+	if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", "main", "feature"); err == nil {
+		t.Fatal("precondition failed: main is already an ancestor of feature (histories did not diverge)")
+	}
+
+	worktreeDir := filepath.Join(aptDir, ".worktrees")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(worktreeDir, "t1")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	tasksPath := filepath.Join(aptDir, "tasks.yaml")
+	store := task.NewFileStore(tasksPath)
+	if err := store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos: map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
+			// Validation passes only if base-only.txt is visible — i.e. only if
+			// validation runs AFTER the rebase onto base.
+			Validate: map[string]string{"myrepo": "test -f base-only.txt"},
+		},
+	}
+
+	result := mergeOne(ctx, mergeOneOpts{
+		ws:      ws,
+		store:   store,
+		t:       task.Task{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+		review:  false,
+		archive: false,
+		out:     io.Discard,
+	})
+
+	if result.Err != nil {
+		t.Fatalf("mergeOne failed: %v (validation did not see the rebased/combined state)", result.Err)
+	}
+	if !result.Merged {
+		t.Fatal("expected Merged=true; validation must have run on the rebased worktree")
+	}
+}
+
+// TestMergeOne_ValidationFailureAfterRebaseMarksFailed proves that a validation
+// FAILURE occurring after a successful rebase marks the task failed. The rebase
+// is clean (feature and base touch different files), so the only way to reach a
+// failure is the post-rebase validation step.
+func TestMergeOne_ValidationFailureAfterRebaseMarksFailed(t *testing.T) {
+	ctx := context.Background()
+
+	aptDir := t.TempDir()
+	repoRelPath := "repos/myrepo"
+	repoPath := filepath.Join(aptDir, repoRelPath)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if _, err := runGit(ctx, repoPath, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Feature branch with its own commit.
+	if _, err := runGit(ctx, repoPath, "checkout", "-b", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Advance base with a divergent, non-conflicting commit so a real rebase
+	// happens before validation runs.
+	if _, err := runGit(ctx, repoPath, "checkout", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(ctx, repoPath, "commit", "-m", "divergent base commit"); err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeDir := filepath.Join(aptDir, ".worktrees")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(worktreeDir, "t1")
+	if _, err := runGit(ctx, repoPath, "worktree", "add", worktreePath, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	tasksPath := filepath.Join(aptDir, "tasks.yaml")
+	store := task.NewFileStore(tasksPath)
+	if err := store.Save([]task.Task{
+		{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &workspace.Workspace{
+		Path: aptDir,
+		Config: workspace.Config{
+			Repos:    map[string]workspace.RepoConfig{"myrepo": {Path: repoRelPath}},
+			Validate: map[string]string{"myrepo": "exit 1"}, // always fails post-rebase
+		},
+	}
+
+	result := mergeOne(ctx, mergeOneOpts{
+		ws:      ws,
+		store:   store,
+		t:       task.Task{ID: "t1", Status: task.StatusDone, Repo: "myrepo", Branch: "feature"},
+		review:  false,
+		archive: false,
+		out:     io.Discard,
+	})
+
+	if result.Err == nil {
+		t.Fatal("expected error from post-rebase validation failure, got nil")
+	}
+	if result.Merged {
+		t.Fatal("expected Merged=false on validation failure")
+	}
+	if !strings.Contains(result.Err.Error(), "validation failed") {
+		t.Fatalf("expected validation failure error, got: %s", result.Err)
+	}
+
+	// The rebase must have actually happened (proving validation ran post-rebase):
+	// the base commit is now an ancestor of the feature branch tip.
+	if _, err := runGit(ctx, repoPath, "merge-base", "--is-ancestor", "main", "feature"); err != nil {
+		t.Fatalf("expected feature to have been rebased onto main before validation: %v", err)
+	}
+
+	// And the task must be marked failed.
+	tasks, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Status != task.StatusFailed {
+		t.Fatalf("expected failed status, got %s", tasks[0].Status)
+	}
+}
+
 func TestMarkTaskMergedNoArchive(t *testing.T) {
 	store := writeTasks(t, []task.Task{
 		{ID: "t1", Status: task.StatusDone},

@@ -51,7 +51,17 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 
 	baseBranch := task.ResolveBaseBranch(opts.t, opts.ws.Config.Repos)
 
-	// Run validation before merging.
+	// 1. Rebase the task branch onto the base branch FIRST, so that
+	// validation and review run against the combined state (the task's work
+	// on top of all previously merged work) rather than the branch in
+	// isolation. A task that passes in isolation can still break once
+	// combined with changes already on the base branch.
+	if err := rebaseOnto(ctx, worktreePath, opts.t.Branch, baseBranch, opts.ws.Config.Model, opts.ws.LogsPath(), opts.ghEnv); err != nil {
+		markTaskFailed(opts.store, opts.t.ID, err.Error())
+		return mergeOneResult{Err: err}
+	}
+
+	// 2. Run validation on the rebased worktree (tests the combined state).
 	if cmdStr, ok := opts.ws.Config.Validate[opts.t.Repo]; ok && cmdStr != "" && !opts.t.SkipValidate {
 		fmt.Fprintf(opts.out, "Task %q: running validation...\n", opts.t.ID)
 		if err := runValidation(ctx, worktreePath, opts.t.Repo, opts.ws.Config.Validate); err != nil {
@@ -63,7 +73,7 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 		fmt.Fprintf(opts.out, "Task %q: skipping validation (skip_validate=true)\n", opts.t.ID)
 	}
 
-	// Optional pre-merge review.
+	// 3. Optional pre-merge review (also against the rebased state).
 	if opts.review {
 		fmt.Fprintf(opts.out, "Task %q: reviewing diff...\n", opts.t.ID)
 		verdict, reviewErr := reviewDiff(ctx, worktreePath, opts.t, baseBranch, opts.ws.Config.Model, opts.ws.LogsPath())
@@ -88,7 +98,9 @@ func mergeOne(ctx context.Context, opts mergeOneOpts) mergeOneResult {
 		}
 	}
 
-	if err := rebaseAndMerge(ctx, repoPath, worktreePath, opts.t.Branch, baseBranch, opts.ws.Config.Model, opts.ws.LogsPath(), opts.ghEnv); err != nil {
+	// 4. Fast-forward merge the rebased branch into the base branch. This
+	// still goes through ffMergeAndVerify (--ff-only + linear-or-rollback).
+	if err := fastForwardMerge(ctx, repoPath, worktreePath, opts.t.Branch, baseBranch, opts.ghEnv); err != nil {
 		markTaskFailed(opts.store, opts.t.ID, err.Error())
 		return mergeOneResult{Err: err}
 	}
@@ -191,13 +203,14 @@ func newMergeCmd() *cobra.Command {
 	return cmd
 }
 
-// rebaseAndMerge rebases the task branch onto baseBranch in the
-// worktree, then fast-forward merges into the main repo checkout.
-// On success it removes the worktree and deletes the branch.
-// If the rebase encounters conflicts, it spawns a Claude agent to
-// resolve them before continuing. ghEnv provides extra environment
-// variables (e.g., GH_TOKEN) for git subprocesses.
-func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath string, ghEnv []string) error {
+// rebaseOnto rebases the task branch onto baseBranch in the worktree.
+// It does NOT merge into the base branch — the worktree is left on the
+// rebased branch so validation/review can run against the combined state
+// (the task's work on top of all previously merged work). If the rebase
+// encounters conflicts, it spawns a Claude agent to resolve them before
+// continuing. ghEnv provides extra environment variables (e.g., GH_TOKEN)
+// for git subprocesses.
+func rebaseOnto(ctx context.Context, worktreePath, branch, baseBranch, model, logsPath string, ghEnv []string) error {
 	// Rebase in the worktree.
 	if _, rebaseErr := runGitWithEnv(ctx, worktreePath, ghEnv, "rebase", baseBranch); rebaseErr != nil {
 		// Rebase failed — attempt to resolve conflicts.
@@ -208,6 +221,15 @@ func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 		}
 	}
 
+	return nil
+}
+
+// fastForwardMerge checks out the base branch in the main repo checkout and
+// fast-forward merges the (already-rebased) task branch into it via
+// ffMergeAndVerify, preserving the --ff-only + linear-or-rollback safety. On
+// success it removes the worktree and deletes the branch (best-effort). ghEnv
+// provides extra environment variables (e.g., GH_TOKEN) for git subprocesses.
+func fastForwardMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch string, ghEnv []string) error {
 	// Checkout base branch in the repo.
 	if _, err := runGitWithEnv(ctx, repoPath, ghEnv, "checkout", baseBranch); err != nil {
 		return fmt.Errorf("checkout %s: %w", baseBranch, err)
@@ -224,6 +246,22 @@ func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBra
 	_, _ = runGitWithEnv(ctx, repoPath, ghEnv, "branch", "-d", branch)
 
 	return nil
+}
+
+// rebaseAndMerge rebases the task branch onto baseBranch in the
+// worktree, then fast-forward merges into the main repo checkout.
+// On success it removes the worktree and deletes the branch.
+// If the rebase encounters conflicts, it spawns a Claude agent to
+// resolve them before continuing. ghEnv provides extra environment
+// variables (e.g., GH_TOKEN) for git subprocesses.
+//
+// It is a thin wrapper over rebaseOnto + fastForwardMerge for callers that do
+// not need to interpose validation/review between the rebase and the merge.
+func rebaseAndMerge(ctx context.Context, repoPath, worktreePath, branch, baseBranch, model, logsPath string, ghEnv []string) error {
+	if err := rebaseOnto(ctx, worktreePath, branch, baseBranch, model, logsPath, ghEnv); err != nil {
+		return err
+	}
+	return fastForwardMerge(ctx, repoPath, worktreePath, branch, baseBranch, ghEnv)
 }
 
 // ffMergeAndVerify fast-forward merges branch into the currently checked-out
