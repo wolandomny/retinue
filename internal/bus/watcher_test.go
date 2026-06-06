@@ -2819,7 +2819,6 @@ func TestWatcherDetectsMarkerUpdate(t *testing.T) {
 	}
 }
 
-
 // ===========================================================================
 // Woland user input propagation tests
 // ===========================================================================
@@ -2839,8 +2838,8 @@ func TestIsInjectedMessage(t *testing.T) {
 		{"[Behemoth] I fixed the build", true},
 		{"Hello, how are you?", false},
 		{"Please check the logs", false},
-		{"[] empty brackets", false},           // no name inside brackets
-		{"[A] single char name", true},         // minimal valid format
+		{"[] empty brackets", false},            // no name inside brackets
+		{"[A] single char name", true},          // minimal valid format
 		{"not [bracketed] at start", false},     // brackets not at start
 		{"", false},                             // empty string
 		{"[Name]no space after bracket", false}, // missing space after ]
@@ -3280,7 +3279,6 @@ func TestReadAgentLines_WolandHumanDraining(t *testing.T) {
 		t.Error("expected both UUIDs in seen map during drain")
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // End-to-end: Woland session with mixed messages
@@ -4213,5 +4211,201 @@ func TestNoAgentsYAMLMeansNoSchedules(t *testing.T) {
 
 	if len(w.agentSchedules) != 0 {
 		t.Errorf("expected 0 schedules without agents.yaml, got %d", len(w.agentSchedules))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Delivery-failure feedback (Problem 1) + startup guard (Problem 2)
+// ---------------------------------------------------------------------------
+
+// newTestWatcherWithInjectRecorder returns a Watcher whose injectMessageFn
+// records every injection (window + text) instead of touching tmux.
+func newTestWatcherWithInjectRecorder(t *testing.T) (*Watcher, *[]injectionRecord, *sync.Mutex) {
+	t.Helper()
+	dir := t.TempDir()
+	w := newTestWatcher(t, dir)
+
+	var mu sync.Mutex
+	var records []injectionRecord
+	w.injectMessageFn = func(_ context.Context, windowName, text string) error {
+		mu.Lock()
+		records = append(records, injectionRecord{windowName: windowName, text: text})
+		mu.Unlock()
+		return nil
+	}
+	return w, &records, &mu
+}
+
+func TestInjectMessage_DeliveryFailureFeedbackToWoland(t *testing.T) {
+	w, records, mu := newTestWatcherWithInjectRecorder(t)
+
+	// Monitored windows: Woland (hub) + one live agent.
+	w.watchers["woland"] = &agentWatcher{busName: "woland", windowName: "woland", isWoland: true}
+	w.watchers["agent-azazello"] = &agentWatcher{busName: "azazello", windowName: "agent-azazello"}
+
+	// Woland addresses a recipient with no live window.
+	msg := Message{Name: "woland", Type: TypeChat, Text: "ping", To: []string{"ghost"}}
+	w.injectMessage(context.Background(), msg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*records) != 1 {
+		t.Fatalf("expected exactly 1 injection (the feedback notice), got %d: %+v", len(*records), *records)
+	}
+	rec := (*records)[0]
+	if rec.windowName != "woland" {
+		t.Errorf("feedback window = %q, want %q", rec.windowName, "woland")
+	}
+	if !strings.Contains(rec.text, "[delivery-failed]") {
+		t.Errorf("feedback missing tag, got %q", rec.text)
+	}
+	if !strings.Contains(rec.text, "ghost") {
+		t.Errorf("feedback should name the missed recipient, got %q", rec.text)
+	}
+	if !strings.Contains(rec.text, "azazello") {
+		t.Errorf("feedback should list known agents, got %q", rec.text)
+	}
+
+	// Feedback-loop guards: the notice must be non-routable and recognized as
+	// an injected message (so the woland output watcher drops it).
+	if _, _, ok := parseArrowRouting(rec.text); ok {
+		t.Errorf("feedback notice must NOT contain arrow routing, got %q", rec.text)
+	}
+	if !isInjectedMessage(rec.text) {
+		t.Errorf("feedback notice must match isInjectedMessage (drop-on-readback), got %q", rec.text)
+	}
+}
+
+func TestInjectMessage_NoFeedbackForUserFacingWoland(t *testing.T) {
+	w, records, mu := newTestWatcherWithInjectRecorder(t)
+	w.watchers["woland"] = &agentWatcher{busName: "woland", windowName: "woland", isWoland: true}
+	w.watchers["agent-azazello"] = &agentWatcher{busName: "azazello", windowName: "agent-azazello"}
+
+	// User-facing Woland message (empty To): no agent target, no feedback.
+	msg := Message{Name: "woland", Type: TypeChat, Text: "hello user"}
+	w.injectMessage(context.Background(), msg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*records) != 0 {
+		t.Fatalf("expected no injection for user-facing woland message, got %d: %+v", len(*records), *records)
+	}
+}
+
+func TestInjectMessage_NoFeedbackForNonWolandSender(t *testing.T) {
+	w, records, mu := newTestWatcherWithInjectRecorder(t)
+	// No woland window present, so a non-woland sender with an unknown
+	// recipient produces zero targets — but feedback is scoped to Woland only.
+	w.watchers["agent-azazello"] = &agentWatcher{busName: "azazello", windowName: "agent-azazello"}
+	w.watchers["agent-behemoth"] = &agentWatcher{busName: "behemoth", windowName: "agent-behemoth"}
+
+	msg := Message{Name: "azazello", Type: TypeChat, Text: "x", To: []string{"ghost"}}
+	w.injectMessage(context.Background(), msg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*records) != 0 {
+		t.Fatalf("expected no feedback for non-woland sender miss, got %d: %+v", len(*records), *records)
+	}
+}
+
+func TestInjectMessage_DeliveryFailureNoWolandWindow(t *testing.T) {
+	w, records, mu := newTestWatcherWithInjectRecorder(t)
+	// Woland addresses an unknown recipient but Woland's own window is absent:
+	// the watcher logs and injects nothing.
+	w.watchers["agent-azazello"] = &agentWatcher{busName: "azazello", windowName: "agent-azazello"}
+
+	msg := Message{Name: "woland", Type: TypeChat, Text: "x", To: []string{"ghost"}}
+	w.injectMessage(context.Background(), msg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*records) != 0 {
+		t.Fatalf("expected no injection when woland window absent, got %d: %+v", len(*records), *records)
+	}
+}
+
+// TestStartupGuard_OnlyInjectsMessagesAfterStart verifies the Problem 2 guard:
+// because Run consumes the bus via TailFromEnd (end-of-file), the historical
+// backlog already on disk before the watcher starts is NOT re-injected, while
+// messages appended after start ARE injected. This test mirrors Run's consume
+// loop (TailFromEnd -> injectMessage) so it exercises the exact mechanism Run
+// relies on without requiring a live tmux server for discovery.
+func TestStartupGuard_OnlyInjectsMessagesAfterStart(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWatcher(t, dir)
+	w.watchers["woland"] = &agentWatcher{busName: "woland", windowName: "woland", isWoland: true}
+
+	var mu sync.Mutex
+	var records []injectionRecord
+	w.injectMessageFn = func(_ context.Context, windowName, text string) error {
+		mu.Lock()
+		records = append(records, injectionRecord{windowName: windowName, text: text})
+		mu.Unlock()
+		return nil
+	}
+
+	// Pre-existing history written BEFORE the watcher starts tailing.
+	if err := w.bus.Append(NewMessage("user", TypeUser, "old message 1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.bus.Append(NewMessage("user", TypeUser, "old message 2")); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := w.bus.TailFromEnd(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				w.injectMessage(ctx, *msg)
+			}
+		}
+	}()
+
+	// Give the tail a moment to set its offset to end-of-file (skipping history).
+	time.Sleep(300 * time.Millisecond)
+
+	// Append a NEW message after start.
+	if err := w.bus.Append(NewMessage("user", TypeUser, "new message after start")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the post-start message to be injected.
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(records)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for post-start message injection")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 injection (post-start only, history skipped), got %d: %+v", len(records), records)
+	}
+	if !strings.Contains(records[0].text, "new message after start") {
+		t.Errorf("injected wrong message: %q", records[0].text)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -209,6 +210,11 @@ type Watcher struct {
 	// injectHeartbeatFn is the function used to inject heartbeat messages.
 	// Defaults to the real tmux send-keys implementation. Override in tests.
 	injectHeartbeatFn func(ctx context.Context, windowName, text string) error
+
+	// injectMessageFn injects formatted bus messages (and delivery-failed
+	// feedback notices) into a tmux window. Defaults to the real tmux send
+	// path. Override in tests to assert injection without a live tmux server.
+	injectMessageFn func(ctx context.Context, windowName, text string) error
 }
 
 // NewWatcher creates a Watcher that bridges the given bus with agent sessions.
@@ -223,13 +229,28 @@ func NewWatcher(b *Bus, tmuxSocket, aptPath string, logger *log.Logger) *Watcher
 		agentSchedules: make(map[string]time.Duration),
 	}
 	w.injectHeartbeatFn = w.injectHeartbeatTmux
+	w.injectMessageFn = w.injectMessageTmux
 	return w
 }
 
 // Run starts the bus watcher daemon and blocks until ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) error {
-	// Start tailing the bus for new messages.
-	busCh := w.bus.Tail(ctx)
+	// Tail the bus for NEW messages only (from end-of-file), not from offset 0.
+	//
+	// We populate the monitored windows up front (discoverAgents below) so that
+	// messages arriving in the first few seconds after a (re)start are routed
+	// instead of being dropped because windows==0. Previously that startup
+	// blackout was the *only* thing preventing the offset-0 tail's full-history
+	// replay from being re-injected into every agent/Woland window. Now that
+	// windows are populated before the loop, we must not replay history — so we
+	// consume from end-of-bus. Agent OUTPUT capture (session file -> bus) is a
+	// separate path and is unaffected; other Tail consumers keep offset-0
+	// semantics because they call Tail() themselves.
+	busCh := w.bus.TailFromEnd(ctx)
+
+	// Discover agent/Woland windows once before entering the select loop so the
+	// first ~3s of messages aren't dropped while waiting for the ticker.
+	w.discoverAgents(ctx)
 
 	// Ticker for periodic agent discovery.
 	ticker := time.NewTicker(discoverInterval)
@@ -874,14 +895,79 @@ func (w *Watcher) injectMessage(ctx context.Context, msg Message) {
 	}
 
 	for _, t := range targets {
-		target := fmt.Sprintf("retinue:%s", t.windowName)
-		if err := shell.InjectText(ctx, w.tmuxBaseArgs(), target, formatted); err != nil {
+		if err := w.injectMessageFn(ctx, t.windowName, formatted); err != nil {
 			w.logger.Printf("error injecting message to %q (window %s): %v",
 				t.busName, t.windowName, err)
 		}
 	}
+
+	// Problem 1: silent delivery failures. When Woland explicitly addresses
+	// recipients but none match a live window, the message is dropped and
+	// Woland gets no signal — it keeps retrying blind. Give Woland feedback in
+	// its own window. Scoped to genuine Woland-addressed misses only: not
+	// normal user-facing (empty To) messages, and not other senders.
+	if msg.Name == "woland" && len(msg.To) > 0 && len(targets) == 0 {
+		w.emitDeliveryFailure(ctx, msg, windows)
+	}
 }
 
+// emitDeliveryFailure injects a short "[delivery-failed]" notice into Woland's
+// own tmux window when a Woland-addressed message matched no live recipient
+// window. This gives Woland a visible signal that delivery failed instead of
+// silently dropping the message.
+//
+// Feedback-loop safety (why this cannot recurse):
+//   - injectMessage never appends to the bus; it only pastes into a tmux
+//     window. So this notice is not itself a bus message and is never re-read
+//     by injectMessage.
+//   - When Woland's TUI records the pasted notice, the agent-output watcher
+//     (readAgentLines) sees it on the "human" path and drops it because
+//     isInjectedMessage matches its leading "[delivery-failed] " tag — exactly
+//     the same filter used for every other injected message.
+//   - The notice is deliberately non-routable: it contains no "→ name:"
+//     routing line, so even if it were ever processed as Woland assistant
+//     output, parseArrowRouting would yield no recipients (To stays empty) and
+//     the woland+To>0+targets==0 guard above could never fire again.
+func (w *Watcher) emitDeliveryFailure(ctx context.Context, msg Message, windows []injectionWindow) {
+	// Resolve Woland's window from the currently monitored windows.
+	var wolandWindow string
+	known := make([]string, 0, len(windows))
+	for _, win := range windows {
+		if win.isWoland {
+			wolandWindow = win.windowName
+			continue
+		}
+		known = append(known, win.busName)
+	}
+	if wolandWindow == "" {
+		// Woland's window isn't present — nothing to inject into; just log.
+		w.logger.Printf("delivery-failed: woland window not present, cannot deliver feedback for To=%v", msg.To)
+		return
+	}
+
+	sort.Strings(known)
+	knownList := "(none)"
+	if len(known) > 0 {
+		knownList = strings.Join(known, ", ")
+	}
+
+	// Non-routable notice: no "→ "/"-> name:" routing line, so it cannot be
+	// re-parsed as Woland output that triggers another route or feedback.
+	notice := fmt.Sprintf("[delivery-failed] no live recipient matched: %s; known agents: %s",
+		strings.Join(msg.To, ", "), knownList)
+
+	if err := w.injectMessageFn(ctx, wolandWindow, notice); err != nil {
+		w.logger.Printf("error injecting delivery-failed feedback to woland window %s: %v", wolandWindow, err)
+	}
+}
+
+// injectMessageTmux injects bus message text into a tmux window using the
+// reliable load-buffer + paste-buffer + send-keys pattern. This is the default
+// production implementation for injectMessageFn.
+func (w *Watcher) injectMessageTmux(ctx context.Context, windowName, text string) error {
+	target := fmt.Sprintf("retinue:%s", windowName)
+	return shell.InjectText(ctx, w.tmuxBaseArgs(), target, text)
+}
 
 // tmuxBaseArgs returns the tmux socket prefix arguments (e.g. ["-L", "retinue-apt"])
 // without any subcommand. This is suitable for passing to helpers like shell.InjectText
