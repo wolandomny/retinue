@@ -282,6 +282,112 @@ func TestParseArrowRouting_PreambleWithSubsequentLines(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// parseArrowRouting — ASCII "-> " marker
+//
+// LLMs frequently emit the ASCII "-> " instead of the Unicode "→ ". These
+// cases mirror the Unicode tests above. They also guard the byte-offset
+// detail: len("→ ") == 4 bytes but len("-> ") == 3 bytes, so the marker
+// length must be detected per-match rather than hardcoded.
+// ---------------------------------------------------------------------------
+
+func TestParseArrowRouting_ASCII_SingleRecipient(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("-> the-master: hello")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 1 || recipients[0] != "the-master" {
+		t.Errorf("recipients = %v, want [the-master]", recipients)
+	}
+	if text != "hello" {
+		t.Errorf("text = %q, want %q", text, "hello")
+	}
+}
+
+func TestParseArrowRouting_ASCII_MultipleRecipients(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("-> azazello, behemoth: Coordinate on this")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 2 || recipients[0] != "azazello" || recipients[1] != "behemoth" {
+		t.Errorf("recipients = %v, want [azazello behemoth]", recipients)
+	}
+	if text != "Coordinate on this" {
+		t.Errorf("text = %q, want %q", text, "Coordinate on this")
+	}
+}
+
+func TestParseArrowRouting_ASCII_LeadingWhitespace(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("  -> azazello: message")
+	if !ok {
+		t.Fatal("expected ok=true for ASCII arrow with leading whitespace")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	if text != "message" {
+		t.Errorf("text = %q, want %q", text, "message")
+	}
+}
+
+func TestParseArrowRouting_ASCII_MultiLineMessage(t *testing.T) {
+	input := "-> azazello: First line\nSecond line\nThird line"
+	recipients, text, ok := parseArrowRouting(input)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(recipients) != 1 || recipients[0] != "azazello" {
+		t.Errorf("recipients = %v, want [azazello]", recipients)
+	}
+	want := "First line\nSecond line\nThird line"
+	if text != want {
+		t.Errorf("text = %q, want %q", text, want)
+	}
+}
+
+func TestParseArrowRouting_ASCII_NoColon(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("-> the-master")
+	if ok {
+		t.Errorf("expected ok=false for ASCII arrow with no colon, got recipients=%v, text=%q", recipients, text)
+	}
+}
+
+func TestParseArrowRouting_ASCII_MidLineNotRouted(t *testing.T) {
+	recipients, text, ok := parseArrowRouting("see -> the-master: x")
+	if ok {
+		t.Errorf("expected ok=false for mid-line ASCII arrow, got recipients=%v, text=%q", recipients, text)
+	}
+}
+
+func TestParseArrowRouting_UnicodeASCIIParity(t *testing.T) {
+	unicodeRecipients, unicodeText, unicodeOK := parseArrowRouting("→ azazello, behemoth: First line\nSecond line")
+	asciiRecipients, asciiText, asciiOK := parseArrowRouting("-> azazello, behemoth: First line\nSecond line")
+
+	if unicodeOK != asciiOK || !asciiOK {
+		t.Fatalf("ok mismatch: unicode=%v ascii=%v", unicodeOK, asciiOK)
+	}
+	if len(unicodeRecipients) != len(asciiRecipients) {
+		t.Fatalf("recipient count mismatch: unicode=%v ascii=%v", unicodeRecipients, asciiRecipients)
+	}
+	for i := range unicodeRecipients {
+		if unicodeRecipients[i] != asciiRecipients[i] {
+			t.Errorf("recipient[%d] mismatch: unicode=%q ascii=%q", i, unicodeRecipients[i], asciiRecipients[i])
+		}
+	}
+	// Byte-correct recipients (guards the 4-vs-3 byte offset).
+	if asciiRecipients[0] != "azazello" || asciiRecipients[1] != "behemoth" {
+		t.Errorf("ascii recipients = %v, want [azazello behemoth]", asciiRecipients)
+	}
+	if unicodeRecipients[0] != "azazello" || unicodeRecipients[1] != "behemoth" {
+		t.Errorf("unicode recipients = %v, want [azazello behemoth]", unicodeRecipients)
+	}
+	// Byte-correct body.
+	wantBody := "First line\nSecond line"
+	if unicodeText != asciiText || asciiText != wantBody {
+		t.Errorf("body mismatch: unicode=%q ascii=%q want=%q", unicodeText, asciiText, wantBody)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // routeMessage
 // ---------------------------------------------------------------------------
 
